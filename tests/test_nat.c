@@ -375,6 +375,25 @@ static void test_rejections(void)
     check(nat_outbound(&t, pkt, len, 1000) == -1,
           "a non-first fragment is rejected");
 
+    /*
+     * A first fragment could be translated, but its remainder cannot,
+     * so forwarding it alone leaves the far end holding an incomplete
+     * datagram. Refuse the whole thing.
+     */
+    len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 1000, 80, 10);
+    put16(pkt + 6, 0x2000);   /* More Fragments, offset 0 */
+    put16(pkt + 10, ip_checksum(pkt));
+    check(nat_outbound(&t, pkt, len, 1000) == -1,
+          "a first fragment with More Fragments set is also rejected");
+
+    /* But DF, which shares the same field, must not be mistaken for a
+       fragment flag. */
+    len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 1000, 80, 10);
+    put16(pkt + 6, 0x4000);   /* Don't Fragment */
+    put16(pkt + 10, ip_checksum(pkt));
+    check(nat_outbound(&t, pkt, len, 1000) == 0,
+          "a packet with DF set is translated normally");
+
     /* Truncated. */
     check(nat_outbound(&t, pkt, 10, 1000) == -1, "a runt packet is rejected");
 }

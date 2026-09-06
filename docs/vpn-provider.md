@@ -216,10 +216,15 @@ $ ping -s 1400 -c2 1.1.1.1
 2 packets transmitted, 0 received, 100% packet loss
 ```
 
-The sender fragments to fit, and NAT refuses non-first fragments because
-they carry no transport header to read a port from. The first fragment
-is translated and forwarded; the rest are dropped, so the far end never
-reassembles.
+The sender fragments to fit, and NAT refuses fragments because a later
+one carries no transport header to read a port from.
+
+The first run of this forwarded the *first* fragment — visible in the
+gateway log as `proto 1  1388 bytes` — while dropping its remainder. That
+was worse than dropping the lot: the far end held an incomplete datagram
+until its reassembly timer expired, and we had paid to encrypt and send
+something that could never be delivered. Every fragment of a fragmented
+datagram is now refused, first or not.
 
 This is a real limitation rather than a bug — the refusal is deliberate,
 and forwarding those fragments untranslated would leak the client's

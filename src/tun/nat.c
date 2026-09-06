@@ -130,11 +130,24 @@ static int inspect(uint8_t *pkt, size_t len, struct pkt_view *v)
         return -1;
 
     /*
-     * A fragment other than the first has no transport header to
-     * translate, and NAT cannot reassemble here. Refuse rather than
-     * corrupt it.
+     * Refuse every fragment of a fragmented datagram, not merely the
+     * later ones.
+     *
+     * A later fragment has no transport header to read a port from, so
+     * it plainly cannot be translated. But a *first* fragment can be,
+     * and translating it in isolation is worse than dropping it: the
+     * rest never follow, so the far end holds an incomplete datagram
+     * until its reassembly timer expires, and we have paid to encrypt
+     * and send something that could never be delivered.
+     *
+     * Observed in practice — the gateway forwarded 1388-byte first
+     * fragments of a fragmented ping while silently dropping their
+     * remainders.
+     *
+     * The 0x2000 bit is More Fragments; the low 13 bits are the
+     * fragment offset.
      */
-    if ((get16(pkt + 6) & 0x1FFF) != 0)
+    if ((get16(pkt + 6) & (0x2000 | 0x1FFF)) != 0)
         return -1;
 
     v->proto = pkt[9];
