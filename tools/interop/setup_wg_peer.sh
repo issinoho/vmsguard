@@ -105,14 +105,31 @@ up)
     echo "  tunnel address  : $PEER_ADDR (vmsguard should use $VMSGUARD_ADDR)"
     echo "  allowed-ips     : $VMSGUARD_ADDR/32 for $CLIENT_PUB"
     echo
+    # Fill in the host address rather than leaving a placeholder to be
+    # pasted literally. The private key is the one paired with the
+    # public key passed in, and only the caller has it.
+    HOST_IP=$(ip -4 -o addr show scope global 2>/dev/null \
+              | grep -v " $IFACE " \
+              | awk 'NR==1 {split($4,a,"/"); print a[1]}')
+    [ -n "$HOST_IP" ] || HOST_IP="<this-host-ip>"
+
     echo "Run this on OpenVMS, quoting the keys so DCL does not upcase"
-    echo "them or read / as a qualifier:"
+    echo "them or read / as a qualifier. Substitute the private key that"
+    echo "pairs with the public key you passed to this script:"
     echo
     echo '$ VG_INTEROP -'
-    echo '    --key "<vmsguard-private-key>" -'
+    echo '    --key "<the-private-key-for-the-public-key-above>" -'
     echo "    --peer-key \"$(cat "$STATE_DIR/server.pub")\" -"
-    echo "    --endpoint <this-host-ip>:$PORT -"
+    echo "    --endpoint $HOST_IP:$PORT -"
     echo "    --ping $VMSGUARD_ADDR $PEER_ADDR"
+    if [ "$HOST_IP" = "<this-host-ip>" ]; then
+        echo
+        echo "  (could not determine this host's address automatically)"
+    else
+        echo
+        echo "  $HOST_IP is this host; use another of its addresses if"
+        echo "  the OpenVMS system reaches it by a different route."
+    fi
     echo
     echo "Then check the peer's own view with:"
     echo "  sh $0 status"
