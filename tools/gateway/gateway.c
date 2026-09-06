@@ -199,19 +199,33 @@ static void print_summary(void)
                " fragmentation-needed\n", st.too_big, st.icmp_sent);
     if (use_nat) {
         printf("NAT: %lu translated, %lu restored, %d of %d mappings live,"
-               " dropped %lu unsupported / %lu unmatched / %lu table-full\n",
+               " dropped %lu unsupported / %lu unmatched / %lu table-full"
+               " / %lu orphan fragments\n",
                nat.translated, nat.restored, nat_active(&nat, wg_time_ms()),
                NAT_ENTRIES, nat.dropped_unsupported, nat.dropped_no_mapping,
-               nat.dropped_table_full);
+               nat.dropped_table_full, nat.dropped_frag_orphan);
+        if (nat.frags_tracked > 0)
+            printf("     %lu fragmented datagram%s, %lu later fragment%s"
+                   " carried on the first one's mapping\n",
+                   nat.frags_tracked, nat.frags_tracked == 1 ? "" : "s",
+                   nat.frags_inherited,
+                   nat.frags_inherited == 1 ? "" : "s");
         /*
          * A rate turns the live count into something judgeable: with a
          * 30-second UDP timeout, a table holding roughly half a minute
          * of flows is behaving, and one holding far more is not.
          */
+        /*
+         * nat.flows, not nat.translated: the latter counts packets, so
+         * a single long TCP connection would report as thousands of
+         * flows and make the table look under far more pressure than it
+         * is. Mappings are what fill the table, so mappings are what
+         * the rate has to be about.
+         */
         if (elapsed > 0)
             printf("     %lu new flow%s over the run, %lu per minute\n",
-                   nat.translated, nat.translated == 1 ? "" : "s",
-                   (unsigned long) ((uint64_t) nat.translated * 60000ULL
+                   nat.flows, nat.flows == 1 ? "" : "s",
+                   (unsigned long) ((uint64_t) nat.flows * 60000ULL
                                     / elapsed));
         /*
          * Only mentioned when it happened, because when it has, some

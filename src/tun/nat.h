@@ -14,6 +14,9 @@
  * over TCP, UDP and ICMP echo. Anything else is dropped, since without
  * ports there is nothing to demultiplex replies on.
  *
+ * Fragmented datagrams are handled by having later fragments inherit
+ * the first fragment's decision; see the fragment tracking below.
+ *
  * Pure logic over packet buffers: no allocation, no I/O, no platform
  * dependency, so it is tested on Linux rather than only on OpenVMS.
  */
@@ -54,6 +57,43 @@
 #define NAT_TIMEOUT_TCP_MS 120000UL
 #define NAT_TIMEOUT_UDP_MS  30000UL
 
+/*
+ * Fragment tracking.
+ *
+ * Only the first fragment of a datagram carries a transport header, so
+ * only it can be looked up by port. Later fragments have nothing but an
+ * IP header, and the sole thing tying them to their datagram is the
+ * identification field.
+ *
+ * So the first fragment records what its later fragments should have
+ * done to them, and they inherit it. A later fragment needs only its
+ * address rewritten — the ports live in the first fragment and are
+ * translated there, and the transport checksum covers the reassembled
+ * whole and is likewise adjusted there.
+ *
+ * Few datagrams fragment, and those that do are reassembled or
+ * discarded within seconds, so the table is small and the timeout
+ * short. RFC 791 allows a reassembly timeout as low as 15 seconds;
+ * 30 matches what common stacks actually use.
+ */
+#define NAT_FRAGS            64
+#define NAT_FRAG_TIMEOUT_MS  30000UL
+
+/* Which address field a later fragment inherits a rewrite of. */
+#define NAT_FRAG_SRC 0   /* outbound: source becomes the tunnel address */
+#define NAT_FRAG_DST 1   /* inbound: destination becomes the client     */
+
+struct nat_frag {
+    uint32_t src;           /* keyed on the addresses as they arrive,   */
+    uint32_t dst;           /* before any translation                   */
+    uint32_t replacement;   /* what to write into the chosen field      */
+    uint16_t ip_id;
+    uint8_t  proto;
+    uint8_t  field;         /* NAT_FRAG_SRC or NAT_FRAG_DST             */
+    uint8_t  used;
+    uint64_t last_used_ms;
+};
+
 struct nat_entry {
     uint32_t lan_addr;      /* the client's real address        */
     uint32_t peer_addr;     /* the far end                      */
@@ -67,14 +107,19 @@ struct nat_entry {
 
 struct nat_table {
     struct nat_entry entries[NAT_ENTRIES];
+    struct nat_frag  frags[NAT_FRAGS];
     uint32_t tunnel_addr;   /* the address the provider assigned us */
     uint16_t next_port;
     /* Counters, for reporting. */
-    unsigned long translated;
+    unsigned long translated;   /* packets, not flows */
+    unsigned long flows;        /* mappings created: what fills the table */
+    unsigned long frags_tracked;
+    unsigned long frags_inherited;
     unsigned long restored;
     unsigned long dropped_unsupported;
     unsigned long dropped_no_mapping;
     unsigned long dropped_table_full;
+    unsigned long dropped_frag_orphan;
     /*
      * Mappings recycled while still live, because every entry was in
      * use. Not a drop — the new flow works — but the evicted one is
@@ -106,6 +151,7 @@ unsigned long nat_timeout_for(uint8_t proto);
 #define NAT_DROP_ICMP_TYPE  (-4)   /* ICMP, but not echo              */
 #define NAT_DROP_TABLE_FULL (-5)   /* no free entry, or no free port  */
 #define NAT_DROP_NO_MAPPING (-6)   /* inbound, matching nothing       */
+#define NAT_DROP_FRAG_ORPHAN (-7)  /* later fragment, first never seen */
 
 /* A short phrase for a reason code, suitable for a log line. Never
    returns NULL, so it can be used directly in a format string. */

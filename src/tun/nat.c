@@ -112,6 +112,8 @@ struct pkt_view {
     size_t   csum_off;      /* offset within l4 */
     int      csum_covers_addrs;  /* TCP/UDP pseudo-header includes them */
     int      is_icmp_echo;
+    int      is_first_frag;      /* offset 0 with More Fragments set     */
+    int      is_later_frag;      /* nonzero offset: no transport header  */
 };
 
 /*
@@ -135,30 +137,39 @@ static int inspect(uint8_t *pkt, size_t len, struct pkt_view *v)
         return NAT_DROP_MALFORMED;
 
     /*
-     * Refuse every fragment of a fragmented datagram, not merely the
-     * later ones.
+     * Classify the fragment. The 0x2000 bit is More Fragments; the low
+     * 13 bits are the offset. DF, at 0x4000, shares the field and must
+     * not be mistaken for either.
      *
-     * A later fragment has no transport header to read a port from, so
-     * it plainly cannot be translated. But a *first* fragment can be,
-     * and translating it in isolation is worse than dropping it: the
-     * rest never follow, so the far end holds an incomplete datagram
-     * until its reassembly timer expires, and we have paid to encrypt
-     * and send something that could never be delivered.
-     *
-     * Observed in practice — the gateway forwarded 1388-byte first
-     * fragments of a fragmented ping while silently dropping their
-     * remainders.
-     *
-     * The 0x2000 bit is More Fragments; the low 13 bits are the
-     * fragment offset.
+     * These used to be refused outright, first fragments included,
+     * because translating a first fragment while dropping its remainder
+     * leaves the far end holding an incomplete datagram. That was the
+     * right call while later fragments could not be translated at all.
+     * Now they can — by inheriting the first fragment's mapping — so
+     * the whole datagram goes through and the reason for refusing the
+     * first one has gone with it.
      */
-    if ((get16(pkt + 6) & (0x2000 | 0x1FFF)) != 0)
-        return NAT_DROP_FRAGMENT;
+    {
+        uint16_t frag = get16(pkt + 6);
+
+        v->is_later_frag = (frag & 0x1FFF) != 0;
+        v->is_first_frag = !v->is_later_frag && (frag & 0x2000) != 0;
+    }
 
     v->proto = pkt[9];
     v->l4 = pkt + v->ihl;
     v->l4len = total - v->ihl;
     v->is_icmp_echo = 0;
+
+    /*
+     * A later fragment has no transport header at all — not a truncated
+     * one, none — so there is nothing here to parse and no protocol
+     * check to make. It is translated by inheriting its datagram's
+     * mapping instead. Note that v->l4 is meaningless in this case and
+     * callers must branch before touching it.
+     */
+    if (v->is_later_frag)
+        return NAT_OK;
 
     switch (v->proto) {
     case IPPROTO_TCP_:
@@ -198,6 +209,7 @@ const char *nat_reason(int code)
     case NAT_DROP_ICMP_TYPE:    return "ICMP, but not echo";
     case NAT_DROP_TABLE_FULL:   return "NAT table full";
     case NAT_DROP_NO_MAPPING:   return "no matching mapping";
+    case NAT_DROP_FRAG_ORPHAN:  return "later fragment, first one never seen";
     default:                    return "unknown";
     }
 }
@@ -323,6 +335,105 @@ static int allocate_id(struct nat_table *t, uint8_t proto, uint64_t now_ms,
     return -1;
 }
 
+/* ---- fragment tracking ------------------------------------------------ */
+
+static int frag_expired(const struct nat_frag *f, uint64_t now_ms)
+{
+    return now_ms - f->last_used_ms > NAT_FRAG_TIMEOUT_MS;
+}
+
+static struct nat_frag *frag_find(struct nat_table *t, uint32_t src,
+                                  uint32_t dst, uint8_t proto, uint16_t id,
+                                  uint64_t now_ms)
+{
+    int i;
+
+    for (i = 0; i < NAT_FRAGS; i++) {
+        struct nat_frag *f = &t->frags[i];
+        if (f->used && !frag_expired(f, now_ms) &&
+            f->src == src && f->dst == dst &&
+            f->proto == proto && f->ip_id == id)
+            return f;
+    }
+    return NULL;
+}
+
+/*
+ * Record what this datagram's later fragments should inherit.
+ *
+ * Returns 0, or -1 if there is no room. The caller must treat that as a
+ * refusal of the *first* fragment rather than forwarding it anyway: the
+ * remainder would arrive with nothing to match against and be dropped,
+ * which is the incomplete-datagram problem all over again.
+ */
+static int frag_remember(struct nat_table *t, uint32_t src, uint32_t dst,
+                         uint8_t proto, uint16_t id, uint32_t replacement,
+                         uint8_t field, uint64_t now_ms)
+{
+    struct nat_frag *f = frag_find(t, src, dst, proto, id, now_ms);
+    int fresh = 0;
+    int i;
+
+    if (f == NULL) {
+        for (i = 0; i < NAT_FRAGS; i++) {
+            if (!t->frags[i].used || frag_expired(&t->frags[i], now_ms)) {
+                f = &t->frags[i];
+                fresh = 1;
+                break;
+            }
+        }
+    }
+    if (f == NULL)
+        return -1;
+
+    f->src = src;
+    f->dst = dst;
+    f->proto = proto;
+    f->ip_id = id;
+    f->replacement = replacement;
+    f->field = field;
+    f->used = 1;
+    f->last_used_ms = now_ms;
+    if (fresh)
+        t->frags_tracked++;
+    return 0;
+}
+
+/*
+ * Translate a later fragment: rewrite the one address its datagram's
+ * first fragment established, and fix the IP header checksum. There is
+ * no transport header here and so no transport checksum to touch — that
+ * one covers the reassembled datagram and was adjusted on the first
+ * fragment.
+ */
+static int translate_later_fragment(struct nat_table *t, uint8_t *pkt,
+                                    const struct pkt_view *v,
+                                    uint64_t now_ms)
+{
+    struct nat_frag *f;
+
+    f = frag_find(t, ipv4_src(pkt), ipv4_dst(pkt), v->proto,
+                  get16(pkt + 4), now_ms);
+    if (f == NULL) {
+        /*
+         * Either the first fragment was refused, or it has not arrived
+         * yet — fragments can overtake one another. Buffering until the
+         * first turns up would mean holding packets and reordering
+         * them; dropping is what the datagram's sender already has to
+         * cope with, and it retries.
+         */
+        t->dropped_frag_orphan++;
+        return NAT_DROP_FRAG_ORPHAN;
+    }
+    f->last_used_ms = now_ms;
+
+    put32(pkt + (f->field == NAT_FRAG_SRC ? 12 : 16), f->replacement);
+    ip_checksum_fix(pkt, v->ihl);
+
+    t->frags_inherited++;
+    return NAT_OK;
+}
+
 /* ---- translation ----------------------------------------------------- */
 
 int nat_outbound(struct nat_table *t, uint8_t *pkt, size_t len,
@@ -337,6 +448,13 @@ int nat_outbound(struct nat_table *t, uint8_t *pkt, size_t len,
     rc = inspect(pkt, len, &v);
     if (rc != NAT_OK) {
         t->dropped_unsupported++;
+        return rc;
+    }
+
+    if (v.is_later_frag) {
+        rc = translate_later_fragment(t, pkt, &v, now_ms);
+        if (rc == NAT_OK)
+            t->translated++;
         return rc;
     }
 
@@ -370,8 +488,22 @@ int nat_outbound(struct nat_table *t, uint8_t *pkt, size_t len,
         e->peer_id = peer_id;
         e->nat_id = nat_id;
         e->used = 1;
+        t->flows++;
     }
     e->last_used_ms = now_ms;
+
+    /*
+     * Note what the later fragments must inherit, before the packet is
+     * touched — so that running out of room refuses the datagram rather
+     * than emitting a translated first fragment its remainder can never
+     * follow.
+     */
+    if (v.is_first_frag &&
+        frag_remember(t, lan_addr, peer_addr, v.proto, get16(pkt + 4),
+                      t->tunnel_addr, NAT_FRAG_SRC, now_ms) != 0) {
+        t->dropped_table_full++;
+        return NAT_DROP_TABLE_FULL;
+    }
 
     /* Transport checksum first, while the old values are still in the
        packet to adjust away from. */
@@ -420,6 +552,13 @@ int nat_inbound(struct nat_table *t, uint8_t *pkt, size_t len,
         return rc;
     }
 
+    if (v.is_later_frag) {
+        rc = translate_later_fragment(t, pkt, &v, now_ms);
+        if (rc == NAT_OK)
+            t->restored++;
+        return rc;
+    }
+
     peer_addr = ipv4_src(pkt);
 
     if (v.is_icmp_echo) {
@@ -436,6 +575,15 @@ int nat_inbound(struct nat_table *t, uint8_t *pkt, size_t len,
         return NAT_DROP_NO_MAPPING;
     }
     e->last_used_ms = now_ms;
+
+    /* As outbound: recorded against the addresses as they arrived, and
+       before the packet is modified. */
+    if (v.is_first_frag &&
+        frag_remember(t, peer_addr, ipv4_dst(pkt), v.proto, get16(pkt + 4),
+                      e->lan_addr, NAT_FRAG_DST, now_ms) != 0) {
+        t->dropped_table_full++;
+        return NAT_DROP_TABLE_FULL;
+    }
 
     csum = get16(v.l4 + v.csum_off);
 

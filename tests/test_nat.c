@@ -21,6 +21,13 @@
 static int failures;
 static int checks;
 
+/* For setup steps whose success is assumed by the check that follows;
+   a failure here shows up as that check failing. */
+static void check_quiet(int rc)
+{
+    (void) rc;
+}
+
 static void check(int cond, const char *what)
 {
     checks++;
@@ -368,23 +375,17 @@ static void test_rejections(void)
     check(nat_outbound(&t, pkt, len, 1000) == NAT_DROP_ICMP_TYPE,
           "a non-echo ICMP type is rejected, and says so");
 
-    /* A later fragment has no transport header at all. */
-    len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 1000, 80, 10);
-    put16(pkt + 6, 0x0001);   /* fragment offset 1 */
-    put16(pkt + 10, ip_checksum(pkt));
-    check(nat_outbound(&t, pkt, len, 1000) == NAT_DROP_FRAGMENT,
-          "a non-first fragment is rejected as a fragment");
-
     /*
-     * A first fragment could be translated, but its remainder cannot,
-     * so forwarding it alone leaves the far end holding an incomplete
-     * datagram. Refuse the whole thing.
+     * A later fragment whose first fragment was never seen has nothing
+     * to inherit. It cannot be translated on its own — there is no
+     * transport header in it to read a port from — so it is refused,
+     * and the reason says which of the two fragment cases it is.
      */
     len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 1000, 80, 10);
-    put16(pkt + 6, 0x2000);   /* More Fragments, offset 0 */
+    put16(pkt + 6, 0x0001);   /* fragment offset 1, nothing preceding it */
     put16(pkt + 10, ip_checksum(pkt));
-    check(nat_outbound(&t, pkt, len, 1000) == NAT_DROP_FRAGMENT,
-          "a first fragment with More Fragments set is also a fragment");
+    check(nat_outbound(&t, pkt, len, 1000) == NAT_DROP_FRAG_ORPHAN,
+          "an orphaned later fragment is refused, and says why");
 
     /* But DF, which shares the same field, must not be mistaken for a
        fragment flag. */
@@ -556,6 +557,210 @@ static void test_eviction(void)
     }
 }
 
+/* ---- fragmentation --------------------------------------------------- */
+
+/*
+ * Split a datagram the way a stack does: the first fragment carries
+ * `first_payload` bytes after the IP header and sets More Fragments,
+ * the second carries the rest at the corresponding offset. Both keep
+ * the datagram's identification. The transport checksum is computed
+ * over the whole datagram before splitting and rides in the first
+ * fragment, which is exactly why a later fragment has no checksum of
+ * its own to adjust.
+ */
+static void frag_split(const uint8_t *whole, size_t wlen, uint16_t id,
+                       size_t first_payload,
+                       uint8_t *a, size_t *alen, uint8_t *b, size_t *blen)
+{
+    size_t ihl = (size_t) (whole[0] & 0x0F) * 4;
+    size_t payload = wlen - ihl;
+    size_t rest = payload - first_payload;
+
+    memcpy(a, whole, ihl + first_payload);
+    put16(a + 2, (uint16_t) (ihl + first_payload));
+    put16(a + 4, id);
+    put16(a + 6, 0x2000);                      /* More Fragments */
+    put16(a + 10, ip_checksum(a));
+    *alen = ihl + first_payload;
+
+    memcpy(b, whole, ihl);
+    memcpy(b + ihl, whole + ihl + first_payload, rest);
+    put16(b + 2, (uint16_t) (ihl + rest));
+    put16(b + 4, id);
+    put16(b + 6, (uint16_t) (first_payload / 8));   /* offset, no MF */
+    put16(b + 10, ip_checksum(b));
+    *blen = ihl + rest;
+}
+
+/* Put the two back together, as the receiving stack would. */
+static size_t frag_join(const uint8_t *a, size_t alen,
+                        const uint8_t *b, size_t blen, uint8_t *out)
+{
+    size_t ihl = (size_t) (a[0] & 0x0F) * 4;
+    size_t total = alen + (blen - ihl);
+
+    memcpy(out, a, alen);
+    memcpy(out + alen, b + ihl, blen - ihl);
+    put16(out + 2, (uint16_t) total);
+    put16(out + 6, 0);                 /* no longer a fragment */
+    put16(out + 10, ip_checksum(out));
+    return total;
+}
+
+static void test_fragments(void)
+{
+    struct nat_table ta, tb;
+    uint8_t whole[600], a[600], b[600], joined[600];
+    size_t wlen, alen, blen, jlen;
+
+    printf("\nfragmented datagrams\n");
+
+    /*
+     * The strongest form of this test: translate the datagram whole in
+     * one table, translate it in two fragments in another, reassemble,
+     * and require the two results to be identical byte for byte. That
+     * checks the addresses, the ports, the IP checksum and the
+     * transport checksum all at once, and against a result produced by
+     * the path already known to be correct.
+     */
+    nat_init(&ta, TUNNEL_ADDR);
+    nat_init(&tb, TUNNEL_ADDR);
+
+    wlen = build_l4(whole, 17, LAN_ADDR, PEER_ADDR, 4444, 53, 400);
+    put16(whole + 4, 0xBEEF);                    /* identification */
+    put16(whole + 10, ip_checksum(whole));
+
+    frag_split(whole, wlen, 0xBEEF, 200, a, &alen, b, &blen);
+
+    check(nat_outbound(&tb, a, alen, 1000) == NAT_OK,
+          "the first fragment is translated");
+    check(nat_outbound(&tb, b, blen, 1000) == NAT_OK,
+          "and the later fragment inherits its mapping");
+    check(tb.frags_tracked == 1 && tb.frags_inherited == 1,
+          "one datagram tracked, one fragment inherited");
+
+    /*
+     * The later fragment's own IP header, checked directly.
+     *
+     * Reassembling and comparing does not reach this: the receiver
+     * takes the first fragment's header and only the second's payload,
+     * so a wrong address or a stale checksum on the second fragment
+     * survives that comparison untouched. It would not survive the
+     * network — every hop reads that header, and the WireGuard peer
+     * matches its source against AllowedIPs.
+     */
+    check(ipv4_src(b) == TUNNEL_ADDR,
+          "the later fragment's own source is translated too");
+    check(get16(b + 10) == ip_checksum(b),
+          "and its own IP checksum is recomputed");
+    check(get16(b + 6) == (uint16_t) (200 / 8),
+          "while its offset is left alone");
+
+    jlen = frag_join(a, alen, b, blen, joined);
+
+    check(nat_outbound(&ta, whole, wlen, 1000) == NAT_OK,
+          "the same datagram unfragmented is translated");
+    check(jlen == wlen && memcmp(joined, whole, wlen) == 0,
+          "reassembling the translated fragments gives the same datagram");
+
+    /* Stated separately, so a failure above says which part broke. */
+    check(ipv4_src(joined) == TUNNEL_ADDR, "the source is the tunnel address");
+    check(get16(joined + 10) == ip_checksum(joined), "the IP checksum is right");
+    check(get16(joined + 26) == l4_checksum(joined, 6),
+          "and the UDP checksum still covers the reassembled whole");
+
+    /*
+     * Inbound, the reply may fragment too. The first fragment is found
+     * by port as usual; the later one inherits the client address.
+     */
+    {
+        struct nat_table t;
+        uint8_t reply[600], ra[600], rb[600], rj[600];
+        size_t rlen, ralen, rblen, rjlen;
+        uint16_t port;
+
+        nat_init(&t, TUNNEL_ADDR);
+        wlen = build_l4(whole, 17, LAN_ADDR, PEER_ADDR, 4444, 53, 10);
+        check(nat_outbound(&t, whole, wlen, 1000) == NAT_OK,
+              "a request goes out to open the mapping");
+        port = get16(whole + 20);
+
+        rlen = build_l4(reply, 17, PEER_ADDR, TUNNEL_ADDR, 53, port, 400);
+        put16(reply + 4, 0x1234);
+        put16(reply + 10, ip_checksum(reply));
+        frag_split(reply, rlen, 0x1234, 200, ra, &ralen, rb, &rblen);
+
+        check(nat_inbound(&t, ra, ralen, 1100) == NAT_OK,
+              "the reply's first fragment is restored");
+        check(nat_inbound(&t, rb, rblen, 1100) == NAT_OK,
+              "and its later fragment inherits the client address");
+        check(ipv4_dst(rb) == LAN_ADDR,
+              "which is written into that fragment's own header");
+        check(get16(rb + 10) == ip_checksum(rb),
+              "and its own IP checksum recomputed");
+
+        rjlen = frag_join(ra, ralen, rb, rblen, rj);
+        check(ipv4_dst(rj) == LAN_ADDR,
+              "the reassembled reply is addressed to the client");
+        check(get16(rj + 26) == l4_checksum(rj, 6),
+              "with a UDP checksum still covering the whole");
+        check(rjlen == rlen, "and the length is unchanged");
+    }
+
+    /*
+     * The association is short-lived: a datagram not reassembled within
+     * the timeout is abandoned by the receiver too, so holding the
+     * entry longer would only waste it.
+     */
+    {
+        struct nat_table t;
+        uint8_t late[600];
+        size_t latelen;
+
+        nat_init(&t, TUNNEL_ADDR);
+        wlen = build_l4(whole, 17, LAN_ADDR, PEER_ADDR, 4444, 53, 400);
+        put16(whole + 4, 0x0BAD);
+        put16(whole + 10, ip_checksum(whole));
+        frag_split(whole, wlen, 0x0BAD, 200, a, &alen, late, &latelen);
+
+        check(nat_outbound(&t, a, alen, 1000) == NAT_OK,
+              "a first fragment is tracked");
+        check(nat_outbound(&t, late, latelen,
+                           1000 + NAT_FRAG_TIMEOUT_MS + 1)
+              == NAT_DROP_FRAG_ORPHAN,
+              "but a remainder arriving after the timeout is refused");
+    }
+}
+
+/*
+ * translated counts packets and flows counts mappings. They were the
+ * same number for as long as every test flow was a single packet, which
+ * made the distinction invisible and let the gateway label a packet
+ * count as a flow rate.
+ */
+static void test_packets_versus_flows(void)
+{
+    struct nat_table t;
+    uint8_t pkt[128];
+    size_t len;
+    int i;
+
+    printf("\npackets against flows\n");
+    nat_init(&t, TUNNEL_ADDR);
+
+    for (i = 0; i < 5; i++) {
+        len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 1111, 80, 10);
+        check_quiet(nat_outbound(&t, pkt, len, 1000 + (uint64_t) i));
+    }
+    check(t.translated == 5, "five packets of one flow are five translations");
+    check(t.flows == 1, "but only one flow");
+
+    len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 2222, 80, 10);
+    check_quiet(nat_outbound(&t, pkt, len, 1000));
+    check(t.flows == 2, "a different source port is a second flow");
+    check(t.translated == 6, "and a sixth translation");
+}
+
 int main(void)
 {
     printf("vmsguard source NAT tests\n");
@@ -568,6 +773,8 @@ int main(void)
     test_expiry();
     test_protocol_timeouts();
     test_eviction();
+    test_fragments();
+    test_packets_versus_flows();
 
     printf("\n%s — %d checks, %d failure%s\n",
            failures == 0 ? "PASS" : "FAIL",

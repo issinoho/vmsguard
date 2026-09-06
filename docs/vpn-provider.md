@@ -114,12 +114,30 @@ This is what any consumer VPN router does. `src/tun/nat.c` implements it
 for TCP, UDP and ICMP echo, with `--tunnel-address` on the gateway
 switching it on.
 
-Two things it deliberately refuses rather than mangles: **ICMP error
+One thing it deliberately refuses rather than mangles: **ICMP error
 messages**, which embed the original header and would need that
-translated too, and **non-first fragments**, which have no transport
-header to read a port from. Both are dropped and counted. Protocols
-without ports are refused for the same reason — there would be nothing
-to demultiplex replies on.
+translated too. Protocols without ports are refused as well — there
+would be nothing to demultiplex replies on.
+
+**Fragmented datagrams** are translated. Only the first fragment carries
+a transport header, so only it can be found by port; it records what its
+later fragments should inherit, keyed on the identification field, and
+they get their address rewritten and their IP checksum fixed. Nothing
+else needs doing to them: the ports live in the first fragment and are
+translated there, and the transport checksum covers the reassembled
+datagram, so adjusting it once on the first fragment is both necessary
+and sufficient.
+
+A later fragment arriving with no first fragment recorded — because the
+first was refused, or because fragments overtook one another — is
+dropped as an orphan and counted separately. Buffering it until the
+first turns up would mean holding and reordering packets for a case the
+sender already has to survive.
+
+This path exists because the gateway's own ICMP created it. Telling a
+client the tunnel MTU is 1390 makes it fragment to fit, and refusing
+fragments then dropped what our own message had asked for — the two
+mechanisms were each correct alone and defeated each other in sequence.
 
 The checksums are the delicate part. A TCP or UDP checksum covers the
 payload plus a pseudo-header built from the addresses, so changing the
