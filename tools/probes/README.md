@@ -44,7 +44,12 @@ cc -std=c99 -pedantic -Wall -Wextra -D_DEFAULT_SOURCE \
 
 `probe_pcap` needs `-D_DEFAULT_SOURCE` on glibc because strict `-std=c99`
 hides the BSD `u_char`/`u_int` types that `<pcap.h>` uses. This is a Linux
-quirk; it shouldn't apply on OpenVMS.
+quirk; it doesn't apply on OpenVMS.
+
+It also includes a time header before `<pcap.h>`, because
+`struct pcap_pkthdr` has a `struct timeval` member that `<pcap.h>` does
+not define itself. Without that, VSI C reports `%CC-E-INCOMPMEM`.
+OpenVMS supplies it from `<time.h>`; glibc from `<sys/time.h>`.
 
 ### Verification status
 

@@ -28,6 +28,17 @@
 #include <string.h>
 #include <stdlib.h>
 
+/*
+ * <pcap.h> uses struct timeval in struct pcap_pkthdr but does not
+ * define it, so a time header has to come first or the member is an
+ * incomplete type (%CC-E-INCOMPMEM on VSI C). On OpenVMS <time.h>
+ * supplies it; on glibc it lives in <sys/time.h>.
+ */
+#include <time.h>
+#ifndef __VMS
+#  include <sys/time.h>
+#endif
+
 #include <pcap.h>
 
 int main(int argc, char **argv)
