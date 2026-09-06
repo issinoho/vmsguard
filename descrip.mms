@@ -53,7 +53,8 @@ CFLAGS = /STANDARD=C99/DEFINE=(_SOCKADDR_LEN)/POINTER_SIZE=32-
 OPT = [.build]vmsguard.opt
 
 PROTO_OBJS = [.build]blake2s.obj,[.build]wg_crypto.obj,-
-[.build]wg_proto.obj,[.build]wg_noise.obj,[.build]wg_key.obj
+[.build]wg_proto.obj,[.build]wg_noise.obj,[.build]wg_key.obj,-
+[.build]wg_conf.obj
 
 PLAT_OBJS = [.build]wg_platform.obj
 CLIENT_OBJS = [.build]wg_client.obj
@@ -83,6 +84,9 @@ ALL : [.build]vmsguard_key.exe, [.build]vmsguard_interop.exe, -
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
 
 [.build]wg_key.obj : [.src.proto]wg_key.c, [.src.proto]wg_key.h
+    $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
+
+[.build]wg_conf.obj : [.src.proto]wg_conf.c, [.src.proto]wg_conf.h
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
 
 ! ==== platform and client ====

@@ -144,6 +144,7 @@ $ cc 'cc_flags'/OBJECT=[.build]wg_crypto.obj  [.src.proto]wg_crypto.c
 $ cc 'cc_flags'/OBJECT=[.build]wg_proto.obj   [.src.proto]wg_proto.c
 $ cc 'cc_flags'/OBJECT=[.build]wg_noise.obj   [.src.proto]wg_noise.c
 $ cc 'cc_flags'/OBJECT=[.build]wg_key.obj     [.src.proto]wg_key.c
+$ cc 'cc_flags'/OBJECT=[.build]wg_conf.obj    [.src.proto]wg_conf.c
 $!
 $ say "compiling platform layer"
 $! The POSIX implementation is tried first on purpose: VSI TCP/IP
@@ -171,7 +172,7 @@ $! run-time library TCPIP$IPC_SHR is picked up automatically.
 $!
 $ proto_objs = "[.build]blake2s.obj,[.build]wg_crypto.obj," + -
                "[.build]wg_proto.obj,[.build]wg_noise.obj," + -
-               "[.build]wg_key.obj"
+               "[.build]wg_key.obj,[.build]wg_conf.obj"
 $ plat_objs  = "[.build]wg_platform.obj"
 $ client_objs = "[.build]wg_client.obj"
 $!

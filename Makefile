@@ -24,7 +24,8 @@ PROTO_SRC = src/proto/blake2s.c \
             src/proto/wg_crypto.c \
             src/proto/wg_proto.c \
             src/proto/wg_noise.c \
-            src/proto/wg_key.c
+            src/proto/wg_key.c \
+            src/proto/wg_conf.c
 
 PLATFORM_SRC = src/platform/posix/wg_platform_posix.c
 CLIENT_SRC   = src/client/wg_client.c
@@ -40,7 +41,7 @@ TUN_OBJ = $(TUN_SRC:.c=.o)
 
 TESTS   = build/test_proto build/test_slip build/test_hdlc \
           build/test_ethip build/test_nat \
-          build/test_icmp
+          build/test_icmp build/test_conf
 TOOLS   = build/vmsguard-interop build/vmsguard-responder \
           build/vmsguard-key
 
@@ -63,6 +64,9 @@ build:
 
 build/test_proto: tests/test_proto.c $(PROTO_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tests/test_proto.c $(PROTO_OBJ) $(LDLIBS)
+
+build/test_conf: tests/test_conf.c $(PROTO_OBJ) | build
+	$(CC) $(CFLAGS) -o $@ tests/test_conf.c $(PROTO_OBJ) $(LDLIBS)
 
 build/vmsguard-interop: tools/interop/interop.c $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tools/interop/interop.c \
@@ -97,6 +101,7 @@ test: $(TESTS)
 	@./build/test_ethip
 	@./build/test_nat
 	@./build/test_icmp
+	@./build/test_conf
 
 loopback: $(TOOLS)
 	@sh tools/interop/loopback.sh

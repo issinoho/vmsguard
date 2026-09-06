@@ -53,6 +53,7 @@
 #include "nat.h"
 #include "rawinject.h"
 #include "wg_client.h"
+#include "wg_conf.h"
 #include "wg_key.h"
 #include "wg_platform.h"
 
@@ -268,6 +269,11 @@ static void usage(const char *argv0)
 "                   wider than /8, because packet capture is\n"
 "                   promiscuous and an unfiltered wide subnet would\n"
 "                   tunnel other machines' traffic\n"
+"  --config         take PrivateKey, PublicKey, PresharedKey, Endpoint,\n"
+"                   Address, AllowedIPs, MTU, PersistentKeepalive and\n"
+"                   ListenPort from a wg-quick config file, so a\n"
+"                   provider's .conf can be used as it arrives. Any\n"
+"                   flag given as well overrides the file\n"
 "  --psk            optional preshared key, base64\n"
 "  --listen-port    local UDP port (default: any)\n"
 "  --tunnel-mtu     largest inner packet the tunnel carries. Default\n"
@@ -338,6 +344,44 @@ static int resolve_interface(char *out, size_t cap, const char *want)
     return found ? 0 : -1;
 }
 
+/*
+ * Load a config file into memory. Kept here rather than in wg_conf.c so
+ * the parser stays free of I/O and compiles on OpenVMS with the rest of
+ * src/proto.
+ *
+ * Returns the length read, or -1 with a message printed.
+ */
+static long read_file(const char *path, char *buf, size_t cap)
+{
+    FILE *f = fopen(path, "r");
+    size_t n;
+
+    if (f == NULL) {
+        fprintf(stderr, "error: cannot open %s\n", path);
+        return -1;
+    }
+    n = fread(buf, 1, cap - 1, f);
+    if (ferror(f)) {
+        fprintf(stderr, "error: cannot read %s\n", path);
+        fclose(f);
+        return -1;
+    }
+    /*
+     * A file that exactly fills the buffer may have more behind it, and
+     * a config silently truncated mid-key is worse than one refused.
+     */
+    if (n == cap - 1 && fgetc(f) != EOF) {
+        fprintf(stderr, "error: %s is too large to be a WireGuard config\n",
+                path);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    buf[n] = '\0';
+    return (long) n;
+}
+
+
 static int read_key(uint8_t key[WG_KEY_LEN], const char *arg,
                     const char *what)
 {
@@ -378,8 +422,95 @@ int main(int argc, char **argv)
 
     memset(&st, 0, sizeof st);
 
+    /*
+     * --config first, in a pass of its own, so that the ordinary flag
+     * loop below overwrites whatever the file supplied regardless of
+     * where on the command line it appeared. A flag the operator typed
+     * beats a file they may not have written.
+     */
     for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--key") == 0 && i + 1 < argc) {
+        struct wg_conf conf;
+        char text[8192];
+        long n;
+
+        if (strcmp(argv[i], "--config") != 0 || i + 1 >= argc)
+            continue;
+
+        n = read_file(argv[i + 1], text, sizeof text);
+        if (n < 0)
+            return 1;
+        if (wg_conf_parse(&conf, text, (size_t) n) != 0) {
+            fprintf(stderr, "error: %s: %s\n", argv[i + 1], conf.error);
+            return 2;
+        }
+
+        if (conf.have_private_key) {
+            memcpy(privkey, conf.private_key, WG_KEY_LEN);
+            have_key = 1;
+        }
+        if (conf.have_public_key) {
+            memcpy(peerkey, conf.public_key, WG_KEY_LEN);
+            have_peer = 1;
+        }
+        if (conf.have_preshared_key) {
+            memcpy(psk, conf.preshared_key, WG_KEY_LEN);
+            pskp = psk;
+        }
+        if (conf.have_endpoint)
+            endpoint_arg = conf.endpoint;
+        if (conf.n_allowed > 0)
+            subnet_arg = conf.allowed[0];
+        if (conf.mtu > 0)
+            tunnel_mtu = conf.mtu;
+        if (conf.keepalive > 0)
+            keepalive_s = conf.keepalive;
+        if (conf.listen_port > 0)
+            listen_port = (uint16_t) conf.listen_port;
+
+        if (conf.have_address) {
+            if (ethip_parse_cidr(conf.address, &tunnel_addr,
+                                 &tunnel_addr_mask) != 0 ||
+                tunnel_addr_mask != 0xFFFFFFFFUL) {
+                fprintf(stderr, "error: %s: Address '%s' is not usable\n",
+                        argv[i + 1], conf.address);
+                return 2;
+            }
+            use_nat = 1;
+        }
+
+        printf("read %s\n", argv[i + 1]);
+
+        /*
+         * Say what was not acted on. A config is written for wg-quick,
+         * which does more than we do, and appearing to have honoured a
+         * line we ignored is how an operator ends up debugging the
+         * wrong thing.
+         */
+        if (conf.saw_dns)
+            printf("  note: DNS is for the machines behind the gateway to\n"
+                   "        set for themselves; it is not applied here\n");
+        if (conf.n_allowed > 1) {
+            int k;
+            printf("  note: only the first AllowedIPs entry is used as the\n"
+                   "        tunnel subnet; ignoring");
+            for (k = 1; k < conf.n_allowed; k++)
+                printf(" %s", conf.allowed[k]);
+            printf("\n");
+        }
+        printf("  note: --interface is not in a config file and must still\n"
+               "        be given, as must --client and --exclude for a\n"
+               "        full tunnel\n\n");
+
+        /* Scrub: the private key was in this buffer. */
+        memset(text, 0, sizeof text);
+        memset(&conf, 0, sizeof conf);
+        i++;
+    }
+
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            i++;                    /* already handled above */
+        } else if (strcmp(argv[i], "--key") == 0 && i + 1 < argc) {
             if (read_key(privkey, argv[++i], "--key") != 0)
                 return 2;
             have_key = 1;

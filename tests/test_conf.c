@@ -1,0 +1,203 @@
+/*
+ * Configuration file parsing tests — vmsguard
+ *
+ * The cases that matter are the malformed ones. A config is read once,
+ * at startup, and a value silently misread there is a tunnel that comes
+ * up and carries nothing, or worse comes up and routes somewhere it
+ * should not. Everything the parser declines to understand must say so
+ * rather than being quietly dropped.
+ */
+
+#include <stdio.h>
+#include <string.h>
+
+#include "wg_conf.h"
+
+static int failures;
+static int checks;
+
+static void check(int cond, const char *what)
+{
+    checks++;
+    if (cond) {
+        printf("  ok    %s\n", what);
+    } else {
+        printf("  FAIL  %s\n", what);
+        failures++;
+    }
+}
+
+/* Valid base64 keys, so the parser's own validation is not what is
+   under test in cases about something else. */
+#define KEY_A "EL1fc7inStIekI+AmjrYt1hOvjNRZ4YMFeEI9wBaimQ="
+#define KEY_B "6ec2FeAafnB2M+of4HHjvm4gdsLzh/4M15kox42GPkM="
+#define KEY_C "hSbejtm1CIjOzqbf7Co2TyIWW656+1ptmVoPkmkHZzw="
+
+static int parse(struct wg_conf *c, const char *text)
+{
+    return wg_conf_parse(c, text, strlen(text));
+}
+
+/*
+ * The file a provider actually sends, byte for byte in shape. This is
+ * the case that matters: it is what the user has in their hand.
+ */
+static void test_provider_config(void)
+{
+    struct wg_conf c;
+    static const char text[] =
+        "# TorGuard WireGuard Config\n"
+        "[Interface]\n"
+        "PrivateKey = " KEY_A "\n"
+        "ListenPort = 59612\n"
+        "MTU = 1390\n"
+        "DNS = 10.8.0.1\n"
+        "Address = 10.13.127.177/24\n"
+        "\n"
+        "[Peer]\n"
+        "PublicKey = " KEY_B "\n"
+        "AllowedIPs = 0.0.0.0/0\n"
+        "Endpoint = 64.20.211.133:1443\n"
+        "PersistentKeepalive = 25\n";
+
+    printf("\na provider's config\n");
+
+    check(parse(&c, text) == 0, "parses");
+    check(c.have_private_key, "the private key is read");
+    check(c.have_public_key, "and the peer's public key");
+    check(!c.have_preshared_key, "with no preshared key, correctly");
+    check(c.have_endpoint && strcmp(c.endpoint, "64.20.211.133:1443") == 0,
+          "the endpoint is kept verbatim, port and all");
+    check(c.have_address && strcmp(c.address, "10.13.127.177") == 0,
+          "Address loses its prefix length, which belongs to the interface");
+    check(c.n_allowed == 1 && strcmp(c.allowed[0], "0.0.0.0/0") == 0,
+          "AllowedIPs keeps its prefix, which is the whole point of it");
+    check(c.mtu == 1390, "MTU is the inner MTU, so --tunnel-mtu wants it");
+    check(c.keepalive == 25, "PersistentKeepalive in seconds");
+    check(c.listen_port == 59612, "ListenPort");
+    check(c.saw_dns, "DNS is noticed, so the caller can say it is ignored");
+}
+
+static void test_syntax(void)
+{
+    struct wg_conf c;
+
+    printf("\nsyntax\n");
+
+    check(parse(&c,
+        "[Interface]\r\n"
+        "PrivateKey = " KEY_A "\r\n") == 0,
+        "CRLF line endings are accepted, since a config may arrive by mail");
+
+    check(parse(&c,
+        "  [Interface]  \n"
+        "   PrivateKey   =   " KEY_A "   \n") == 0 && c.have_private_key,
+        "whitespace anywhere sensible is tolerated");
+
+    check(parse(&c,
+        "[interface]\nprivatekey = " KEY_A "\n"
+        "[PEER]\nPUBLICKEY = " KEY_B "\n") == 0 &&
+        c.have_private_key && c.have_public_key,
+        "sections and keys are case-insensitive, as wg-quick's are");
+
+    check(parse(&c,
+        "[Interface] ; trailing comment\n"
+        "MTU = 1420 # and here\n") == 0 && c.mtu == 1420,
+        "both comment characters, mid-line");
+
+    check(parse(&c, "[Interface]\nPrivateKey = " KEY_A) == 0 &&
+          c.have_private_key,
+          "a final line with no newline is still a line");
+
+    check(parse(&c, "") == 0, "an empty file parses to nothing set");
+    check(parse(&c, "\n\n   \n# just a comment\n") == 0,
+          "so does one with nothing but blanks and comments");
+
+    check(parse(&c,
+        "[Peer]\n"
+        "AllowedIPs = 10.0.0.0/8, 192.168.0.0/16,172.16.0.0/12\n") == 0 &&
+        c.n_allowed == 3 &&
+        strcmp(c.allowed[0], "10.0.0.0/8") == 0 &&
+        strcmp(c.allowed[1], "192.168.0.0/16") == 0 &&
+        strcmp(c.allowed[2], "172.16.0.0/12") == 0,
+        "AllowedIPs splits on commas, with or without spaces");
+
+    check(parse(&c,
+        "[Interface]\nPostUp = /bin/true\nTable = off\nSaveConfig = true\n"
+        "PrivateKey = " KEY_A "\n") == 0 && c.have_private_key,
+        "wg-quick's own directives are ignored rather than refused");
+}
+
+static void test_refusals(void)
+{
+    struct wg_conf c;
+
+    printf("\nwhat it refuses\n");
+
+    check(parse(&c, "[Interface]\nPrivateKey = not-base64!\n") == -1,
+          "a key that is not base64");
+    check(strstr(c.error, "line 2") != NULL,
+          "and the message names the line, since a config is a wall of keys");
+    check(strstr(c.error, "PrivateKey") != NULL,
+          "and which setting it was");
+
+    check(parse(&c, "[Interface]\nMTU = fourteen\n") == -1,
+          "a number that is not a number");
+    check(parse(&c, "[Interface]\nMTU = 1390x\n") == -1,
+          "including one with trailing rubbish, rather than reading 1390");
+
+    check(parse(&c, "[Interface]\nPrivateKey\n") == -1,
+          "a line with no '='");
+    check(parse(&c, "[Interface\nPrivateKey = " KEY_A "\n") == -1,
+          "a section header with no closing bracket");
+    check(parse(&c, "[Nonsense]\nPrivateKey = " KEY_A "\n") == -1,
+          "an unknown section, which would otherwise hide a typo");
+    check(parse(&c, "PrivateKey = " KEY_A "\n") == -1,
+          "a setting before any section");
+
+    /*
+     * Two peers is not a bigger version of one peer. vmsguard holds a
+     * single peer and would otherwise use whichever came last, which is
+     * not what anyone writing two of them meant.
+     */
+    check(parse(&c,
+        "[Peer]\nPublicKey = " KEY_B "\n"
+        "[Peer]\nPublicKey = " KEY_C "\n") == -1,
+        "a second [Peer], rather than silently using one of them");
+
+    {
+        char big[4096];
+        int i;
+        size_t n = 0;
+
+        n += (size_t) snprintf(big + n, sizeof big - n, "[Peer]\n"
+                               "AllowedIPs = ");
+        for (i = 0; i < WG_CONF_MAX_ALLOWED + 2; i++)
+            n += (size_t) snprintf(big + n, sizeof big - n, "10.%d.0.0/16,",
+                                   i);
+        snprintf(big + n, sizeof big - n, "\n");
+        check(parse(&c, big) == -1,
+              "more AllowedIPs than fit, rather than dropping the rest");
+    }
+
+    {
+        char big[1024];
+        memset(big, 'x', sizeof big - 1);
+        big[sizeof big - 1] = '\0';
+        check(parse(&c, big) == -1, "a line longer than the buffer");
+    }
+}
+
+int main(void)
+{
+    printf("vmsguard config parsing tests\n");
+
+    test_provider_config();
+    test_syntax();
+    test_refusals();
+
+    printf("\n%s — %d checks, %d failure%s\n",
+           failures == 0 ? "PASS" : "FAIL",
+           checks, failures, failures == 1 ? "" : "s");
+    return failures == 0 ? 0 : 1;
+}
