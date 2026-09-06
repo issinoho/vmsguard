@@ -1,19 +1,54 @@
 # Compilers & languages on OpenVMS x86-64
 
-Findings from public sources (2025-2026); not yet confirmed on the target
-system.
+## Confirmed on the target system (2026-09-06)
 
-## Available
+```
+VSI TCP/IP Services for OpenVMS x86_64 Version V6.0-30
+on a QEMU Standard PC (Q35 + ICH9, 2009) running OpenVMS V9.2-3
+VSI C x86-64 V7.7-003 (GEM 50Z9T) on OpenVMS x86_64 V9.2-3
+```
 
-- **C** and **C++**: VSI's compiler for x86-64 is LLVM/Clang-based with
-  OpenVMS-specific extensions (e.g. VSI C++ A10.1-3, tracking a fairly
-  recent Clang). VSI's stated approach for the x86 port was to build
-  clang/LLVM on Linux, then produce x86-native OpenVMS object libraries and
-  the compiler itself from that.
-- **Fortran**: available.
-- COBOL and BASIC: were reported "in progress" on some cross-tool paths;
-  status on native x86-64 needs re-checking against current VSI release
-  notes.
+- **OS**: OpenVMS V9.2-3 x86-64, running under QEMU.
+- **C compiler**: **VSI C V7.7-3**, GEM-based. This is the classic VSI/DEC C
+  lineage, *not* the Clang-based compiler.
+- **C++ compiler**: **VSI C++ V10.1-3U1** — this is the LLVM/Clang-based
+  one. So C and C++ come from two different compiler lineages on this
+  platform.
+
+### Design consequence: target C99
+
+Because the C compiler is the GEM-based VSI C rather than Clang, we should
+**target C99 and not assume C11**. Practical rules for `src/`:
+
+- No `_Generic`, no `_Static_assert`, no anonymous unions/structs
+- No variable-length arrays
+- No C11 atomics or `<threads.h>`
+- Fixed-width types via `<inttypes.h>`/`<stdint.h>` (both confirmed present
+  in the C RTL header library)
+- Compile with an explicit `/STANDARD=` on VMS and `-std=c99 -pedantic` on
+  the POSIX reference build, so violations are caught on Linux first
+
+The protocol core was already going to be conservative portable C; this
+just fixes the exact dialect.
+
+### Other languages installed
+
+Fortran V8.7-1, COBOL V3.4-3, BASIC V1.11-1, BLISS V1.15-148, Java
+(OpenJDK 8 and 17), Python 3.10, Perl 5.34/5.40, PHP, Lua. Plus **X86ASM
+A10.1-3** if hand-written assembly is ever wanted (it shouldn't be — OpenSSL
+covers the hot paths).
+
+### Build tooling — all questions answered
+
+- **MMS V4.0-5** — VMS-native build tool, present.
+- **GNV V3.0-2F** — GNU environment, present (so a POSIX-ish `make` path
+  exists too).
+- **GIT V2.44-1C** — git runs on the box, so the repo can be cloned directly
+  onto OpenVMS rather than shuttling files around.
+- **OpenSSH V9.9-2C** — scp/sftp available as a fallback transfer path.
+
+Plan: a plain `Makefile` for the POSIX reference build, and a `descrip.mms`
+for the OpenVMS build.
 
 ## Not available
 

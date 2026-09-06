@@ -22,10 +22,27 @@
   coverage, but worth rechecking if OpenSSL's BLAKE2s support turns out to
   have gaps on this platform.
 
+## Confirmed on the target system (2026-09-06)
+
+Three OpenSSL packages are installed side by side:
+
+| Product | Version | Notes |
+| --- | --- | --- |
+| `VSI X86VMS SSL3` | V3.0-21 | OpenSSL 3.0.21 — the LTS branch |
+| `VSI X86VMS SSL31` | V3.1-4 | OpenSSL 3.1.4 |
+| `VSI X86VMS SSL111` | V1.1-1W | OpenSSL 1.1.1 — legacy, not for us |
+
+**Choice: build against SSL3 (3.0.21).** It's the LTS branch, it's the
+version most likely to stay installed on other sites' systems, and 3.0 is
+sufficient for every primitive WireGuard needs. SSL31 stays as a fallback if
+a gap turns up.
+
+Kerberos (V3.3-3) and OpenLDAP are also installed but irrelevant here.
+
 ## To verify on the target system
 
-- [ ] Confirm SSL3 (or whichever OpenSSL package) is installed and its exact
-      version
+- [ ] Confirm the SSL3 3.0.21 build actually exposes the algorithms we need
+      (see the probe below) — vendor builds sometimes trim algorithms
 - [ ] Confirm `EVP_PKEY_X25519`, `EVP_chacha20_poly1305`, and BLAKE2s
       (`EVP_blake2s256`) are all present and functional in the installed
       build (some distro/vendor OpenSSL builds trim algorithms)

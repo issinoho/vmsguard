@@ -43,16 +43,76 @@ What this could mean, in descending order of usefulness:
 3. **If it's a stub or a thin shim over something VMS-specific**, it may not
    help at all.
 
-Note the caveat: `PCAP-BPF` is libpcap's *own bundled* header defining filter
-program structures. Its presence does not prove a writable
-`/dev/bpf`-equivalent exists underneath, nor that capture works on this
-platform's interfaces. This needs testing, not inference.
+### Confirmed 2026-09-06: capture *and* injection are both declared
 
-**Next action on this lead**: extract the `PCAP` header from
-`SYS$LIBRARY:DECC$RTLDEF.TLB` and check which functions are actually
-declared — specifically `pcap_inject`, `pcap_sendpacket`, `pcap_open_live`,
-and `pcap_set_immediate_mode`. Then check `SYS$SHARE:` for the corresponding
-shareable image to confirm there's an implementation behind the header.
+Extracting the `PCAP` module from `SYS$LIBRARY:DECC$RTLDEF.TLB` shows:
+
+```
+pcap_t *pcap_open_live(const char *, int, int, int, char *);
+        pcap_next(pcap_t *, struct pcap_pkthdr *);
+int     pcap_next_ex(pcap_t *, struct pcap_pkthdr **, const u_char **);
+int     pcap_sendpacket(pcap_t *p, u_char *buf, int size);
+```
+
+- **Injection is available** via `pcap_sendpacket`. (The BSD-spelled
+  `pcap_inject` is *not* declared — only the WinPcap-origin
+  `pcap_sendpacket` spelling. Functionally equivalent for our purposes.)
+- There is a real implementation behind the header:
+  `SYS$COMMON:[SYSLIB]TCPIP$LIBPCAP_SHR.EXE`. The `TCPIP$` prefix is strong
+  evidence this ships as a component of VSI TCP/IP Services rather than
+  being an orphaned third-party port — i.e. it's a supported part of the
+  stack.
+
+### What this does and does not get us
+
+This is the best news the project has had, but it must not be over-read.
+libpcap is **not** a TUN device, and the gap between them is where the real
+work now sits.
+
+What we get:
+- A read path: observe frames on a real interface.
+- A write path: inject frames onto a real interface.
+
+What we do not get, and this is the crux:
+- **No virtual interface exists to route to.** Without a TUN device and
+  without routing sockets, there is no "wg0" for the OpenVMS routing table
+  to point at. Route-based traffic steering — the normal way WireGuard is
+  used — has no obvious mechanism here.
+- **pcap observes copies; it does not claim traffic.** Packets captured on
+  an interface are still processed by the real stack. For an
+  originating-host tunnel you must *suppress* the plaintext original, or it
+  goes out in the clear alongside the encrypted copy. pcap alone cannot
+  suppress.
+
+### The architecture this suggests, and its open question
+
+Capture + suppress + inject:
+1. Capture outbound packets bound for the tunnel subnet with pcap.
+2. Suppress the originals so the real stack doesn't also transmit them —
+   **this is the unsolved piece**. It would need a packet-filter/firewall
+   facility in VSI TCP/IP Services capable of dropping by rule, working
+   alongside pcap capture.
+3. Encrypt, send over the WireGuard UDP socket as normal.
+4. On receive, decrypt and `pcap_sendpacket` the plaintext frame back onto
+   the local interface for the stack to pick up.
+
+Layer-2 details make this fiddly regardless: MTU, checksum offload, and ARP
+all have to be handled by hand, because we'd be working with Ethernet
+frames rather than IP packets as a TUN device would give us.
+
+**Next question to answer**: does VSI TCP/IP Services have a packet
+filtering facility that can drop outbound packets by rule? If yes, the
+driverless transparent tunnel becomes genuinely plausible. If no, step 2 has
+no mechanism and we're back to either a driver or the proxy fallback.
+
+### A case where suppression isn't needed
+
+If OpenVMS acts as a **gateway forwarding traffic for other hosts** rather
+than tunnelling traffic that originates on the box itself, the suppression
+problem largely dissolves — capture and inject on a forwarding path is much
+more natural. This is out of scope for the client-only MVP, but it's worth
+noting that the gateway shape is *easier* here than the client shape, which
+is the opposite of the usual situation.
 
 ## What would need to be answered
 
