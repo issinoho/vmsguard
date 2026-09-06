@@ -133,6 +133,31 @@ written recomputation.
 A UDP checksum of zero means the sender declined to compute one, and is
 left at zero rather than becoming a wrong value.
 
+#### Table pressure, and why the timeout is not one number
+
+The table holds 512 mappings. A live run against the provider ended
+with all 512 live and 856 flows translated — because every DNS query
+takes a fresh source port, so each one is a new mapping that then sat
+there for the full two-minute timeout to cover an exchange finished in
+milliseconds.
+
+When every entry is live a new flow recycles the least recently used
+one. That is the right trade — the new flow works — but the recycled
+flow stops working, and the flow least recently used is, by definition,
+the quiet one: an idle SSH session is a better eviction candidate than a
+DNS query that completed a second ago, which is precisely backwards.
+
+Two changes, both of which a consumer NAT router makes for the same
+reason:
+
+- **UDP and ICMP echo expire after 30 seconds, TCP after 120.** Request
+  and reply is over almost immediately; a TCP connection genuinely can
+  sit idle between keystrokes and must survive it. Under the DNS load
+  above this is the difference between ~170 live mappings and 512.
+- **Evictions are counted and reported.** They were invisible, which is
+  the worst property for something that silently breaks a connection.
+  The summary now says so when it happens.
+
 ### 2. Promiscuous capture with `AllowedIPs = 0.0.0.0/0`
 
 The gateway currently filters captured frames on **destination** only.

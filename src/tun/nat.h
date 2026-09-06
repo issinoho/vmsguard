@@ -35,9 +35,24 @@
 #define NAT_PORT_BASE 40000
 #define NAT_PORT_COUNT 20000
 
-/* How long an idle mapping is kept. Long enough for a quiet TCP
-   connection to resume, short enough that the table recycles. */
-#define NAT_TIMEOUT_MS 120000UL
+/*
+ * How long an idle mapping is kept, by protocol.
+ *
+ * A single timeout for everything was wrong in a way a live run made
+ * plain: 856 DNS queries filled all 512 entries, because each query
+ * takes a fresh source port and then holds its slot for the full two
+ * minutes despite the exchange being over in milliseconds.
+ *
+ * UDP and ICMP echo are request-and-reply, so a mapping is dead almost
+ * as soon as the reply arrives, and 30 seconds is generous. TCP is the
+ * one that genuinely needs the long timeout — a connection can sit idle
+ * between keystrokes and must still be there afterwards — so it keeps
+ * two minutes.
+ *
+ * This is what consumer NAT routers do, and for the same reason.
+ */
+#define NAT_TIMEOUT_TCP_MS 120000UL
+#define NAT_TIMEOUT_UDP_MS  30000UL
 
 struct nat_entry {
     uint32_t lan_addr;      /* the client's real address        */
@@ -60,7 +75,17 @@ struct nat_table {
     unsigned long dropped_unsupported;
     unsigned long dropped_no_mapping;
     unsigned long dropped_table_full;
+    /*
+     * Mappings recycled while still live, because every entry was in
+     * use. Not a drop — the new flow works — but the evicted one is
+     * silently broken, which for a quiet TCP connection means it dies
+     * with nothing anywhere to say why. Worth watching.
+     */
+    unsigned long evicted;
 };
+
+/* How long a mapping for this protocol is kept once idle. */
+unsigned long nat_timeout_for(uint8_t proto);
 
 /*
  * Why a packet could not be translated.

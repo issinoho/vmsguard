@@ -211,9 +211,15 @@ void nat_init(struct nat_table *t, uint32_t tunnel_addr)
     t->next_port = 0;
 }
 
+unsigned long nat_timeout_for(uint8_t proto)
+{
+    return (proto == IPPROTO_TCP_) ? NAT_TIMEOUT_TCP_MS
+                                   : NAT_TIMEOUT_UDP_MS;
+}
+
 static int expired(const struct nat_entry *e, uint64_t now_ms)
 {
-    return now_ms - e->last_used_ms > NAT_TIMEOUT_MS;
+    return now_ms - e->last_used_ms > nat_timeout_for(e->proto);
 }
 
 int nat_active(const struct nat_table *t, uint64_t now_ms)
@@ -289,6 +295,14 @@ static struct nat_entry *claim_slot(struct nat_table *t, uint64_t now_ms)
         if (oldest == NULL || e->last_used_ms < oldest->last_used_ms)
             oldest = e;
     }
+
+    /*
+     * Every entry is live, so the least recently used is recycled and
+     * whatever flow owned it stops working. Preferable to refusing the
+     * new flow, but it is a real loss and used to happen invisibly:
+     * count it so the summary can say it happened.
+     */
+    t->evicted++;
     return oldest;
 }
 

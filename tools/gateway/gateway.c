@@ -162,12 +162,21 @@ static void print_summary(void)
     if (st.too_big > 0)
         printf("oversized: %lu, of which %lu answered with ICMP"
                " fragmentation-needed\n", st.too_big, st.icmp_sent);
-    if (use_nat)
-        printf("NAT: %lu translated, %lu restored, %d mappings live,"
+    if (use_nat) {
+        printf("NAT: %lu translated, %lu restored, %d of %d mappings live,"
                " dropped %lu unsupported / %lu unmatched / %lu table-full\n",
                nat.translated, nat.restored, nat_active(&nat, wg_time_ms()),
-               nat.dropped_unsupported, nat.dropped_no_mapping,
+               NAT_ENTRIES, nat.dropped_unsupported, nat.dropped_no_mapping,
                nat.dropped_table_full);
+        /*
+         * Only mentioned when it happened, because when it has, some
+         * flow was broken without any other trace of it.
+         */
+        if (nat.evicted > 0)
+            printf("     %lu live mapping%s recycled to make room; a flow"
+                   " that quiet may have stopped working\n",
+                   nat.evicted, nat.evicted == 1 ? " was" : "s were");
+    }
     fflush(stdout);
 }
 

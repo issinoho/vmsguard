@@ -448,11 +448,111 @@ static void test_expiry(void)
     {
         uint8_t reply[128];
         size_t rlen = build_l4(reply, 6, PEER_ADDR, TUNNEL_ADDR, 80, port, 10);
-        uint64_t late = 1000 + NAT_TIMEOUT_MS + 1;
+        uint64_t late = 1000 + NAT_TIMEOUT_TCP_MS + 1;
 
         check(nat_active(&t, late) == 0, "it has expired by the timeout");
         check(nat_inbound(&t, reply, rlen, late) == NAT_DROP_NO_MAPPING,
               "and a reply after expiry no longer matches");
+    }
+}
+
+/*
+ * A single timeout for every protocol let 856 DNS queries fill all 512
+ * entries in one live run, because each query holds a slot for two
+ * minutes to cover an exchange that finished in milliseconds. UDP and
+ * ICMP now expire in thirty seconds; TCP still gets the two minutes it
+ * actually needs.
+ */
+static void test_protocol_timeouts(void)
+{
+    struct nat_table t;
+    uint8_t tcp[128], udp[128], icmp[128];
+    size_t tl, ul, il;
+    uint64_t mid, late;
+
+    printf("\nper-protocol timeouts\n");
+
+    check(NAT_TIMEOUT_UDP_MS < NAT_TIMEOUT_TCP_MS,
+          "UDP is held for less time than TCP");
+    check(nat_timeout_for(6) == NAT_TIMEOUT_TCP_MS, "TCP gets the long one");
+    check(nat_timeout_for(17) == NAT_TIMEOUT_UDP_MS, "UDP gets the short one");
+    check(nat_timeout_for(1) == NAT_TIMEOUT_UDP_MS,
+          "ICMP echo is request-and-reply, so it gets the short one too");
+
+    nat_init(&t, TUNNEL_ADDR);
+    tl = build_l4(tcp, 6, LAN_ADDR, PEER_ADDR, 1111, 80, 10);
+    ul = build_l4(udp, 17, LAN_ADDR, PEER_ADDR, 2222, 53, 10);
+    il = build_icmp(icmp, LAN_ADDR, PEER_ADDR, 8, 0x1234, 1);
+    nat_outbound(&t, tcp, tl, 1000);
+    nat_outbound(&t, udp, ul, 1000);
+    nat_outbound(&t, icmp, il, 1000);
+    check(nat_active(&t, 1000) == 3, "three mappings to begin with");
+
+    /* Past the UDP timeout but well inside the TCP one. */
+    mid = 1000 + NAT_TIMEOUT_UDP_MS + 1;
+    check(nat_active(&t, mid) == 1,
+          "the UDP and ICMP mappings are gone, the TCP one is not");
+
+    late = 1000 + NAT_TIMEOUT_TCP_MS + 1;
+    check(nat_active(&t, late) == 0, "and the TCP one goes in its own time");
+}
+
+/*
+ * When every entry is live the least recently used is recycled, which
+ * keeps the new flow working at the cost of the old one. That is the
+ * right trade, but it happened with no trace at all: a live run ended
+ * with 512 of 512 mappings live and nothing to say anything had been
+ * thrown away.
+ */
+static void test_eviction(void)
+{
+    struct nat_table t;
+    uint8_t pkt[128];
+    size_t len;
+    int i;
+    int all_translated = 1;
+    uint16_t first_port = 0;
+
+    printf("\neviction under pressure\n");
+    nat_init(&t, TUNNEL_ADDR);
+
+    /*
+     * Fill every slot, all at the same instant so none can expire.
+     * Counted rather than checked one at a time: 512 ok lines would
+     * bury everything else in the run.
+     */
+    for (i = 0; i < NAT_ENTRIES; i++) {
+        len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR,
+                       (uint16_t) (1024 + i), 80, 10);
+        if (nat_outbound(&t, pkt, len, 1000) != NAT_OK)
+            all_translated = 0;
+        if (i == 0)
+            first_port = get16(pkt + 20);
+    }
+    check(all_translated, "every one of 512 flows is translated");
+    check(nat_active(&t, 1000) == NAT_ENTRIES, "the table is full");
+    check(t.evicted == 0, "and nothing has been evicted yet");
+
+    /*
+     * One more flow, still inside every timeout. It must succeed, and
+     * it must say that it cost something.
+     */
+    len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 9999, 80, 10);
+    check(nat_outbound(&t, pkt, len, 1001) == NAT_OK,
+          "a further flow is still translated rather than refused");
+    check(t.evicted == 1, "and the eviction is counted");
+    check(t.dropped_table_full == 0,
+          "an eviction is not a drop, and must not be counted as one");
+    check(nat_active(&t, 1001) == NAT_ENTRIES,
+          "the table is still exactly full, not overfull");
+
+    /* The victim is the oldest, so its reply no longer comes back. */
+    {
+        uint8_t reply[128];
+        size_t rlen = build_l4(reply, 6, PEER_ADDR, TUNNEL_ADDR, 80,
+                               first_port, 10);
+        check(nat_inbound(&t, reply, rlen, 1001) == NAT_DROP_NO_MAPPING,
+              "the recycled flow's reply has nowhere to go");
     }
 }
 
@@ -466,6 +566,8 @@ int main(void)
     test_multiple_clients();
     test_rejections();
     test_expiry();
+    test_protocol_timeouts();
+    test_eviction();
 
     printf("\n%s — %d checks, %d failure%s\n",
            failures == 0 ? "PASS" : "FAIL",
