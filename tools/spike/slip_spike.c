@@ -43,7 +43,13 @@
 #include "slip.h"
 
 /*
- * The PTD$ routines have no header. Declared from the manual:
+ * PTD$CREATE, PTD$READW, PTD$WRITE and PTD$DELETE are declared in
+ * <starlet.h> (the STARLET text module), so no local declarations are
+ * needed — an earlier version declared them from the manual and the
+ * compiler rejected the duplicates as incompatible.
+ *
+ * For reference, the argument lists per the I/O User's Reference
+ * Manual, Appendix D:
  *
  *   PTD$CREATE chan [,acmode] [,charbuff] [,bufflen] [,astadr]
  *              [,astprm] [,ast_acmode], inadr
@@ -51,22 +57,7 @@
  *   PTD$WRITE  chan [,astadr] [,astprm] wrtbuf, wrtbuf_len
  *              [,echobuf] [,echobuf_len]
  *   PTD$DELETE chan
- *
- * Uppercase, because the linker symbols are uppercase and VSI C does
- * not necessarily upcase external names.
  */
-extern unsigned int PTD$CREATE(unsigned short *chan, unsigned int acmode,
-                               void *charbuff, unsigned short bufflen,
-                               void *astadr, unsigned int astprm,
-                               unsigned int ast_acmode, unsigned int *inadr);
-extern unsigned int PTD$READW(unsigned int efn, unsigned short chan,
-                              void *astadr, unsigned int astprm,
-                              void *readbuf, unsigned int readbuf_len);
-extern unsigned int PTD$WRITE(unsigned short chan, void *astadr,
-                              unsigned int astprm,
-                              void *wrtbuf, unsigned int wrtbuf_len,
-                              void *echobuf, unsigned int echobuf_len);
-extern unsigned int PTD$DELETE(unsigned short chan);
 
 #define IO_PAGES 4
 
