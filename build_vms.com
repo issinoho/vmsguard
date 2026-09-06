@@ -204,6 +204,7 @@ $ cc 'cc_flags'/OBJECT=[.build]slip.obj [.src.tun]slip.c
 $ cc 'cc_flags'/OBJECT=[.build]hdlc.obj [.src.tun]hdlc.c
 $ cc 'cc_flags'/OBJECT=[.build]ethip.obj [.src.tun]ethip.c
 $ cc 'cc_flags'/OBJECT=[.build]rawinject.obj [.src.tun]rawinject.c
+$ cc 'cc_flags'/OBJECT=[.build]nat.obj [.src.tun]nat.c
 $ cc 'cc_flags'/OBJECT=[.build]slip_spike.obj [.tools.spike]slip_spike.c
 $ link/executable=[.build]slip_spike.exe -
       [.build]slip_spike.obj,[.build]slip.obj,[.build]hdlc.obj
@@ -212,6 +213,11 @@ $ say "building test_slip"
 $ cc 'cc_flags'/OBJECT=[.build]test_slip.obj [.tests]test_slip.c
 $ link/executable=[.build]test_slip.exe -
       [.build]test_slip.obj,[.build]slip.obj
+$!
+$ say "building test_nat"
+$ cc 'cc_flags'/OBJECT=[.build]test_nat.obj [.tests]test_nat.c
+$ link/executable=[.build]test_nat.exe -
+      [.build]test_nat.obj,[.build]nat.obj,[.build]ethip.obj
 $!
 $ say "building test_ethip"
 $ cc 'cc_flags'/OBJECT=[.build]test_ethip.obj [.tests]test_ethip.c
@@ -259,7 +265,7 @@ $     say "building vmsguard_gateway"
 $     cc 'cc_flags'/OBJECT=[.build]gateway.obj [.tools.gateway]gateway.c
 $     link/executable=[.build]vmsguard_gateway.exe -
           [.build]gateway.obj,'proto_objs','plat_objs','client_objs',-
-          [.build]ethip.obj,[.build]rawinject.obj,-
+          [.build]ethip.obj,[.build]rawinject.obj,[.build]nat.obj,-
           [.build]vmsguard.opt/OPTIONS,[.build]pcap.opt/OPTIONS
 $ endif
 $!
@@ -303,6 +309,8 @@ $     say ""
 $     run [.build]test_hdlc
 $     say ""
 $     run [.build]test_ethip
+$     say ""
+$     run [.build]test_nat
 $ endif
 $!
 $ exit 1

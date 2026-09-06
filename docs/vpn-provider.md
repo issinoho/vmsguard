@@ -67,7 +67,7 @@ of it. The gaps below are what stand in the way.
 
 ## Gaps, in order of how much they block
 
-### 1. Source NAT — the big one
+### 1. Source NAT — implemented
 
 A provider assigns one tunnel address, here `10.13.127.177/24`, and
 their server's cryptokey routing will only accept packets from us that
@@ -81,12 +81,28 @@ back. That means connection tracking: a table keyed on protocol, ports
 and addresses, with the original source stored so replies can be
 restored.
 
-This is what any consumer VPN router does, and it is the largest single
-piece of work here. It also brings the usual complications — ICMP error
-payloads carrying an embedded original header that needs translating
-too, and table expiry.
+This is what any consumer VPN router does. `src/tun/nat.c` implements it
+for TCP, UDP and ICMP echo, with `--tunnel-address` on the gateway
+switching it on.
 
-Without it, nothing else matters: the provider will drop everything.
+Two things it deliberately refuses rather than mangles: **ICMP error
+messages**, which embed the original header and would need that
+translated too, and **non-first fragments**, which have no transport
+header to read a port from. Both are dropped and counted. Protocols
+without ports are refused for the same reason — there would be nothing
+to demultiplex replies on.
+
+The checksums are the delicate part. A TCP or UDP checksum covers the
+payload plus a pseudo-header built from the addresses, so changing the
+source address invalidates it. NAT adjusts incrementally (RFC 1624)
+rather than recomputing, which is both cheaper and independent of
+payload length — but an adjustment that is subtly wrong produces packets
+that look well formed and are silently discarded. Every translated
+packet in the tests is therefore checked against a full, independently
+written recomputation.
+
+A UDP checksum of zero means the sender declined to compute one, and is
+left at zero rather than becoming a wrong value.
 
 ### 2. Promiscuous capture with `AllowedIPs = 0.0.0.0/0`
 
@@ -204,9 +220,14 @@ handshake today, which would be a worthwhile first test — it isolates
    duplicates still rejected. 20 checks cover reordering, duplicates,
    window edges, large forward jumps and counters near the 64-bit
    ceiling.
-5. **Source NAT with connection tracking.** The substantial one, and now
-   the next thing standing in the way.
+5. ~~Source NAT with connection tracking.~~ **Done.**
+   `--tunnel-address` enables it. Outbound packets are rewritten to come
+   from the provider's assigned address and replies translated back,
+   over TCP, UDP and ICMP echo. 37 checks, including every translated
+   packet cross-checked against an independently written full checksum
+   recomputation.
 6. **ICMP fragmentation-needed.** Enough to make large transfers work.
+   Now the last thing standing in the way of a usable provider gateway.
 7. **Config parsing.** Last, because it is ergonomics.
 
 Cookie support is off the critical path: this provider did not challenge

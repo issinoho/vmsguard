@@ -34,11 +34,11 @@ PLATFORM_OBJ = $(PLATFORM_SRC:.c=.o)
 CLIENT_OBJ   = $(CLIENT_SRC:.c=.o)
 
 TUN_SRC = src/tun/slip.c src/tun/hdlc.c src/tun/ethip.c \
-          src/tun/rawinject.c
+          src/tun/rawinject.c src/tun/nat.c
 TUN_OBJ = $(TUN_SRC:.c=.o)
 
 TESTS   = build/test_proto build/test_slip build/test_hdlc \
-          build/test_ethip
+          build/test_ethip build/test_nat
 TOOLS   = build/vmsguard-interop build/vmsguard-responder \
           build/vmsguard-key
 
@@ -72,11 +72,15 @@ build/test_hdlc: tests/test_hdlc.c $(TUN_OBJ) | build
 build/test_ethip: tests/test_ethip.c src/tun/ethip.o | build
 	$(CC) $(CFLAGS) -o $@ tests/test_ethip.c src/tun/ethip.o
 
+build/test_nat: tests/test_nat.c src/tun/nat.o src/tun/ethip.o | build
+	$(CC) $(CFLAGS) -o $@ tests/test_nat.c src/tun/nat.o src/tun/ethip.o
+
 test: $(TESTS)
 	@./build/test_proto
 	@./build/test_slip
 	@./build/test_hdlc
 	@./build/test_ethip
+	@./build/test_nat
 
 loopback: $(TOOLS)
 	@sh tools/interop/loopback.sh
@@ -92,4 +96,4 @@ $(PLATFORM_OBJ): src/platform/wg_platform.h
 $(CLIENT_OBJ): src/client/wg_client.h src/platform/wg_platform.h \
                src/proto/wg_noise.h
 $(TUN_OBJ): src/tun/slip.h src/tun/hdlc.h src/tun/ethip.h \
-            src/tun/rawinject.h
+            src/tun/rawinject.h src/tun/nat.h

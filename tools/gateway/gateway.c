@@ -48,6 +48,7 @@
 #endif
 
 #include "ethip.h"
+#include "nat.h"
 #include "rawinject.h"
 #include "wg_client.h"
 #include "wg_key.h"
@@ -95,6 +96,12 @@ static void usage(const char *argv0)
 "  --interface      LAN interface to capture on, e.g. IE0\n"
 "  --tunnel-subnet  traffic for this subnet is tunnelled,\n"
 "                   e.g. 10.9.0.0/24\n"
+"  --tunnel-address the address the peer assigned us, e.g.\n"
+"                   10.13.127.177. Enables source NAT: outbound\n"
+"                   packets are rewritten to come from it, and replies\n"
+"                   translated back. Required by commercial providers,\n"
+"                   which accept only their assigned address as a\n"
+"                   source\n"
 "  --client         only forward for this source address or subnet.\n"
 "                   Repeatable. Required when the tunnel subnet is\n"
 "                   wider than /8, because packet capture is\n"
@@ -188,6 +195,9 @@ int main(int argc, char **argv)
     uint32_t tun_net = 0, tun_mask = 0;
     struct client_filter clients[MAX_CLIENTS];
     int nclients = 0;
+    struct nat_table nat;
+    uint32_t tunnel_addr = 0, tunnel_addr_mask = 0;
+    int use_nat = 0;
     const char *endpoint_arg = NULL, *ifname = NULL, *subnet_arg = NULL;
     const char *colon;
     char host[128], b64[WG_KEY_B64_LEN], abuf[16], bbuf[16];
@@ -218,6 +228,15 @@ int main(int argc, char **argv)
             ifname = argv[++i];
         } else if (strcmp(argv[i], "--tunnel-subnet") == 0 && i + 1 < argc) {
             subnet_arg = argv[++i];
+        } else if (strcmp(argv[i], "--tunnel-address") == 0 && i + 1 < argc) {
+            if (ethip_parse_cidr(argv[++i], &tunnel_addr,
+                                 &tunnel_addr_mask) != 0 ||
+                tunnel_addr_mask != 0xFFFFFFFFUL) {
+                fprintf(stderr,
+                        "error: --tunnel-address must be a plain address\n");
+                return 2;
+            }
+            use_nat = 1;
         } else if (strcmp(argv[i], "--client") == 0 && i + 1 < argc) {
             if (nclients >= MAX_CLIENTS) {
                 fprintf(stderr, "error: at most %d --client entries\n",
@@ -307,6 +326,12 @@ int main(int argc, char **argv)
     ipv4_format(abuf, sizeof abuf, tun_net);
     ipv4_format(bbuf, sizeof bbuf, tun_mask);
     printf("  tunnel subnet  : %s mask %s\n", abuf, bbuf);
+    if (use_nat) {
+        ipv4_format(abuf, sizeof abuf, tunnel_addr);
+        printf("  source NAT to  : %s\n", abuf);
+    } else {
+        printf("  source NAT     : off\n");
+    }
     if (nclients == 0) {
         printf("  forwarding for : any source\n");
     } else {
@@ -341,6 +366,8 @@ int main(int argc, char **argv)
         wg_client_close(&client);
         return 1;
     }
+
+    nat_init(&nat, tunnel_addr);
 
     /* ---- injection ---- */
 
@@ -377,6 +404,7 @@ int main(int argc, char **argv)
         struct pcap_pkthdr *hdr = NULL;
         const unsigned char *frame = NULL;
         uint8_t plain[WG_MAX_PACKET];
+        uint8_t natbuf[WG_MAX_PACKET];
         size_t plainlen = 0;
         int rc;
 
@@ -414,6 +442,29 @@ int main(int argc, char **argv)
             if (ip != NULL && ipv4_in_subnet(ipv4_dst(ip),
                                              tun_net, tun_mask)) {
                 st.captured++;
+
+                /*
+                 * Translation needs a writable copy: the capture buffer
+                 * belongs to pcap and the same frame may be handed back
+                 * on the next call.
+                 */
+                if (use_nat) {
+                    if (iplen > sizeof natbuf) {
+                        st.dropped++;
+                        goto after_out;
+                    }
+                    memcpy(natbuf, ip, iplen);
+                    if (nat_outbound(&nat, natbuf, iplen,
+                                     wg_time_ms()) != 0) {
+                        /* Untranslatable: sending it anyway would leak
+                           the client's address and be discarded by the
+                           peer regardless. */
+                        st.dropped++;
+                        goto after_out;
+                    }
+                    ip = natbuf;
+                }
+
                 if (wg_client_send(&client, ip, iplen) == 0) {
                     st.tunnelled++;
                     if (verbose) {
@@ -428,6 +479,8 @@ int main(int argc, char **argv)
                     st.dropped++;
                 }
             }
+after_out:
+            ;
         } else if (rc < 0) {
             fprintf(stderr, "capture error: %s\n", pcap_geterr(pc));
             break;
@@ -451,7 +504,11 @@ int main(int argc, char **argv)
              * injecting that padding would corrupt the packet.
              */
             if (iplen >= IPV4_MIN_HDR && iplen <= plainlen) {
-                if (raw_injector_send(inj, plain, iplen) == 0) {
+                if (use_nat &&
+                    nat_inbound(&nat, plain, iplen, wg_time_ms()) != 0) {
+                    /* No mapping: unsolicited, or the flow expired. */
+                    st.dropped++;
+                } else if (raw_injector_send(inj, plain, iplen) == 0) {
                     st.injected++;
                     if (verbose) {
                         ipv4_format(abuf, sizeof abuf, ipv4_src(plain));
@@ -481,6 +538,12 @@ int main(int argc, char **argv)
     printf("\ncaptured %lu, tunnelled %lu, received %lu, injected %lu,"
            " dropped %lu\n",
            st.captured, st.tunnelled, st.received, st.injected, st.dropped);
+    if (use_nat)
+        printf("NAT: %lu translated, %lu restored, %d mappings live,"
+               " dropped %lu unsupported / %lu unmatched / %lu table-full\n",
+               nat.translated, nat.restored, nat_active(&nat, wg_time_ms()),
+               nat.dropped_unsupported, nat.dropped_no_mapping,
+               nat.dropped_table_full);
 
     raw_injector_close(inj);
     pcap_close(pc);
