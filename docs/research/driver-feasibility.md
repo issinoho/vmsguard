@@ -142,13 +142,18 @@ filtering out: it is a *programming* manual, and VSI TCP/IP Services is
 known to have packet filtering configured through management commands. The
 place to look next is the **Management guide**, not the programming one.
 
-Summary of where the three steps stand:
+Summary of where the three steps stand, after testing on the target:
 
 | Step | Status |
 | --- | --- |
-| Capture | Available (pcap), untested |
-| **Suppress** | **Unsolved — the blocker** |
-| Inject | Available (raw socket + `IP_HDRINCL`), untested |
+| Capture | **Works** — pcap 0.9.4 captures LAN frames at EN10MB |
+| **Suppress** | **Unsolved — why the client shape is abandoned** |
+| Inject via pcap | **Broken** — `pcap_sendpacket` returns "socket is not connected" |
+| Inject via raw socket | Documented, not yet tested |
+
+The gateway shape in `docs/gateway.md` avoids the suppression step
+entirely and injects at layer 3, so the pcap send failure does not
+affect it.
 
 ### A case where suppression isn't needed
 

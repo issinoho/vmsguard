@@ -57,10 +57,47 @@ discovering there was no driver — these get verified first.
 
 | Mechanism | Evidence | Verified |
 | --- | --- | --- |
-| libpcap capture | `PCAP` in the C RTL headers, `TCPIP$LIBPCAP_SHR.EXE` present | no |
+| libpcap capture | works on the target | **yes** |
+| pcap injection | `pcap_sendpacket` present but non-functional | **fails** |
 | `SOCK_RAW` | Sockets manual: available with SYSPRV | no |
 | `IP_HDRINCL` | Sockets manual: build your own IP header | no |
 | `SIOCADDRT` | Sockets manual, via `$QIO IO$_SETMODE` | no |
+
+### Capture: confirmed working (2026-09-06)
+
+```
+vmsguard pcap probe
+  library: libpcap version 0.9.4
+  devices:
+    IE0
+    LO0
+  ok    pcap_open_live(IE0)
+  note  link type 1 (EN10MB)
+  ok    captured frame, 122 bytes on the wire
+  ok    captured frame, 138 bytes on the wire
+  ok    captured frame, 138 bytes on the wire
+```
+
+Real frames off the LAN, at Ethernet link type. The capture half of the
+gateway is available.
+
+### pcap injection: confirmed broken
+
+```
+  FAIL  pcap_sendpacket: send: socket is not connected
+INJECTION UNAVAILABLE — capture-only
+```
+
+`pcap_sendpacket` is declared in the header but does not work — VSI's
+port appears to be capture-only, with the send path a stub over a socket
+that was never set up for transmitting. A reminder that a declaration in
+a header proves nothing on this platform, which is also how SLIP was
+lost.
+
+**This does not affect the design**, which never used pcap to inject:
+capture is layer 2 because pcap is what exists, injection is layer 3
+because raw sockets are cleaner. The remaining question is whether
+`SOCK_RAW` and `IP_HDRINCL` work, which `probe_sockets` answers.
 
 `tools/probes/` tests the first three directly. Run those before any
 gateway code is written:
