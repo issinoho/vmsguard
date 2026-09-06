@@ -1,14 +1,13 @@
 $! build_vms.com — build vmsguard on OpenVMS x86-64
 $!
-$! UNTESTED. Written from the VSI TCP/IP Services Sockets API manual and
-$! the toolchain inventory in docs/research/, but not yet run on a real
-$! system. Expect to adjust the OpenSSL logical names below; everything
-$! else should be close.
+$! Verified on OpenVMS V9.2-3 x86-64 with VSI C V7.7-003 and OpenSSL
+$! 3.0.21. The one setting most likely to need changing on another
+$! system is pointer_size, below.
 $!
 $! Usage:
 $!     @build_vms            build everything
 $!     @build_vms CLEAN      delete objects and executables
-$!     @build_vms TEST       build, then run the protocol tests
+$!     @build_vms TEST       build, then run the self-tests
 $!
 $! Why DCL as well as descrip.mms: this procedure uses nothing but CC
 $! and LINK, so it has far fewer ways to go wrong than an MMS
@@ -113,7 +112,7 @@ $! Built by concatenation rather than a continued line: a "-" inside a
 $! quoted string would fold the next line's leading spaces into the
 $! string and corrupt the include list.
 $ cc_includes = "/INCLUDE_DIRECTORY=([.src.proto],[.src.platform]," + -
-                "[.src.client]," + ssl_include + ")"
+                "[.src.client],[.src.tun]," + ssl_include + ")"
 $!
 $ cc_flags = cc_standard + cc_defines + cc_prefix + cc_pointer + cc_includes
 $!
@@ -200,6 +199,17 @@ $ link/executable=[.build]vmsguard_responder.exe -
       [.build]responder.obj,'proto_objs','plat_objs',-
       [.build]vmsguard.opt/OPTIONS
 $!
+$ say "building slip_spike"
+$ cc 'cc_flags'/OBJECT=[.build]slip.obj [.src.tun]slip.c
+$ cc 'cc_flags'/OBJECT=[.build]slip_spike.obj [.tools.spike]slip_spike.c
+$ link/executable=[.build]slip_spike.exe -
+      [.build]slip_spike.obj,[.build]slip.obj
+$!
+$ say "building test_slip"
+$ cc 'cc_flags'/OBJECT=[.build]test_slip.obj [.tests]test_slip.c
+$ link/executable=[.build]test_slip.exe -
+      [.build]test_slip.obj,[.build]slip.obj
+$!
 $ say "building test_proto"
 $ cc 'cc_flags'/OBJECT=[.build]test_proto.obj [.tests]test_proto.c
 $ link/executable=[.build]test_proto.exe -
@@ -209,6 +219,8 @@ $ say ""
 $ say "build complete, executables in [.build]"
 $ say ""
 $ say "  $ run [.build]test_proto          protocol self-tests"
+$ say "  $ run [.build]test_slip           SLIP framing self-tests"
+$ say "  $ run [.build]slip_spike          SLIP-over-pty spike"
 $ say "  $ vg_key := $sys$disk:[.build]vmsguard_key.exe"
 $ say "  $ vg_key genkey                   generate a private key"
 $ say ""
@@ -218,6 +230,10 @@ $ then
 $     say "running protocol tests"
 $     say ""
 $     run [.build]test_proto
+$     say ""
+$     say "running SLIP framing tests"
+$     say ""
+$     run [.build]test_slip
 $ endif
 $!
 $ exit 1
