@@ -95,6 +95,60 @@ static void usage(const char *argv0)
 "OpenVMS).\n", argv0);
 }
 
+/*
+ * Match a requested interface name against what pcap reports, ignoring
+ * case, and return the name pcap actually uses.
+ *
+ * DCL lowercases unquoted arguments to a foreign command, so
+ * "--interface IE0" arrives as "ie0" while pcap knows the device as
+ * "IE0" — and pcap_open_live is case-sensitive, so it fails with "no
+ * such device or address". Rather than require quoting, resolve the
+ * name here and report what was found.
+ *
+ * Returns 0 on success, with the resolved name copied into out.
+ */
+static int resolve_interface(char *out, size_t cap, const char *want)
+{
+    pcap_if_t *devs = NULL, *d;
+    char errbuf[PCAP_ERRBUF_SIZE];
+    int found = 0;
+
+    errbuf[0] = '\0';
+    if (pcap_findalldevs(&devs, errbuf) != 0 || devs == NULL) {
+        fprintf(stderr, "error: pcap_findalldevs: %s\n",
+                errbuf[0] != '\0' ? errbuf : "no devices");
+        return -1;
+    }
+
+    for (d = devs; d != NULL; d = d->next) {
+        const char *a = d->name;
+        const char *b = want;
+        while (*a != '\0' && *b != '\0') {
+            int ca = (*a >= 'A' && *a <= 'Z') ? *a - 'A' + 'a' : *a;
+            int cb = (*b >= 'A' && *b <= 'Z') ? *b - 'A' + 'a' : *b;
+            if (ca != cb)
+                break;
+            a++;
+            b++;
+        }
+        if (*a == '\0' && *b == '\0') {
+            snprintf(out, cap, "%s", d->name);
+            found = 1;
+            break;
+        }
+    }
+
+    if (!found) {
+        fprintf(stderr, "error: no interface matching '%s'. Available:\n",
+                want);
+        for (d = devs; d != NULL; d = d->next)
+            fprintf(stderr, "         %s\n", d->name);
+    }
+
+    pcap_freealldevs(devs);
+    return found ? 0 : -1;
+}
+
 static int read_key(uint8_t key[WG_KEY_LEN], const char *arg,
                     const char *what)
 {
@@ -119,6 +173,7 @@ int main(int argc, char **argv)
     const char *endpoint_arg = NULL, *ifname = NULL, *subnet_arg = NULL;
     const char *colon;
     char host[128], b64[WG_KEY_B64_LEN], abuf[16], bbuf[16];
+    char realif[64];
     int have_key = 0, have_peer = 0, verbose = 0;
     uint16_t listen_port = 0, peer_port;
     int i;
@@ -198,22 +253,27 @@ int main(int argc, char **argv)
     ipv4_format(abuf, sizeof abuf, tun_net);
     ipv4_format(bbuf, sizeof bbuf, tun_mask);
     printf("  tunnel subnet  : %s mask %s\n", abuf, bbuf);
-    printf("  capturing on   : %s\n", ifname);
-    printf("\n");
 
     /* ---- capture ---- */
 
+    if (resolve_interface(realif, sizeof realif, ifname) != 0) {
+        wg_client_close(&client);
+        return 1;
+    }
+    printf("  capturing on   : %s\n", realif);
+    printf("\n");
+
     errbuf[0] = '\0';
-    pc = pcap_open_live(ifname, 65535, 1, PCAP_TIMEOUT_MS, errbuf);
+    pc = pcap_open_live(realif, 65535, 1, PCAP_TIMEOUT_MS, errbuf);
     if (pc == NULL) {
-        fprintf(stderr, "error: pcap_open_live(%s): %s\n", ifname, errbuf);
+        fprintf(stderr, "error: pcap_open_live(%s): %s\n", realif, errbuf);
         fprintf(stderr, "       packet capture needs privilege\n");
         wg_client_close(&client);
         return 1;
     }
     if (pcap_datalink(pc) != DLT_EN10MB) {
         fprintf(stderr, "error: %s is link type %d, not Ethernet\n",
-                ifname, pcap_datalink(pc));
+                realif, pcap_datalink(pc));
         pcap_close(pc);
         wg_client_close(&client);
         return 1;
