@@ -13,23 +13,44 @@ separate, later track — see `docs/research/driver-feasibility.md`.
 
 ## Status
 
-Early research phase. No working code yet. See `docs/research/` for what's
-been established so far about the target platform, and `docs/plan.md` for
-the phased approach.
+**Running on OpenVMS x86-64.** As of 2026-09-06, on OpenVMS V9.2-3 with
+VSI C V7.7-003 and OpenSSL 3.0.21:
 
-## Layout (planned)
+- The protocol core passes all 92 self-tests natively.
+- The interop client completes a WireGuard handshake over a real
+  network to a peer on Linux, exchanges encrypted transport data, and
+  gets an ICMP echo reply back through the tunnel.
+
+**Not yet proven: wire compatibility with upstream WireGuard.** Both
+ends of that test are vmsguard's own code, so a shared misreading of the
+specification would pass it. The next milestone is `vmsguard-interop`
+against a real `wg` peer — see `docs/interop.md`.
+
+Also still open is the transparent-tunnel question: how vmsguard would
+present itself as a network interface OpenVMS can route to, without
+writing a kernel driver. SLIP over a pseudo-terminal looks like the most
+promising route; see `docs/research/slip-tunnel.md`.
+
+`docs/building-vms.md` covers building on OpenVMS, including the five
+platform differences found so far.
+
+## Layout
 
 - `src/proto/` — platform-agnostic WireGuard protocol core (handshake,
-  cookie mechanism, transport encryption), written from the public
+  transport encryption, BLAKE2s, key encoding), written from the public
   WireGuard whitepaper and the Noise Protocol Framework spec.
-- `src/platform/posix/` — POSIX/Linux reference harness for fast iteration
-  on the protocol core.
-- `src/platform/vms/` — OpenVMS x86-64 platform shim (VSI TCP/IP Services
-  sockets, VMS-native event loop).
-- `tools/interop/` — test harness that validates the protocol core against
-  a real `wg` peer.
+- `src/platform/` — the platform interface, and its implementation. The
+  one implementation in `posix/` serves both Linux and OpenVMS: the C
+  RTL supplied everything needed, so no separate VMS socket shim was
+  required.
+- `src/client/` — handshake and transport driven over a platform socket.
+- `tools/interop/` — interop client, test responder, and a loopback
+  self-test.
+- `tools/keys/` — `vmsguard-key`, the equivalent of `wg genkey` /
+  `wg pubkey`, since OpenVMS has no wireguard-tools.
+- `tools/probes/` — standalone probes for OpenSSL, sockets and libpcap.
 - `docs/research/` — findings on the OpenVMS x86-64 toolchain, TCP/IP
-  stack, crypto libraries, and kernel driver feasibility.
+  stack, crypto libraries, and the virtual-interface question.
 
 ## License
 

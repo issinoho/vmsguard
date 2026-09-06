@@ -1,6 +1,37 @@
 # Interop testing
 
-Two levels of testing, and the difference between them matters.
+## Result so far
+
+**OpenVMS x86-64 to Linux, over a real network, 2026-09-06.** The
+OpenVMS interop client completed a handshake with `vmsguard-responder`
+on Linux, sent a keepalive, and received an ICMP echo reply back through
+the tunnel:
+
+```
+handshake: sending initiation (3 attempts, 5000 ms each)
+  handshake complete
+  our index      : 0xefd5c75f
+  peer index     : 0xc0de0000
+
+sending keepalive
+  sent
+
+sending ICMP echo request through the tunnel
+  10.9.0.2 -> 10.9.0.1
+  echo reply received — data path works both ways
+
+PASS — handshake completed and data path verified
+```
+
+That exercises the OpenVMS socket layer end to end — `poll()`,
+non-blocking I/O, `sendto`/`recvfrom`, `getaddrinfo` — against a
+known-good peer. It does **not** establish wire compatibility with
+upstream WireGuard, because both ends are vmsguard. That remains the
+outstanding milestone, described below.
+
+## Two levels of testing
+
+The difference between them matters.
 
 | | What it proves | What it does not |
 | --- | --- | --- |
