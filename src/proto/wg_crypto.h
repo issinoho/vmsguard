@@ -33,6 +33,17 @@ void wg_hash2(uint8_t out[WG_HASH_LEN],
               const uint8_t *b, size_t blen);
 
 /* MAC(key, input) — keyed BLAKE2s with 16-byte output. */
+/*
+ * Keyed BLAKE2s-128 with an explicit key length.
+ *
+ * mac1's key is a 32-byte hash, but mac2's is the 16-byte cookie, and
+ * BLAKE2s takes any key up to 32 bytes. The length is a parameter
+ * rather than an assumption because assuming it read past the end of a
+ * cookie and produced a mac2 no peer would have accepted.
+ */
+void wg_mac_n(uint8_t out[WG_MAC_LEN], const uint8_t *key, size_t keylen,
+              const uint8_t *in, size_t inlen);
+
 void wg_mac(uint8_t out[WG_MAC_LEN], const uint8_t key[WG_KEY_LEN],
             const uint8_t *in, size_t inlen);
 
@@ -87,6 +98,31 @@ int wg_aead_encrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
 int wg_aead_decrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
                     uint64_t counter, const uint8_t *ct, size_t ctlen,
                     const uint8_t *ad, size_t adlen);
+
+/* ---- XChaCha20-Poly1305 --------------------------------------------- */
+
+/*
+ * The extended-nonce variant, used by WireGuard only for the cookie
+ * reply — whose nonce is random rather than a counter, and so needs the
+ * larger space to be safe.
+ *
+ * OpenSSL does not provide it, so the HChaCha20 subkey derivation is
+ * done in wg_crypto.c and the result handed to ChaCha20-Poly1305.
+ *
+ * Encrypt writes ptlen + WG_TAG_LEN bytes; decrypt writes
+ * ctlen - WG_TAG_LEN and returns -1 if the tag does not verify.
+ */
+#define WG_XNONCE_LEN 24
+
+int wg_xaead_encrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
+                     const uint8_t nonce[WG_XNONCE_LEN],
+                     const uint8_t *pt, size_t ptlen,
+                     const uint8_t *ad, size_t adlen);
+
+int wg_xaead_decrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
+                     const uint8_t nonce[WG_XNONCE_LEN],
+                     const uint8_t *ct, size_t ctlen,
+                     const uint8_t *ad, size_t adlen);
 
 /* ---- misc ----------------------------------------------------------- */
 

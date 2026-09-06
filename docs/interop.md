@@ -192,11 +192,12 @@ and that the preshared key matches on both sides if used. A wrong peer
 public key produces exactly this message too, because the peer cannot
 decrypt an initiation addressed to a key it does not hold.
 
-**`peer sent a cookie reply (it is under load)`** — the peer wants a
-cookie-derived `mac2` before processing handshakes. The MVP does not
-implement the cookie mechanism; `mac2` is always zero. This only happens
-on a peer under load, so it is unlikely in testing, but it is a real gap
-before production use.
+**A peer under load** answers with a cookie reply rather than a
+handshake response, demanding a `mac2` that proves we can receive at the
+address we claim. This is handled: the cookie is decrypted, remembered
+for two minutes, and attached to the retry, which does not count against
+the attempt budget — the extra round trip is the peer's doing, not a
+failure of ours. Nothing is printed unless `--verbose` is on.
 
 **Handshake succeeds, no echo reply** — key agreement and transport
 framing are working. Almost always `allowed-ips` on the peer not covering
@@ -209,7 +210,6 @@ The client is an MVP and does not yet implement:
 
 - **a replay sliding window** — only counters above the highest seen are
   accepted, so legitimately reordered packets are dropped
-- **the cookie mechanism** — `mac2` is always zero
 - **roaming** — the peer endpoint is fixed at startup
 
 None of these affect a short interop test, and all are noted in the code

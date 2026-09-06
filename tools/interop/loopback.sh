@@ -36,9 +36,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# --cookie 1: the responder answers the first initiation with a cookie
+# challenge, as a peer under load does, and then requires the mac2 it
+# asked for. This is the only place the cookie path runs over a real
+# socket — the unit tests drive the pieces, but only here does the
+# client have to notice a challenge mid-handshake and retry.
 "$BUILD/vmsguard-responder" \
     --key "$sk" --peer-key "$cp" \
-    --listen-port "$PORT" --packets 2 > "$log" 2>&1 &
+    --listen-port "$PORT" --packets 2 --cookie 1 > "$log" 2>&1 &
 rpid=$!
 
 # Give the responder a moment to bind before the client sends.
@@ -61,3 +66,19 @@ rpid=
 echo
 echo "--- responder output ---"
 cat "$log"
+
+# The client reporting success is not enough on its own: it would also
+# report success if the responder had never challenged it. Both halves
+# have to appear.
+if ! grep -q "sent a cookie challenge" "$log"; then
+    echo
+    echo "FAILED: the responder never sent a cookie challenge"
+    exit 1
+fi
+if ! grep -q "mac2 verified after the cookie challenge" "$log"; then
+    echo
+    echo "FAILED: the cookie challenge was not answered with a valid mac2"
+    exit 1
+fi
+echo
+echo "cookie challenge issued and answered with a valid mac2"

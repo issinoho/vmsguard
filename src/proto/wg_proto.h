@@ -61,6 +61,10 @@
 /* ---- cookie reply, 64 bytes ----------------------------------------- */
 
 #define WG_COOKIE_LEN           64
+#define WG_COOKIE_OFF_TYPE       0   /* 1 byte type + 3 reserved         */
+#define WG_COOKIE_OFF_RECEIVER   4   /* u32 le: our sender index         */
+#define WG_COOKIE_OFF_NONCE      8   /* 24, random                       */
+#define WG_COOKIE_OFF_COOKIE    32   /* 16 + 16 tag = 32                 */
 
 /* ---- other sizes ---------------------------------------------------- */
 

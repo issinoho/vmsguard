@@ -569,6 +569,138 @@ static void test_replay(void)
 
 /* ---- timestamp ------------------------------------------------------ */
 
+/*
+ * Cookies.
+ *
+ * The XChaCha20-Poly1305 underneath was cross-checked byte for byte
+ * against libsodium (via PyNaCl) before any of this was written, since
+ * OpenSSL has no extended-nonce variant and the HChaCha20 subkey
+ * derivation had to be written by hand. What is checked here is the
+ * protocol built on top of it.
+ */
+static void test_cookies(void)
+{
+    struct wg_local responder;
+    struct wg_cookie ck;
+    struct wg_peer peer;
+    struct wg_handshake hs;
+    struct wg_local initiator;
+    uint8_t rpriv[WG_KEY_LEN], ipriv[WG_KEY_LEN];
+    uint8_t secret[WG_KEY_LEN];
+    uint8_t rcookie_key[WG_KEY_LEN];
+    uint8_t init_msg[WG_INIT_LEN], reply[WG_COOKIE_LEN];
+    const uint8_t endpoint[6] = { 192, 0, 2, 1, 0xC0, 0x00 };
+    uint8_t mac2_before[WG_MAC_LEN];
+
+    printf("\ncookies\n");
+
+    check(wg_random(rpriv, sizeof rpriv) == 0 &&
+          wg_random(ipriv, sizeof ipriv) == 0 &&
+          wg_random(secret, sizeof secret) == 0, "keys generated");
+    check(wg_local_init(&responder, rpriv) == 0 &&
+          wg_local_init(&initiator, ipriv) == 0, "identities built");
+
+    wg_peer_init(&peer, responder.static_public, NULL);
+    wg_cookie_init(&ck, responder.static_public);
+    wg_cookie_key(rcookie_key, responder.static_public);
+
+    check(wg_handshake_create_initiation(init_msg, &hs, &initiator,
+                                         &peer, 0x11223344UL) == 0,
+          "an initiation is built");
+
+    /* Before any challenge, mac2 must be zero — not absent, zero. */
+    memset(mac2_before, 0, sizeof mac2_before);
+    check(memcmp(init_msg + WG_INIT_OFF_MAC2, mac2_before, WG_MAC_LEN) == 0,
+          "mac2 starts as sixteen zero bytes");
+    check(wg_cookie_apply(&ck, init_msg, WG_INIT_OFF_MAC2, 1000) == 0,
+          "and applying a cookie we do not have writes nothing");
+
+    /*
+     * A cookie reply cannot be accepted before we have sent anything:
+     * without the mac1 to authenticate it against, any packet would do.
+     */
+    check(wg_cookie_reply_create(reply, rcookie_key, secret,
+                                 endpoint, sizeof endpoint,
+                                 init_msg + WG_INIT_OFF_MAC1,
+                                 0x11223344UL) == 0,
+          "the responder builds a cookie reply");
+    check(wg_cookie_consume(&ck, reply, WG_COOKIE_LEN, 0x11223344UL, 1000)
+          == -1,
+          "which is refused while we have no sent mac1 to bind it to");
+
+    wg_cookie_sent(&ck, init_msg, WG_INIT_OFF_MAC1);
+
+    /* Addressed to a different sender index: not ours. */
+    check(wg_cookie_consume(&ck, reply, WG_COOKIE_LEN, 0x55667788UL, 1000)
+          == -1,
+          "a reply naming another sender index is refused");
+    /* Wrong length, and a corrupted ciphertext. */
+    check(wg_cookie_consume(&ck, reply, WG_COOKIE_LEN - 1, 0x11223344UL, 1000)
+          == -1, "a short reply is refused");
+    {
+        uint8_t bad[WG_COOKIE_LEN];
+        memcpy(bad, reply, WG_COOKIE_LEN);
+        bad[WG_COOKIE_OFF_COOKIE + 3] ^= 0x01;
+        check(wg_cookie_consume(&ck, bad, WG_COOKIE_LEN, 0x11223344UL, 1000)
+              == -1, "and a tampered one fails its tag");
+    }
+
+    check(wg_cookie_consume(&ck, reply, WG_COOKIE_LEN, 0x11223344UL, 1000)
+          == 0, "the genuine reply is accepted");
+
+    /* Now mac2 gets written, and it is a MAC over mac1 as well. */
+    check(wg_cookie_apply(&ck, init_msg, WG_INIT_OFF_MAC2, 1000) == 1,
+          "mac2 is now written");
+    check(memcmp(init_msg + WG_INIT_OFF_MAC2, mac2_before, WG_MAC_LEN) != 0,
+          "and is no longer zero");
+    {
+        uint8_t expect[WG_MAC_LEN];
+        uint8_t cookie_plain[WG_MAC_LEN];
+
+        /*
+         * Recomputed here from the responder's own inputs rather than
+         * from anything the cookie code produced, so the two agree only
+         * if both derived the same cookie.
+         */
+        wg_mac_n(cookie_plain, secret, WG_KEY_LEN, endpoint, sizeof endpoint);
+        wg_mac_n(expect, cookie_plain, WG_MAC_LEN, init_msg,
+                 WG_INIT_OFF_MAC2);
+        check(memcmp(init_msg + WG_INIT_OFF_MAC2, expect, WG_MAC_LEN) == 0,
+              "mac2 matches an independent computation from the secret");
+    }
+
+    /* A cookie goes stale, and a stale one must not be used. */
+    check(wg_cookie_apply(&ck, init_msg, WG_INIT_OFF_MAC2,
+                          1000 + WG_COOKIE_VALIDITY_MS) == 1,
+          "a cookie is still good at the validity limit");
+    check(wg_cookie_apply(&ck, init_msg, WG_INIT_OFF_MAC2,
+                          1000 + WG_COOKIE_VALIDITY_MS + 1) == 0,
+          "and is refused one millisecond past it");
+
+    /*
+     * The cookie is bound to the mac1 of the message it answered. A
+     * reply built for one message must not be usable against another,
+     * which is what stops a captured reply being replayed at a later
+     * handshake.
+     */
+    {
+        struct wg_cookie ck2;
+        uint8_t other[WG_INIT_LEN];
+        struct wg_handshake hs2;
+
+        wg_cookie_init(&ck2, responder.static_public);
+        check(wg_handshake_create_initiation(other, &hs2, &initiator,
+                                             &peer, 0x11223344UL) == 0,
+              "a second initiation is built");
+        wg_cookie_sent(&ck2, other, WG_INIT_OFF_MAC1);
+        check(wg_cookie_consume(&ck2, reply, WG_COOKIE_LEN, 0x11223344UL,
+                                1000) == -1,
+              "the first reply cannot be used against the second message");
+    }
+
+    wg_handshake_clear(&hs);
+}
+
 static void test_timestamp(void)
 {
     uint8_t a[WG_TIMESTAMP_LEN], b[WG_TIMESTAMP_LEN];
@@ -597,6 +729,7 @@ int main(void)
     test_psk_mismatch();
     test_keys();
     test_replay();
+    test_cookies();
     test_timestamp();
 
     printf("\n%s — %d checks, %d failure%s\n",

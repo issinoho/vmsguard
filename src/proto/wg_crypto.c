@@ -30,10 +30,16 @@ void wg_hash2(uint8_t out[WG_HASH_LEN],
     blake2s_final(&s, out);
 }
 
+void wg_mac_n(uint8_t out[WG_MAC_LEN], const uint8_t *key, size_t keylen,
+              const uint8_t *in, size_t inlen)
+{
+    blake2s(out, WG_MAC_LEN, key, keylen, in, inlen);
+}
+
 void wg_mac(uint8_t out[WG_MAC_LEN], const uint8_t key[WG_KEY_LEN],
             const uint8_t *in, size_t inlen)
 {
-    blake2s(out, WG_MAC_LEN, key, WG_KEY_LEN, in, inlen);
+    wg_mac_n(out, key, WG_KEY_LEN, in, inlen);
 }
 
 void wg_hmac(uint8_t out[WG_HASH_LEN], const uint8_t key[WG_KEY_LEN],
@@ -194,6 +200,186 @@ static void wg_nonce(uint8_t nonce[12], uint64_t counter)
     for (i = 0; i < 8; i++)
         nonce[4 + i] = (uint8_t) ((counter >> (8 * i)) & 0xFF);
 }
+
+/* ---- HChaCha20, for the extended nonce ------------------------------ */
+
+/*
+ * XChaCha20-Poly1305 is ChaCha20-Poly1305 with a 24-byte nonce: the
+ * first 16 bytes and the key are run through HChaCha20 to derive a
+ * subkey, and the remaining 8 become the last 8 bytes of an ordinary
+ * 12-byte nonce.
+ *
+ * OpenSSL has no XChaCha20 — it offers ChaCha20 and ChaCha20-Poly1305
+ * and nothing extended — so the derivation is done here and the subkey
+ * handed to the cipher OpenSSL does have.
+ *
+ * HChaCha20 cannot be built from a ChaCha20 keystream, which is why
+ * this is written out rather than borrowed: the stream cipher adds the
+ * original state back before emitting a block, and HChaCha20 is defined
+ * as the state *without* that final addition. Same rounds, different
+ * ending.
+ *
+ * WireGuard uses this only for the cookie reply, whose nonce is random
+ * and therefore too large for a counter-based one to be safe.
+ */
+static uint32_t rd32le(const uint8_t *p)
+{
+    return (uint32_t) p[0] | ((uint32_t) p[1] << 8) |
+           ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24);
+}
+
+static void wr32le(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t) (v & 0xFF);
+    p[1] = (uint8_t) ((v >> 8) & 0xFF);
+    p[2] = (uint8_t) ((v >> 16) & 0xFF);
+    p[3] = (uint8_t) ((v >> 24) & 0xFF);
+}
+
+static uint32_t rotl32(uint32_t v, int n)
+{
+    /* The mask keeps this defined when n is 0, and lets the compiler
+       recognise it as a rotate regardless. */
+    return (v << n) | (v >> ((32 - n) & 31));
+}
+
+#define QR(a, b, c, d)                                  \
+    do {                                                \
+        a += b; d ^= a; d = rotl32(d, 16);              \
+        c += d; b ^= c; b = rotl32(b, 12);              \
+        a += b; d ^= a; d = rotl32(d, 8);               \
+        c += d; b ^= c; b = rotl32(b, 7);               \
+    } while (0)
+
+static void hchacha20(uint8_t out[32], const uint8_t key[WG_KEY_LEN],
+                      const uint8_t nonce16[16])
+{
+    /* "expand 32-byte k", the ChaCha20 constant. */
+    uint32_t x[16];
+    int i;
+
+    x[0] = 0x61707865UL;
+    x[1] = 0x3320646EUL;
+    x[2] = 0x79622D32UL;
+    x[3] = 0x6B206574UL;
+    for (i = 0; i < 8; i++)
+        x[4 + i] = rd32le(key + i * 4);
+    for (i = 0; i < 4; i++)
+        x[12 + i] = rd32le(nonce16 + i * 4);
+
+    for (i = 0; i < 10; i++) {          /* 10 double rounds = 20 rounds */
+        QR(x[0], x[4], x[8],  x[12]);
+        QR(x[1], x[5], x[9],  x[13]);
+        QR(x[2], x[6], x[10], x[14]);
+        QR(x[3], x[7], x[11], x[15]);
+        QR(x[0], x[5], x[10], x[15]);
+        QR(x[1], x[6], x[11], x[12]);
+        QR(x[2], x[7], x[8],  x[13]);
+        QR(x[3], x[4], x[9],  x[14]);
+    }
+
+    /* The first and last rows only, and no addition of the input state
+       — that is the whole difference from a keystream block. */
+    for (i = 0; i < 4; i++)
+        wr32le(out + i * 4, x[i]);
+    for (i = 0; i < 4; i++)
+        wr32le(out + 16 + i * 4, x[12 + i]);
+
+    wg_zero(x, sizeof x);
+}
+
+#undef QR
+
+/*
+ * Shared body for the extended-nonce AEAD. `enc` selects direction so
+ * the subkey derivation and nonce splitting are written once.
+ */
+static int xaead(uint8_t *out, const uint8_t key[WG_KEY_LEN],
+                 const uint8_t nonce[WG_XNONCE_LEN],
+                 const uint8_t *in, size_t inlen,
+                 const uint8_t *ad, size_t adlen, int enc)
+{
+    EVP_CIPHER *ciph = NULL;
+    EVP_CIPHER_CTX *ctx = NULL;
+    uint8_t subkey[32];
+    uint8_t n12[12];
+    uint8_t tag[WG_TAG_LEN];
+    size_t bodylen;
+    int len = 0;
+    int rc = -1;
+
+    if (!enc && inlen < WG_TAG_LEN)
+        return -1;
+    bodylen = enc ? inlen : inlen - WG_TAG_LEN;
+
+    hchacha20(subkey, key, nonce);
+    memset(n12, 0, 4);                  /* the IETF construction's zeros */
+    memcpy(n12 + 4, nonce + 16, 8);
+
+    ciph = EVP_CIPHER_fetch(NULL, "ChaCha20-Poly1305", NULL);
+    if (ciph == NULL)
+        goto out;
+    ctx = EVP_CIPHER_CTX_new();
+    if (ctx == NULL)
+        goto out;
+
+    if (enc) {
+        if (EVP_EncryptInit_ex(ctx, ciph, NULL, subkey, n12) <= 0)
+            goto out;
+        if (adlen > 0 &&
+            EVP_EncryptUpdate(ctx, NULL, &len, ad, (int) adlen) <= 0)
+            goto out;
+        if (bodylen > 0 &&
+            EVP_EncryptUpdate(ctx, out, &len, in, (int) bodylen) <= 0)
+            goto out;
+        if (EVP_EncryptFinal_ex(ctx, out + bodylen, &len) <= 0)
+            goto out;
+        if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, WG_TAG_LEN,
+                                out + bodylen) <= 0)
+            goto out;
+    } else {
+        memcpy(tag, in + bodylen, WG_TAG_LEN);
+        if (EVP_DecryptInit_ex(ctx, ciph, NULL, subkey, n12) <= 0)
+            goto out;
+        if (adlen > 0 &&
+            EVP_DecryptUpdate(ctx, NULL, &len, ad, (int) adlen) <= 0)
+            goto out;
+        if (bodylen > 0 &&
+            EVP_DecryptUpdate(ctx, out, &len, in, (int) bodylen) <= 0)
+            goto out;
+        if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, WG_TAG_LEN,
+                                tag) <= 0)
+            goto out;
+        if (EVP_DecryptFinal_ex(ctx, out + bodylen, &len) <= 0)
+            goto out;
+    }
+
+    rc = 0;
+out:
+    EVP_CIPHER_CTX_free(ctx);
+    EVP_CIPHER_free(ciph);
+    wg_zero(subkey, sizeof subkey);
+    wg_zero(n12, sizeof n12);
+    return rc;
+}
+
+int wg_xaead_encrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
+                     const uint8_t nonce[WG_XNONCE_LEN],
+                     const uint8_t *pt, size_t ptlen,
+                     const uint8_t *ad, size_t adlen)
+{
+    return xaead(out, key, nonce, pt, ptlen, ad, adlen, 1);
+}
+
+int wg_xaead_decrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
+                     const uint8_t nonce[WG_XNONCE_LEN],
+                     const uint8_t *ct, size_t ctlen,
+                     const uint8_t *ad, size_t adlen)
+{
+    return xaead(out, key, nonce, ct, ctlen, ad, adlen, 0);
+}
+
+/* ---- ChaCha20-Poly1305 ---------------------------------------------- */
 
 int wg_aead_encrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
                     uint64_t counter, const uint8_t *pt, size_t ptlen,

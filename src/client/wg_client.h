@@ -76,6 +76,16 @@ struct wg_client {
     /* Our own mac1 key, for validating messages sent back to us. */
     uint8_t              self_mac1_key[WG_KEY_LEN];
 
+    /*
+     * The cookie a loaded peer last challenged us with, and the mac1 a
+     * reply would be authenticated against. Kept across handshakes: a
+     * cookie stays usable for two minutes, so a peer under sustained
+     * load is answered on the first attempt rather than costing a
+     * wasted round trip every time.
+     */
+    struct wg_cookie     cookie;
+    unsigned long        cookies_received;
+
     char                 error[160];
 };
 

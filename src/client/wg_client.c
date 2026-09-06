@@ -27,6 +27,7 @@ int wg_client_init(struct wg_client *c,
         return -1;
     }
     wg_peer_init(&c->peer, peer_public_key, psk);
+    wg_cookie_init(&c->cookie, peer_public_key);
     wg_mac1_key(c->self_mac1_key, c->local.static_public);
 
     c->endpoint = *endpoint;
@@ -110,6 +111,16 @@ static int do_handshake(struct wg_client *c, struct wg_keypair *out,
     struct wg_endpoint from;
     size_t len;
     int attempt;
+    int cookie_retries = 0;
+
+    /*
+     * A cookie challenge is an extra round trip the peer imposes, not
+     * an attempt of ours that failed, so it does not consume one — a
+     * rekey runs with attempts == 1 and would otherwise always lose to
+     * a loaded peer. Bounded so a peer that only ever sends cookies
+     * cannot hold us here.
+     */
+#define COOKIE_RETRIES_MAX 2
 
     for (attempt = 0; attempt < attempts; attempt++) {
         uint64_t deadline;
@@ -130,6 +141,15 @@ static int do_handshake(struct wg_client *c, struct wg_keypair *out,
             set_error(c, "failed to build handshake initiation");
             return -1;
         }
+
+        /*
+         * mac2 if we hold a cookie, and a note of the mac1 either way:
+         * a cookie reply to this message is authenticated with it, so
+         * it has to be recorded before the message goes out.
+         */
+        (void) wg_cookie_apply(&c->cookie, init_msg, WG_INIT_OFF_MAC2,
+                               wg_time_ms());
+        wg_cookie_sent(&c->cookie, init_msg, WG_INIT_OFF_MAC1);
 
         if (wg_socket_send(c->sock, &c->endpoint, init_msg,
                            WG_INIT_LEN) != 0) {
@@ -161,15 +181,27 @@ static int do_handshake(struct wg_client *c, struct wg_keypair *out,
                 continue;
 
             if (buf[0] == WG_MSG_COOKIE_REPLY) {
-                /* The peer is under load and wants a cookie-derived
-                   mac2 before it will process our handshake. Answering
-                   requires the cookie mechanism, which is not
-                   implemented — report it rather than retrying
-                   forever. */
-                set_error(c, "peer sent a cookie reply (it is under load); "
-                             "mac2/cookie support is not implemented");
-                wg_handshake_clear(&hs);
-                return -1;
+                /*
+                 * The peer is under load and will not do the expensive
+                 * half of a handshake until we prove we can receive at
+                 * the address we claim. Take the cookie and start the
+                 * next attempt straight away rather than waiting out
+                 * the timeout: this attempt is already refused, and the
+                 * retry will carry the mac2 it wanted.
+                 */
+                if (wg_cookie_consume(&c->cookie, buf, len,
+                                      c->local_index, wg_time_ms()) == 0) {
+                    c->cookies_received++;
+                    wg_handshake_clear(&hs);
+                    if (cookie_retries < COOKIE_RETRIES_MAX) {
+                        cookie_retries++;
+                        attempt--;      /* this one did not count */
+                    }
+                    break;
+                }
+                /* Malformed, misaddressed, or forged: ignore it and
+                   keep waiting for a real response. */
+                continue;
             }
 
             /*
@@ -200,6 +232,8 @@ static int do_handshake(struct wg_client *c, struct wg_keypair *out,
     wg_handshake_clear(&hs);
     set_error(c, "no handshake response received");
     return -1;
+
+#undef COOKIE_RETRIES_MAX
 }
 
 /* Install a freshly negotiated keypair, retiring the current one. */

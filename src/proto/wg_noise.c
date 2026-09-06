@@ -140,8 +140,12 @@ static void derive_keys(struct wg_keypair *kp, const struct wg_handshake *hs,
     wg_zero(t2, sizeof t2);
 }
 
-/* mac1 over everything preceding the mac1 field; mac2 left zero (we
-   never send a cookie-derived mac2 until challenged). */
+/*
+ * mac1 over everything preceding the mac1 field. mac2 is zeroed here
+ * and filled in afterwards by wg_cookie_apply when a cookie is held:
+ * it covers mac1 as well, so it cannot be computed until the rest of
+ * the message is final.
+ */
 static void append_macs(uint8_t *msg, size_t mac1_offset,
                         const uint8_t mac1_key[WG_KEY_LEN])
 {
@@ -162,6 +166,117 @@ int wg_mac1_verify(const uint8_t *msg, size_t msglen, size_t mac1_offset,
     ok = wg_equal(expected, msg + mac1_offset, WG_MAC_LEN);
     wg_zero(expected, sizeof expected);
     return ok;
+}
+
+/* ---- cookies -------------------------------------------------------- */
+
+void wg_cookie_key(uint8_t out[WG_KEY_LEN],
+                   const uint8_t static_public[WG_KEY_LEN])
+{
+    wg_hash2(out, (const uint8_t *) WG_LABEL_COOKIE, strlen(WG_LABEL_COOKIE),
+             static_public, WG_KEY_LEN);
+}
+
+void wg_cookie_init(struct wg_cookie *ck,
+                    const uint8_t peer_static_public[WG_KEY_LEN])
+{
+    memset(ck, 0, sizeof *ck);
+    wg_cookie_key(ck->cookie_key, peer_static_public);
+}
+
+void wg_cookie_sent(struct wg_cookie *ck, const uint8_t *msg,
+                    size_t mac1_offset)
+{
+    memcpy(ck->last_mac1, msg + mac1_offset, WG_MAC_LEN);
+    ck->have_mac1 = 1;
+}
+
+int wg_cookie_apply(const struct wg_cookie *ck, uint8_t *msg,
+                    size_t mac2_offset, uint64_t now_ms)
+{
+    if (!ck->have)
+        return 0;
+
+    /*
+     * Subtraction rather than addition, so that a clock far enough
+     * along to make received_ms + validity overflow cannot silently
+     * turn a stale cookie into a fresh one.
+     */
+    if (now_ms < ck->received_ms ||
+        now_ms - ck->received_ms > WG_COOKIE_VALIDITY_MS)
+        return 0;
+
+    /* Over everything before mac2, mac1 included. The cookie is a
+       16-byte key, not the 32-byte one the rest of the protocol uses. */
+    wg_mac_n(msg + mac2_offset, ck->cookie, WG_MAC_LEN, msg, mac2_offset);
+    return 1;
+}
+
+int wg_cookie_consume(struct wg_cookie *ck, const uint8_t *msg, size_t msglen,
+                      uint32_t our_index, uint64_t now_ms)
+{
+    uint8_t plain[WG_MAC_LEN];
+
+    if (msglen != WG_COOKIE_LEN)
+        return -1;
+    if (msg[WG_COOKIE_OFF_TYPE] != WG_MSG_COOKIE_REPLY)
+        return -1;
+    if (wg_get32(msg + WG_COOKIE_OFF_RECEIVER) != our_index)
+        return -1;
+
+    /*
+     * Without a mac1 to authenticate against there is nothing to
+     * distinguish this from a stranger's packet, so refuse rather than
+     * decrypt with something arbitrary.
+     */
+    if (!ck->have_mac1)
+        return -1;
+
+    if (wg_xaead_decrypt(plain, ck->cookie_key,
+                         msg + WG_COOKIE_OFF_NONCE,
+                         msg + WG_COOKIE_OFF_COOKIE, WG_MAC_LEN + WG_TAG_LEN,
+                         ck->last_mac1, WG_MAC_LEN) != 0)
+        return -1;
+
+    memcpy(ck->cookie, plain, WG_MAC_LEN);
+    ck->received_ms = now_ms;
+    ck->have = 1;
+    wg_zero(plain, sizeof plain);
+    return 0;
+}
+
+int wg_cookie_reply_create(uint8_t msg[WG_COOKIE_LEN],
+                           const uint8_t cookie_key[WG_KEY_LEN],
+                           const uint8_t secret[WG_KEY_LEN],
+                           const uint8_t *endpoint, size_t endpoint_len,
+                           const uint8_t msg_mac1[WG_MAC_LEN],
+                           uint32_t receiver_index)
+{
+    uint8_t cookie[WG_MAC_LEN];
+    uint8_t nonce[WG_XNONCE_LEN];
+    int rc = -1;
+
+    memset(msg, 0, WG_COOKIE_LEN);
+    msg[WG_COOKIE_OFF_TYPE] = WG_MSG_COOKIE_REPLY;
+    wg_put32(msg + WG_COOKIE_OFF_RECEIVER, receiver_index);
+
+    if (wg_random(nonce, sizeof nonce) != 0)
+        goto out;
+    memcpy(msg + WG_COOKIE_OFF_NONCE, nonce, sizeof nonce);
+
+    /* The cookie itself: a MAC over the address, under a secret only
+       the responder knows and rotates. */
+    wg_mac_n(cookie, secret, WG_KEY_LEN, endpoint, endpoint_len);
+
+    if (wg_xaead_encrypt(msg + WG_COOKIE_OFF_COOKIE, cookie_key, nonce,
+                         cookie, WG_MAC_LEN, msg_mac1, WG_MAC_LEN) != 0)
+        goto out;
+
+    rc = 0;
+out:
+    wg_zero(cookie, sizeof cookie);
+    wg_zero(nonce, sizeof nonce);
+    return rc;
 }
 
 /* ---- initiator ------------------------------------------------------ */

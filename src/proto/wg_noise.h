@@ -183,6 +183,91 @@ int wg_handshake_create_response(uint8_t msg[WG_RESP_LEN],
 int wg_mac1_verify(const uint8_t *msg, size_t msglen, size_t mac1_offset,
                    const uint8_t mac1_key[WG_KEY_LEN]);
 
+/* ---- cookies -------------------------------------------------------- */
+
+/*
+ * Under load a responder stops doing the expensive part of a handshake
+ * and instead replies with a cookie: a MAC over the initiator's address
+ * under a secret it rotates. The initiator must echo that cookie back
+ * as mac2 on its next attempt, which proves it can receive at the
+ * address it claims, and costs an attacker forging source addresses
+ * everything while costing a real peer one round trip.
+ *
+ * We are the initiator, so we never mint cookies in normal operation —
+ * we decrypt one, remember it, and attach mac2 until it goes stale.
+ * wg_cookie_reply_create exists for the responder role and for testing
+ * the exchange end to end.
+ *
+ * mac2 covers the whole message including mac1, so it can only be
+ * applied once the message is otherwise finished. That is why it is a
+ * separate step rather than a parameter to the create functions: the
+ * ordering is forced by the protocol, not by taste.
+ *
+ * A cookie older than this is not used. The responder rotates its
+ * secret every two minutes, so an older one would be rejected anyway.
+ */
+#define WG_COOKIE_VALIDITY_MS 120000UL
+
+struct wg_cookie {
+    uint8_t  cookie_key[WG_KEY_LEN];  /* HASH(LABEL_COOKIE || peer pubkey) */
+    uint8_t  cookie[WG_MAC_LEN];      /* the last one received             */
+    uint8_t  last_mac1[WG_MAC_LEN];   /* of the message we last sent       */
+    uint64_t received_ms;
+    int      have;                    /* a cookie has been received        */
+    int      have_mac1;               /* we have something to authenticate
+                                         a cookie reply against            */
+};
+
+/* peer_static_public is the *responder's* key: the cookie is encrypted
+   to it, so only someone holding its private key could have sent it. */
+void wg_cookie_init(struct wg_cookie *ck,
+                    const uint8_t peer_static_public[WG_KEY_LEN]);
+
+/*
+ * Remember the mac1 of a message just built, which is the additional
+ * data a cookie reply to it will be authenticated with. Call after
+ * creating a handshake message and before sending it.
+ */
+void wg_cookie_sent(struct wg_cookie *ck, const uint8_t *msg,
+                    size_t mac1_offset);
+
+/*
+ * Write mac2 into a finished handshake message if a usable cookie is
+ * held. Returns 1 if one was written, 0 if the field was left zero —
+ * which is correct and normal when no cookie has been received or the
+ * last one has gone stale.
+ */
+int wg_cookie_apply(const struct wg_cookie *ck, uint8_t *msg,
+                    size_t mac2_offset, uint64_t now_ms);
+
+/*
+ * Consume a cookie reply. our_index is the sender index we used in the
+ * message being answered; a reply naming anything else is not ours.
+ * Returns 0 on success, -1 if it is malformed, misaddressed, or fails
+ * to decrypt — which is what an off-path forgery looks like.
+ */
+int wg_cookie_consume(struct wg_cookie *ck, const uint8_t *msg, size_t msglen,
+                      uint32_t our_index, uint64_t now_ms);
+
+/*
+ * Build a cookie reply, the responder's half. `secret` is the responder's
+ * rotating secret, `endpoint` the initiator's address and port in
+ * whatever encoding the caller uses consistently, and msg_mac1 the mac1
+ * of the message being answered.
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+int wg_cookie_reply_create(uint8_t msg[WG_COOKIE_LEN],
+                           const uint8_t cookie_key[WG_KEY_LEN],
+                           const uint8_t secret[WG_KEY_LEN],
+                           const uint8_t *endpoint, size_t endpoint_len,
+                           const uint8_t msg_mac1[WG_MAC_LEN],
+                           uint32_t receiver_index);
+
+/* Compute HASH(LABEL_COOKIE || static_public) into out. */
+void wg_cookie_key(uint8_t out[WG_KEY_LEN],
+                   const uint8_t static_public[WG_KEY_LEN]);
+
 /* Compute HASH(LABEL_MAC1 || static_public) into out. */
 void wg_mac1_key(uint8_t out[WG_KEY_LEN],
                  const uint8_t static_public[WG_KEY_LEN]);

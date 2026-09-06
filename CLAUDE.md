@@ -8,7 +8,7 @@ things.
 
 ```sh
 make            # everything, and syntax-checks the gateway
-make test       # 277 checks across six binaries
+make test       # 295 checks across six binaries
 make loopback   # end-to-end over real UDP, needs no privilege
 ```
 
@@ -131,18 +131,15 @@ information justifies it.
 
 ## Known gaps, in priority order
 
-1. **ICMP fragmentation-needed.** Providers set a tunnel MTU well below
-   1500, and large packets currently fail silently. The last thing
-   between the gateway and a commercial provider.
-3. **Cookie support.** `mac2` is always zero; a peer under load will
-   refuse us. No provider tested has demanded one.
-4. **Roaming.** The peer endpoint is fixed at startup.
-5. **ICMP unreachables.** The VMS stack answers for the tunnelled subnet
+1. **Provider config parsing.** A `.conf` has to be transcribed into six
+   command-line flags by hand.
+2. **Roaming.** The peer endpoint is fixed at startup.
+3. **ICMP unreachables.** The VMS stack answers for the tunnelled subnet
    it cannot route, while the gateway tunnels the same packets.
 
 Done: rekeying, the replay sliding window, PersistentKeepalive, the
-gateway's source filter, source NAT, ICMP fragmentation-needed, and
-NAT of fragmented datagrams.
+gateway's source filter, source NAT, ICMP fragmentation-needed, NAT of
+fragmented datagrams, and the cookie mechanism (`mac2`).
 
 ## Commits
 

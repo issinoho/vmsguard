@@ -95,6 +95,21 @@ static int make_echo_reply(uint8_t *pkt, size_t len)
     return 1;
 }
 
+/*
+ * How a cookie is bound to an address. Any stable encoding will do so
+ * long as the same one is used to mint and to verify; this is address
+ * bytes then port, big-endian. Returns the length written.
+ */
+static size_t encode_endpoint(uint8_t out[18], const struct wg_endpoint *ep)
+{
+    size_t n = (ep->family == WG_AF_INET6) ? 16u : 4u;
+
+    memcpy(out, ep->addr, n);
+    out[n++] = (uint8_t) (ep->port >> 8);
+    out[n++] = (uint8_t) (ep->port & 0xFF);
+    return n;
+}
+
 static void usage(const char *argv0)
 {
     fprintf(stderr,
@@ -103,6 +118,9 @@ static void usage(const char *argv0)
 "\n"
 "  --packets  exit after echoing this many data packets (default: run\n"
 "             until interrupted); a keepalive counts as a packet\n"
+"  --cookie   answer this many initiations with a cookie reply before\n"
+"             doing a real handshake, as a loaded peer would. Exercises\n"
+"             mac2 over a real socket, which an in-process test cannot\n"
 "  --ipv6     listen on IPv6 instead of IPv4\n", argv0);
 }
 
@@ -126,6 +144,9 @@ int main(int argc, char **argv)
     int have_key = 0, have_peer = 0;
     int established = 0;
     int packets = -1, echoed = 0;
+    int cookie_challenges = 0;
+    int challenged = 0;
+    uint8_t cookie_key[WG_KEY_LEN], cookie_secret[WG_KEY_LEN];
     uint8_t family = WG_AF_INET;
     uint16_t port = 0;
     int i;
@@ -153,6 +174,8 @@ int main(int argc, char **argv)
             port = (uint16_t) atoi(argv[++i]);
         } else if (strcmp(argv[i], "--packets") == 0 && i + 1 < argc) {
             packets = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--cookie") == 0 && i + 1 < argc) {
+            cookie_challenges = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--ipv6") == 0) {
             family = WG_AF_INET6;
         } else {
@@ -172,6 +195,11 @@ int main(int argc, char **argv)
     }
     wg_peer_init(&peer, peerkey, pskp);
     wg_mac1_key(self_mac1, local.static_public);
+    wg_cookie_key(cookie_key, local.static_public);
+    if (wg_random(cookie_secret, sizeof cookie_secret) != 0) {
+        fprintf(stderr, "no randomness for the cookie secret\n");
+        return 1;
+    }
 
     if (wg_socket_open(&sock, port, family) != 0) {
         fprintf(stderr, "cannot bind UDP port %u\n", (unsigned) port);
@@ -218,6 +246,60 @@ int main(int argc, char **argv)
                 printf("  initiation from an unknown peer, ignored\n");
                 continue;
             }
+
+            /*
+             * Pretend to be under load: refuse the expensive half and
+             * demand a cookie first. A real responder decides this from
+             * its own queue depth; here it is a count, so the client's
+             * retry path can be driven deterministically.
+             */
+            if (cookie_challenges > 0) {
+                uint8_t reply[WG_COOKIE_LEN];
+                uint8_t ep[18];
+                size_t eplen = encode_endpoint(ep, &from);
+
+                if (wg_cookie_reply_create(reply, cookie_key, cookie_secret,
+                                           ep, eplen,
+                                           buf + WG_INIT_OFF_MAC1,
+                                           wg_get32(buf + WG_INIT_OFF_SENDER))
+                    == 0 &&
+                    wg_socket_send(sock, &from, reply, WG_COOKIE_LEN) == 0) {
+                    cookie_challenges--;
+                    challenged = 1;
+                    wg_endpoint_format(epbuf, sizeof epbuf, &from);
+                    printf("  under load: sent a cookie challenge to %s"
+                           " (%d more to send)\n", epbuf, cookie_challenges);
+                    fflush(stdout);
+                } else {
+                    printf("  failed to build a cookie reply\n");
+                }
+                continue;
+            }
+
+            /*
+             * Having challenged, insist on the answer — as a real
+             * loaded peer does. The cookie is rederived here from the
+             * secret and the address, so a matching mac2 means the
+             * client independently arrived at the same value from the
+             * encrypted reply. That is the whole mechanism, checked
+             * over a real socket rather than in process.
+             */
+            if (challenged) {
+                uint8_t ep[18], cookie[WG_MAC_LEN], expect[WG_MAC_LEN];
+                size_t eplen = encode_endpoint(ep, &from);
+
+                wg_mac_n(cookie, cookie_secret, WG_KEY_LEN, ep, eplen);
+                wg_mac_n(expect, cookie, WG_MAC_LEN, buf, WG_INIT_OFF_MAC2);
+                if (!wg_equal(expect, buf + WG_INIT_OFF_MAC2, WG_MAC_LEN)) {
+                    printf("  mac2 wrong after a cookie challenge,"
+                           " refusing\n");
+                    fflush(stdout);
+                    continue;
+                }
+                printf("  mac2 verified after the cookie challenge\n");
+                fflush(stdout);
+            }
+
 
             if (wg_handshake_create_response(resp, &hs, &local, &peer,
                                              index++, &kp) != 0) {

@@ -89,9 +89,6 @@ never ours, so there is no plaintext original to suppress.
 
 ### Remaining gaps
 
-- **No cookie support.** `mac2` is always zero, so a peer under load will
-  refuse us. Detected and reported rather than retried forever. No
-  provider tested so far has demanded one.
 - **Fragmented traffic does not pass.** NAT refuses non-first fragments,
   which carry no port to demultiplex on, so a fragmented datagram never
   reassembles at the far end. Affects fragmented UDP and ICMP; TCP is
