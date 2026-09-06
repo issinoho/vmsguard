@@ -1,24 +1,30 @@
 # vmsguard
 
-A port of the WireGuard® protocol to OpenVMS x86-64.
+WireGuard® for OpenVMS x86-64.
 
-WireGuard depends on a kernel-level virtual network interface (a TUN/TAP
-equivalent) that OpenVMS has no publicly documented facility for. This
-project treats that as an open feasibility question rather than a blocker:
-the near-term goal is a **client** that speaks wire-compatible WireGuard
-(Noise_IKpsk2 handshake + transport data encryption) against a real
-WireGuard peer, implemented in portable C on top of OpenSSL 3. Transparent
-OS-level tunneling (a real virtual NIC integrated with OpenVMS routing) is a
-separate, later track — see `docs/research/driver-feasibility.md`.
+A clean-room implementation of the WireGuard protocol in portable C,
+running on OpenVMS and interoperating with the reference implementation.
+
+---
 
 ## Status
 
-**vmsguard interoperates with upstream WireGuard, from OpenVMS x86-64.**
+Working and verified against the Linux kernel WireGuard module, on
+OpenVMS V9.2-3 x86-64 (VSI C V7.7-003, VSI TCP/IP Services V6.0-30,
+OpenSSL 3.0.21).
 
-On 2026-09-06, running on OpenVMS V9.2-3 (VSI C V7.7-003, OpenSSL
-3.0.21), vmsguard completed a Noise_IKpsk2 handshake with the Linux
-kernel WireGuard module over a real network, sent encrypted transport
-data, and received an ICMP echo reply back through the tunnel.
+| | |
+| --- | --- |
+| Protocol core | 92 self-tests pass natively on OpenVMS |
+| Handshake and transport | Wire-compatible with upstream WireGuard |
+| Rekeying | Verified against real WireGuard |
+| Gateway | Forwards a subnet through the tunnel, end to end |
+| Key tooling | `genkey`/`pubkey` agree with `wg(8)` on 100/100 keys |
+
+### Endpoint
+
+vmsguard on OpenVMS completes a Noise_IKpsk2 handshake with the kernel
+WireGuard module and exchanges encrypted transport data:
 
 ```
 handshake: sending initiation (3 attempts, 5000 ms each)
@@ -29,62 +35,240 @@ handshake: sending initiation (3 attempts, 5000 ms each)
 sending ICMP echo request through the tunnel
   10.9.0.2 -> 10.9.0.1
   echo reply received — data path works both ways
-
-PASS — handshake completed and data path verified
 ```
 
-Confirmed from the peer's side: the `wg` interface counted decrypted
-inbound packets, and the peer index above is a random value chosen by
-the kernel module, not by any part of vmsguard.
+The peer index is a random value chosen by the kernel module, and the
+peer's own interface counters recorded the decrypted packets — evidence
+from the far side, not from our own tool.
 
-The protocol core also passes all 92 self-tests natively on OpenVMS.
+### Gateway
 
-### Forwarding for a subnet
+vmsguard also forwards traffic for *other* hosts through the tunnel. A
+LAN host pinging a WireGuard peer through OpenVMS:
 
-vmsguard also works as a **gateway**, forwarding traffic for other hosts
-through the tunnel. Confirmed end to end: a LAN host pinging through
-OpenVMS to a WireGuard peer and getting replies, 3/3 with no loss.
+```
+out 10.50.0.50 -> 10.9.0.1  proto 1  84 bytes
+in  10.9.0.1 -> 10.50.0.50  proto 1  84 bytes
+```
 
-Capture is done with libpcap and injection with a raw socket and
-`IP_HDRINCL`. See `docs/gateway.md`.
+```
+3 packets transmitted, 3 received, 0% packet loss
+```
 
-There is no transparent path for traffic *originating* on the OpenVMS
-box itself, because that would need a TUN device to claim outbound
-packets and OpenVMS has nothing that can. SLIP and PPP over a
-pseudo-terminal were both investigated and ruled out — see
-`docs/research/slip-tunnel.md`.
+Capture is libpcap; injection is a raw socket with `IP_HDRINCL`. See
+[`docs/gateway.md`](docs/gateway.md).
+
+### What it deliberately does not do
+
+There is **no transparent tunnel for traffic originating on the OpenVMS
+box itself**. That needs a TUN device to claim outbound packets before
+the stack sends them, and OpenVMS has nothing that can. SLIP and PPP
+over a pseudo-terminal were both investigated in depth and ruled out;
+[`docs/research/slip-tunnel.md`](docs/research/slip-tunnel.md) records
+why, so nobody repeats the work.
+
+The gateway shape sidesteps the problem entirely: forwarded traffic was
+never ours, so there is no plaintext original to suppress.
 
 ### Remaining gaps
 
-Rekeying is implemented and verified against real WireGuard. Still
-outstanding: no replay sliding window, no cookie support, no roaming.
-Each is noted in the code where it matters, and listed in
-`docs/interop.md`.
+- **No replay sliding window.** Only counters above the highest seen are
+  accepted, so reordered packets are dropped. Stricter than the spec, so
+  it fails safe, but real networks reorder.
+- **No cookie support.** `mac2` is always zero, so a peer under load will
+  refuse us. Detected and reported rather than retried forever.
+- **No roaming.** The peer endpoint is fixed at startup.
+
+---
+
+## Building
+
+### Linux
+
+```sh
+make          # protocol core, tools, tests
+make test     # 155 checks across four binaries
+make loopback # end-to-end self-test over real UDP
+```
+
+Needs OpenSSL headers. Builds with `-std=c99 -pedantic -Wall -Wextra`
+deliberately: VSI C is the ceiling, so violations should surface here.
+
+### OpenVMS
+
+```
+$ git clone https://github.com/issinoho/vmsguard
+$ set default [.vmsguard]
+$ @build_vms TEST
+```
+
+`build_vms.com` uses only `CC` and `LINK`. There is also a `descrip.mms`
+for MMS, checked against the manual but less exercised. Full detail in
+[`docs/building-vms.md`](docs/building-vms.md).
+
+---
+
+## Architecture
+
+```
+  tools/       vmsguard-key   vmsguard-interop   vmsguard-gateway
+                     |               |                  |
+  src/client/        |          wg_client  ──────────────┤
+                     |               |                  |
+  src/proto/    wg_key      wg_noise, wg_crypto, blake2s │
+                                     |                  |
+  src/platform/            wg_platform (sockets, clock)  │
+                                                         |
+  src/tun/                        ethip, rawinject, slip, hdlc
+```
+
+**`src/proto/`** is the protocol: Noise_IKpsk2, transport encryption,
+BLAKE2s, key encoding. No allocation, no I/O, no platform dependencies —
+which is why it compiled and passed on OpenVMS unchanged.
+
+**`src/platform/`** is the entire surface an unfamiliar platform has to
+provide: a UDP socket, a clock, name resolution. It exposes no POSIX
+types — no `sockaddr`, no fd, no `timeval` — so a `$QIO`-based
+implementation would have been equally possible. In the event none was
+needed.
+
+**`src/tun/`** holds packet plumbing: Ethernet/IPv4 inspection, raw
+injection, and SLIP and HDLC framing left over from the virtual-interface
+investigation.
+
+### Two decisions that paid off
+
+**BLAKE2s is implemented here rather than taken from OpenSSL.** WireGuard
+needs it keyed with a 16-byte output for `mac1`, which OpenSSL exposes
+only through `EVP_MAC`/`BLAKE2SMAC`, and there was no evidence the VMS
+build included it. 150 lines from RFC 7693 removed the risk entirely —
+and it was the one piece of crypto that worked first time on an
+unfamiliar compiler.
+
+**Wire formats use explicit offsets and `memcpy`, never packed structs.**
+Struct packing is compiler-specific. Byte order is explicit everywhere,
+so nothing depends on the host being little-endian.
+
+---
+
+## OpenVMS notes
+
+The expensive part of this port was not the protocol. It was the
+platform. Recorded here because rediscovering it is slow.
+
+### Compiler and linker
+
+| Setting | Why |
+| --- | --- |
+| `/DEFINE=(_SOCKADDR_LEN)` | Selects BSD 4.4 sockets. Without it there is no `sockaddr_in6` or `sockaddr_storage`. |
+| `/PREFIX_LIBRARY_ENTRIES=ALL_ENTRIES` | Without it only ANSI names get the `DECC$` prefix the C RTL exports, so `socket`, `close`, `poll`, `getaddrinfo` all fail to link. |
+| `/POINTER_SIZE=32` | Must match the OpenSSL image. `SSL3$LIBCRYPTO_SHR32` is 32-bit, `..._SHR` is 64-bit. |
+| `/STANDARD=C99` | VSI C V7.7 is GEM-based, not Clang. C99 is the ceiling. |
+
+No socket library is needed on the `LINK` line; `TCPIP$IPC_SHR` is picked
+up automatically. OpenSSL needs an options file naming an explicit path —
+a bare logical name makes the linker search the current directory.
+
+### Traps
+
+**Undefined symbols are link *warnings*, not errors.** VMS produces a
+working image that crashes when execution reaches the unresolved
+reference. One `in6addr_any` reference cost a debugging session that
+looked like a wild pointer. Always check the link output.
+
+**DCL lowercases unquoted arguments** to a foreign command. Base64 keys
+must be quoted — they are case-sensitive and contain `/`, which DCL reads
+as a qualifier. Device names too: `IE0` arrives as `ie0` and pcap is
+case-sensitive.
+
+**A declaration proves nothing.** Three times a facility was present in
+the headers and absent in practice:
+
+- SLIP's controller is listed by `LIST COMMUNICATION_CONTROLLER`, but
+  there is no driver. `SET INTERFACE SL0` returns `SS$_NORMAL` and
+  creates nothing.
+- `pcap_sendpacket` is declared and non-functional — "socket is not
+  connected". Capture works; injection does not.
+- PPP has a driver and creates a real interface, but demands
+  `/MODEM` and `/DIALUP`, which a `PTD$` pseudo-terminal cannot be given.
+
+Probe before building. `tools/probes/` exists for this.
+
+### Platform differences found
+
+Four of these five were latent bugs in code that worked on Linux:
+
+| | |
+| --- | --- |
+| `gettimeofday` | Absent on OpenVMS. Use `$GETTIM` — 100ns units since 17-NOV-1858. |
+| `in6addr_any` | Not exported. A zeroed `sockaddr` already holds the wildcard address. |
+| Dual-stack sockets | Linux accepts an `AF_INET` destination on an `AF_INET6` socket; OpenVMS refuses, and is the stricter reading. Open in the peer's family. |
+| `IP_HDRINCL` | BSD-derived stacks want `ip_len`/`ip_off` in **host** byte order. Network order fails with `ENOBUFS` — the stack reads `0x0031` as `0x3100`. |
+| `<pcap.h>` | Uses `struct timeval` without defining it, and its symbols need `#pragma names as_is` against VSI C's default upcasing. |
+
+### What the C RTL provided
+
+More than expected. `socket`, `bind`, `sendto`, `recvfrom`, `poll`,
+`fcntl`, `ioctl`, `getaddrinfo`, `inet_ntop` all resolved. **No
+VMS-specific socket implementation was needed** — one platform file
+serves Linux and OpenVMS, with a single `#ifdef __VMS` for the clock.
+
+Also confirmed available: `SOCK_RAW` with SYSPRV, `IP_HDRINCL`,
+`SIOCADDRT`/`SIOCDELRT` for programmatic routing, and the full interface
+ioctls. Absent: TUN/TAP, BSD routing sockets, any packet-filter facility
+that can drop by rule.
+
+---
+
+## Testing
+
+```sh
+make test       # 155 checks: protocol, SLIP framing, HDLC framing, IP inspection
+make loopback   # handshake, keepalive and ICMP round trip over real UDP
+```
+
+Against real WireGuard — the test that actually establishes wire
+compatibility, since everything else has vmsguard's own code on both
+ends:
+
+```sh
+sudo sh tools/interop/setup_wg_peer.sh up '<vmsguard-public-key>'
+```
+
+See [`docs/interop.md`](docs/interop.md). Two tests earned their keep by
+watching *both* ends: a rekey soak that showed the responder logging six
+handshakes while the client reported none (sender indices were being
+reused), and a gateway run showing `out` without `in` while the peer
+reported no drops (a zero timeout that never read the socket). Neither
+would have surfaced from one side alone.
+
+---
 
 ## Layout
 
-- `src/proto/` — platform-agnostic WireGuard protocol core (handshake,
-  transport encryption, BLAKE2s, key encoding), written from the public
-  WireGuard whitepaper and the Noise Protocol Framework spec.
-- `src/platform/` — the platform interface, and its implementation. The
-  one implementation in `posix/` serves both Linux and OpenVMS: the C
-  RTL supplied everything needed, so no separate VMS socket shim was
-  required.
-- `src/client/` — handshake and transport driven over a platform socket.
-- `tools/interop/` — interop client, test responder, and a loopback
-  self-test.
-- `tools/keys/` — `vmsguard-key`, the equivalent of `wg genkey` /
-  `wg pubkey`, since OpenVMS has no wireguard-tools.
-- `tools/probes/` — standalone probes for OpenSSL, sockets and libpcap.
-- `docs/research/` — findings on the OpenVMS x86-64 toolchain, TCP/IP
-  stack, crypto libraries, and the virtual-interface question.
+```
+src/proto/      protocol core — Noise, transport, BLAKE2s, keys
+src/platform/   the platform interface, and its POSIX/VMS implementation
+src/client/     handshake and transport over a platform socket
+src/tun/        packet plumbing — Ethernet/IPv4, raw injection, SLIP, HDLC
+tools/keys/     vmsguard-key: genkey, pubkey, genpsk
+tools/interop/  interop client, test responder, loopback and peer setup
+tools/gateway/  the subnet gateway
+tools/probes/   OpenSSL, sockets, pcap and injection probes
+tools/spike/    the pseudo-terminal spike from the TUN investigation
+tests/          155 checks
+docs/           building, interop, gateway
+docs/research/  toolchain, TCP/IP stack, crypto, virtual-interface findings
+```
+
+---
 
 ## License
 
-MIT (or BSD-2-Clause) — see `LICENSE`. The protocol implementation is
-written clean-room from public specifications, not derived from the
-GPLv2-licensed Linux kernel WireGuard module, so this project is not bound
-to GPLv2.
+MIT — see [`LICENSE`](LICENSE). The protocol is written clean-room from
+the public WireGuard whitepaper and the Noise Protocol Framework
+specification, not derived from the GPLv2 Linux kernel module, so this
+project is not bound to GPLv2.
 
-WireGuard is a registered trademark of Jason A. Donenfeld. This project is
-not affiliated with or endorsed by the WireGuard project.
+WireGuard is a registered trademark of Jason A. Donenfeld. This project
+is not affiliated with or endorsed by the WireGuard project.
