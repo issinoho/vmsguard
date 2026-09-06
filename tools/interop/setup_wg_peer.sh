@@ -15,14 +15,27 @@
 #
 # Everything it creates is confined to the interface named below and the
 # key files in STATE_DIR, and "down" removes both.
+#
+# STATE_DIR must live under /etc/wireguard. Ubuntu ships an AppArmor
+# profile for /usr/bin/wg (/etc/apparmor.d/wg) whose only file rule is:
+#
+#     file rw @{etc_rw}/wireguard/{,**},
+#
+# so wg cannot open a key file anywhere else — including /tmp, and
+# including when run as root, since AppArmor denies by path rather than
+# by uid. Putting keys elsewhere fails with a bare "fopen: Permission
+# denied" that looks nothing like a confinement error.
 
 set -e
+
+# Keys must not be world-readable; wg warns about it otherwise.
+umask 077
 
 IFACE=${IFACE:-wg-vmsguard}
 PORT=${PORT:-51820}
 PEER_ADDR=${PEER_ADDR:-10.9.0.1}
 VMSGUARD_ADDR=${VMSGUARD_ADDR:-10.9.0.2}
-STATE_DIR=${STATE_DIR:-/tmp/vmsguard-wg}
+STATE_DIR=${STATE_DIR:-/etc/wireguard/vmsguard}
 
 usage() {
     cat >&2 <<EOF
@@ -55,6 +68,12 @@ up)
 
     mkdir -p "$STATE_DIR"
     chmod 700 "$STATE_DIR"
+
+    case "$STATE_DIR" in
+    /etc/wireguard/*) ;;
+    *)  echo "warning: STATE_DIR is outside /etc/wireguard; the AppArmor" >&2
+        echo "         profile for wg will deny access to keys there." >&2 ;;
+    esac
 
     if [ ! -f "$STATE_DIR/server.key" ]; then
         wg genkey > "$STATE_DIR/server.key"
@@ -103,8 +122,13 @@ down)
     need_root
     ip link del dev "$IFACE" 2>/dev/null && echo "removed $IFACE" \
         || echo "$IFACE was not present"
-    rm -rf "$STATE_DIR"
-    echo "removed $STATE_DIR"
+
+    # Remove only the files this script created, then the directory if
+    # it is empty. A recursive delete would be a poor idea pointed at
+    # /etc/wireguard if STATE_DIR were ever overridden.
+    rm -f "$STATE_DIR/server.key" "$STATE_DIR/server.pub"
+    rmdir "$STATE_DIR" 2>/dev/null && echo "removed $STATE_DIR" \
+        || echo "left $STATE_DIR in place (not empty)"
     ;;
 
 status)

@@ -86,6 +86,14 @@ to run against it. To remove everything afterwards:
 sudo sh tools/interop/setup_wg_peer.sh down
 ```
 
+**Keys must live under `/etc/wireguard`.** Ubuntu ships an AppArmor
+profile for `/usr/bin/wg` whose only file rule is
+`file rw @{etc_rw}/wireguard/{,**}`, so `wg` cannot open a key file
+anywhere else. AppArmor denies by path rather than uid, so this fails
+even as root, and the symptom is a bare `fopen: Permission denied` that
+looks nothing like a confinement problem. The script keeps its keys in
+`/etc/wireguard/vmsguard/` for that reason.
+
 Doing it by hand is four commands; `10.9.0.0/24` is the tunnel subnet,
 the peer takes `.1` and vmsguard `.2`:
 
