@@ -183,6 +183,53 @@ An oversized packet *without* DF is dropped and counted. Fragmenting it
 ourselves would be the fuller answer, but almost everything that matters
 — TCP doing path-MTU discovery — sets DF.
 
+### Confirmed working (2026-09-06)
+
+From a LAN client, deliberately oversized with DF set:
+
+```
+$ ping -s 1400 -M do -c2 1.1.1.1
+From 192.168.0.80 icmp_seq=1 Frag needed and DF set (mtu = 1390)
+ping: local error: message too long, mtu=1390
+
+$ ip route get 1.1.1.1
+1.1.1.1 via 192.168.0.80 dev enp0s25 src 192.168.0.218
+    cache expires 531sec mtu 1390
+```
+
+The gateway logged `big 1428 bytes from 192.168.0.218, told to use
+1390`, and the Linux kernel then received the error, validated it,
+cached the path MTU and began refusing oversized packets itself.
+
+That is independent confirmation the message is well formed: the
+checksums, the quoted original and the next-hop MTU at the RFC 1191
+offset all had to be right for the kernel to act on it. The unit tests
+check construction against our own reading of the RFCs; the client
+parsing it is a second opinion.
+
+### Fragmented traffic does not pass
+
+The same test *without* `-M do` gets no replies at all:
+
+```
+$ ping -s 1400 -c2 1.1.1.1
+2 packets transmitted, 0 received, 100% packet loss
+```
+
+The sender fragments to fit, and NAT refuses non-first fragments because
+they carry no transport header to read a port from. The first fragment
+is translated and forwarded; the rest are dropped, so the far end never
+reassembles.
+
+This is a real limitation rather than a bug — the refusal is deliberate,
+and forwarding those fragments untranslated would leak the client's
+address. Handling them properly means tracking the IP identification
+field of a fragmented flow and applying the same translation to its
+later fragments, which is what a full NAT implementation does.
+
+In practice it affects fragmented UDP and ICMP. TCP is unaffected, since
+it sets DF and adapts to the ICMP above rather than fragmenting.
+
 Note also that OpenVMS offers **no per-socket DF control** — there is no
 `IP_MTU_DISCOVER` or `IP_DONTFRAG` (see
 [`research/tcpip-stack.md`](research/tcpip-stack.md)), so the outer

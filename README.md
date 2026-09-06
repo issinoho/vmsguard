@@ -92,9 +92,11 @@ never ours, so there is no plaintext original to suppress.
 - **No cookie support.** `mac2` is always zero, so a peer under load will
   refuse us. Detected and reported rather than retried forever. No
   provider tested so far has demanded one.
-- **No fragmentation** of oversized packets that permit it. Those with
-  DF set — which is almost everything that matters — are answered with
-  ICMP fragmentation-needed instead; the rest are dropped and counted.
+- **Fragmented traffic does not pass.** NAT refuses non-first fragments,
+  which carry no port to demultiplex on, so a fragmented datagram never
+  reassembles at the far end. Affects fragmented UDP and ICMP; TCP is
+  unaffected because it sets DF and adapts to the ICMP
+  fragmentation-needed instead.
 - **No provider config file parsing.** Everything is command-line
   arguments. See [`docs/vpn-provider.md`](docs/vpn-provider.md).
 - **No roaming.** The peer endpoint is fixed at startup.
