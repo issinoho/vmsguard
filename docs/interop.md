@@ -255,3 +255,25 @@ To exercise it without waiting two minutes, `vmsguard-interop` takes
 
 It fails if no rekey happens or if any send fails, so it is a genuine
 check rather than a demonstration.
+
+### Confirmed on OpenVMS against real WireGuard (2026-09-06)
+
+```
+running for 12 seconds, rekeying every 2000 ms
+  rekeyed (1) at 2 s, new index 0xf04e076a
+  rekeyed (2) at 5 s, new index 0xf04e076c
+  rekeyed (3) at 8 s, new index 0xf04e076d
+  rekeyed (4) at 11 s, new index 0xf04e076e
+
+  12 keepalives sent, 0 failed, 4 rekeys
+```
+
+The far end was the Linux kernel WireGuard module, not
+`vmsguard-responder`, so this exercises rekeying against the reference
+implementation's own session handling. The peer's interface counted 22
+decrypted packets across the run, confirming it accepted traffic under
+every successive session rather than only the first.
+
+It also exercises the timer path through `$GETTIM`, which is the one
+piece of the platform layer that differs between the OpenVMS and POSIX
+builds.
