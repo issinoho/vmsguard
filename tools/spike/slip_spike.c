@@ -43,6 +43,7 @@
 #include <ssdef.h>
 #include <starlet.h>
 
+#include "hdlc.h"
 #include "slip.h"
 
 /*
@@ -192,7 +193,9 @@ int main(int argc, char **argv)
     unsigned char *iobase, *rbuf, *wbuf;
     size_t iolen, needed;
     unsigned long packets = 0, replies = 0, bytes = 0, reads = 0;
-    int quiet = 0, raw = 0;
+    struct hdlc_decoder hdec;
+    unsigned long frames = 0;
+    int quiet = 0, raw = 0, ppp = 0;
     int i;
 
     for (i = 1; i < argc; i++) {
@@ -200,6 +203,8 @@ int main(int argc, char **argv)
             quiet = 1;
         else if (strcmp(argv[i], "--raw") == 0)
             raw = 1;
+        else if (strcmp(argv[i], "--ppp") == 0)
+            ppp = 1;
     }
 
     printf("vmsguard SLIP-over-pseudoterminal spike\n\n");
@@ -264,12 +269,49 @@ int main(int argc, char **argv)
     printf("        /SERIAL_DEVICE=%s\n\n", devshort);
     printf("If accepted, generate traffic from a third session:\n\n");
     printf("  $ TCPIP PING 10.9.0.1\n\n");
+    if (ppp)
+        printf("PPP mode: use PP0 rather than SL0, and note that this\n"
+               "spike sends an LCP configure-request first.\n\n");
     if (raw)
         printf("Raw mode: dumping all bytes received, unframed.\n\n");
     printf("Waiting for data. Ctrl-Y to stop.\n\n");
     fflush(stdout);
 
     slip_decoder_init(&dec);
+    hdlc_decoder_init(&hdec);
+
+    /*
+     * In PPP mode, speak first. Configuring PP0 makes OpenVMS the
+     * dialup *provider*, which waits for a client to call in — so a
+     * spike that only listens will wait forever while the interface
+     * sits there with no address and a reference count of zero.
+     *
+     * An LCP Configure-Request is what a client opens with. If PPP is
+     * really attached to the pseudoterminal, it should answer with a
+     * Configure-Ack or its own Configure-Request.
+     */
+    if (ppp) {
+        unsigned char req[4];
+        size_t enclen;
+
+        req[0] = 0x01;      /* Configure-Request */
+        req[1] = 0x01;      /* identifier        */
+        req[2] = 0x00;      /* length, 2 bytes   */
+        req[3] = 0x04;      /* no options        */
+
+        enclen = hdlc_encode(wbuf + IOSB_LEN, WRITE_DATA_MAX,
+                             PPP_PROTO_LCP, req, sizeof req);
+        if (enclen > 0) {
+            memset(wbuf, 0, IOSB_LEN);
+            status = PTD$WRITE(pt_chan, NULL, 0, wbuf,
+                               (unsigned int) enclen, NULL, 0);
+            printf("sent LCP configure-request (%lu bytes), status %%X%08X\n\n",
+                   (unsigned long) enclen, status);
+        } else {
+            printf("failed to build the LCP configure-request\n\n");
+        }
+        fflush(stdout);
+    }
 
     for (;;) {
         unsigned int iosb;
@@ -319,6 +361,26 @@ int main(int argc, char **argv)
             fflush(stdout);
         }
 
+        /* PPP mode decodes HDLC instead of SLIP framing. */
+        if (ppp) {
+            for (k = 0; k < n; k++) {
+                if (!hdlc_decode_byte(&hdec, data[k]))
+                    continue;
+
+                frames++;
+                printf("frame %lu: protocol %04X, %lu byte payload\n",
+                       frames, (unsigned) hdec.protocol,
+                       (unsigned long) hdec.payload_len);
+                if (!quiet)
+                    hexdump(hdec.buf + hdec.payload_off, hdec.payload_len);
+                if (hdec.protocol == PPP_PROTO_IP)
+                    describe_ip(hdec.buf + hdec.payload_off,
+                                hdec.payload_len);
+                fflush(stdout);
+            }
+            continue;
+        }
+
         for (k = 0; k < n; k++) {
             if (!slip_decode_byte(&dec, data[k]))
                 continue;
@@ -351,10 +413,12 @@ int main(int argc, char **argv)
         }
     }
 
-    printf("\n%lu read%s, %lu byte%s, %lu packet%s decoded, %lu repl%s sent\n",
+    printf("\n%lu read%s, %lu byte%s, %lu SLIP packet%s, %lu HDLC frame%s,"
+           " %lu repl%s sent\n",
            reads, reads == 1 ? "" : "s",
            bytes, bytes == 1 ? "" : "s",
            packets, packets == 1 ? "" : "s",
+           frames, frames == 1 ? "" : "s",
            replies, replies == 1 ? "y" : "ies");
 
     PTD$DELETE(pt_chan);

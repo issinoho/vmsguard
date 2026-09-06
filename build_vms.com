@@ -201,14 +201,20 @@ $ link/executable=[.build]vmsguard_responder.exe -
 $!
 $ say "building slip_spike"
 $ cc 'cc_flags'/OBJECT=[.build]slip.obj [.src.tun]slip.c
+$ cc 'cc_flags'/OBJECT=[.build]hdlc.obj [.src.tun]hdlc.c
 $ cc 'cc_flags'/OBJECT=[.build]slip_spike.obj [.tools.spike]slip_spike.c
 $ link/executable=[.build]slip_spike.exe -
-      [.build]slip_spike.obj,[.build]slip.obj
+      [.build]slip_spike.obj,[.build]slip.obj,[.build]hdlc.obj
 $!
 $ say "building test_slip"
 $ cc 'cc_flags'/OBJECT=[.build]test_slip.obj [.tests]test_slip.c
 $ link/executable=[.build]test_slip.exe -
       [.build]test_slip.obj,[.build]slip.obj
+$!
+$ say "building test_hdlc"
+$ cc 'cc_flags'/OBJECT=[.build]test_hdlc.obj [.tests]test_hdlc.c
+$ link/executable=[.build]test_hdlc.exe -
+      [.build]test_hdlc.obj,[.build]hdlc.obj
 $!
 $ say "building test_proto"
 $ cc 'cc_flags'/OBJECT=[.build]test_proto.obj [.tests]test_proto.c
@@ -237,6 +243,8 @@ $     say ""
 $     say "running SLIP framing tests"
 $     say ""
 $     run [.build]test_slip
+$     say ""
+$     run [.build]test_hdlc
 $ endif
 $!
 $ exit 1
