@@ -3,15 +3,31 @@
 Three standalone programs that answer the remaining Phase 0 questions by
 testing the target system directly, rather than inferring from headers.
 
-| Probe | Answers | Blocks the MVP? |
+| Probe | Answers | Matters for |
 | --- | --- | --- |
-| `probe_openssl.c` | Does OpenSSL 3.0.21 really provide working X25519, ChaCha20-Poly1305, BLAKE2s and HKDF? | **Yes** |
-| `probe_sockets.c` | Does the non-blocking + `poll()` event loop design hold? | **Yes** |
-| `probe_pcap.c` | Does libpcap actually capture and inject? | No — Phase 2 only |
+| `probe_openssl.c` | Does OpenSSL 3.0.21 really provide working X25519, ChaCha20-Poly1305, BLAKE2s and HKDF? | Settled — the MVP works |
+| `probe_sockets.c` | Non-blocking + `poll()`, and is `SOCK_RAW` usable? | `SOCK_RAW` gates the gateway |
+| `probe_pcap.c` | Does libpcap actually capture and inject? | Gates the gateway |
 
-The first two gate the MVP. The third only informs the Phase 2 transparent
-tunnelling question, so a failure there is disappointing rather than
-blocking.
+The MVP has since been proven end to end against real WireGuard, so the
+first two are historical for the protocol. What still matters is the
+`SOCK_RAW` section of `probe_sockets` and all of `probe_pcap`: those are
+the two mechanisms the gateway design in `docs/gateway.md` rests on, and
+neither has been exercised on OpenVMS.
+
+Run them before writing gateway code. The SLIP investigation is the
+cautionary tale — framing was written and tested before anyone checked
+whether a driver existed, and none did.
+
+On OpenVMS both are built by `@build_vms`:
+
+```
+$ RUN [.build]PROBE_SOCKETS
+$ RUN [.build]PROBE_PCAP
+```
+
+Expect to need privilege: the Sockets manual says `SOCK_RAW` requires
+SYSPRV, and packet capture will likely want something similar.
 
 ## Building on Linux first
 

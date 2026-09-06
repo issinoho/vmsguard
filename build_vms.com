@@ -216,6 +216,35 @@ $ cc 'cc_flags'/OBJECT=[.build]test_hdlc.obj [.tests]test_hdlc.c
 $ link/executable=[.build]test_hdlc.exe -
       [.build]test_hdlc.obj,[.build]hdlc.obj
 $!
+$! ---- probes -------------------------------------------------------
+$!
+$! These verify the mechanisms the gateway design depends on, rather
+$! than assuming them. probe_pcap needs the pcap shareable image; the
+$! others need only what is already linked.
+$!
+$ say "building probes"
+$ cc 'cc_flags'/OBJECT=[.build]probe_openssl.obj [.tools.probes]probe_openssl.c
+$ link/executable=[.build]probe_openssl.exe -
+      [.build]probe_openssl.obj,[.build]vmsguard.opt/OPTIONS
+$!
+$ cc 'cc_flags'/OBJECT=[.build]probe_sockets.obj [.tools.probes]probe_sockets.c
+$ link/executable=[.build]probe_sockets.exe [.build]probe_sockets.obj
+$!
+$ pcap_image = ""
+$ if f$search("SYS$LIBRARY:TCPIP$LIBPCAP_SHR.EXE") .nes. "" then -
+     pcap_image = "SYS$LIBRARY:TCPIP$LIBPCAP_SHR"
+$ if pcap_image .eqs. ""
+$ then
+$     say "  (no TCPIP$LIBPCAP_SHR found; skipping probe_pcap)"
+$ else
+$     open/write popt [.build]pcap.opt
+$     write popt "''pcap_image'/SHAREABLE"
+$     close popt
+$     cc 'cc_flags'/OBJECT=[.build]probe_pcap.obj [.tools.probes]probe_pcap.c
+$     link/executable=[.build]probe_pcap.exe -
+          [.build]probe_pcap.obj,[.build]pcap.opt/OPTIONS
+$ endif
+$!
 $ say "building test_proto"
 $ cc 'cc_flags'/OBJECT=[.build]test_proto.obj [.tests]test_proto.c
 $ link/executable=[.build]test_proto.exe -
@@ -226,6 +255,10 @@ $ say "build complete, executables in [.build]"
 $ say ""
 $ say "  $ run [.build]test_proto          protocol self-tests"
 $ say "  $ run [.build]test_slip           SLIP framing self-tests"
+$ say "  $ run [.build]probe_openssl      OpenSSL primitives"
+$ say "  $ run [.build]probe_sockets       sockets, poll, SOCK_RAW"
+$ say "  $ run [.build]probe_pcap          libpcap capture and injection"
+$ say ""
 $ say "  $ spike := $sys$disk:[.build]slip_spike.exe"
 $ say "  $ spike --raw                     SLIP/PPP over-pty spike"
 $ say ""
