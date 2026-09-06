@@ -347,9 +347,19 @@ int wg_client_recv(struct wg_client *c, uint8_t *out, size_t cap,
         int remaining;
         int rc;
 
-        if (now >= deadline)
-            return WG_SOCK_TIMEOUT;
-        remaining = (int) (deadline - now);
+        /*
+         * Compute the remaining budget and always attempt a receive,
+         * rather than returning early once the deadline has passed.
+         *
+         * A zero timeout means "poll once without blocking", which is
+         * how the gateway drains this socket between pcap reads.
+         * Checking the deadline first made that case return
+         * immediately without ever touching the socket, so the gateway
+         * never read a single packet from the tunnel. The loop still
+         * terminates: a zero budget makes wg_socket_recv poll and
+         * report a timeout when nothing is waiting.
+         */
+        remaining = (now >= deadline) ? 0 : (int) (deadline - now);
 
         rc = wg_socket_recv(c->sock, &from, buf, sizeof buf, &len,
                             remaining);

@@ -350,12 +350,20 @@ int main(int argc, char **argv)
             return 1;
         }
 
+        /*
+         * Poll with a zero timeout rather than blocking, deliberately:
+         * this is the pattern the gateway uses to drain the tunnel
+         * between pcap reads, and a bug that made a zero timeout return
+         * without ever touching the socket went unnoticed because
+         * nothing else exercised it. Waiting here with a real timeout
+         * would leave that path untested.
+         */
         started = wg_time_ms();
         while (wg_time_ms() - started < (uint64_t) timeout_ms) {
             int rc = wg_client_recv(&client, reply, sizeof reply, &replylen,
-                                    timeout_ms);
+                                    0);
             if (rc == WG_SOCK_TIMEOUT)
-                break;
+                continue;   /* nothing waiting yet; keep polling */
             if (rc != WG_SOCK_OK) {
                 printf("FAILED: receive error\n");
                 break;

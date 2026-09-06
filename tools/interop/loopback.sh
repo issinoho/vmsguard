@@ -13,7 +13,9 @@
 set -e
 
 BUILD=${BUILD:-./build}
-PORT=${PORT:-51820}
+# Not 51820: that is WireGuard's conventional port and a real
+# interface on the same machine would collide with it.
+PORT=${PORT:-51899}
 
 if [ -n "$CLIENT_KEY" ] && [ -n "$SERVER_KEY" ]; then
     ck=$CLIENT_KEY
