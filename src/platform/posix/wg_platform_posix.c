@@ -302,6 +302,21 @@ int wg_local_address_for(const struct wg_endpoint *peer,
     return rc;
 }
 
+int wg_endpoint_equal(const struct wg_endpoint *a,
+                      const struct wg_endpoint *b)
+{
+    size_t n;
+
+    if (a->family != b->family || a->port != b->port)
+        return 0;
+
+    /* Comparing all 16 bytes would work only because the conversion
+       zeroes the rest; comparing what the family defines does not
+       depend on that. */
+    n = (a->family == WG_AF_INET6) ? 16u : 4u;
+    return memcmp(a->addr, b->addr, n) == 0;
+}
+
 void wg_endpoint_format(char *out, size_t cap, const struct wg_endpoint *ep)
 {
     char host[64];

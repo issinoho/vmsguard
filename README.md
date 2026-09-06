@@ -96,7 +96,6 @@ never ours, so there is no plaintext original to suppress.
   fragmentation-needed instead.
 - **No provider config file parsing.** Everything is command-line
   arguments. See [`docs/vpn-provider.md`](docs/vpn-provider.md).
-- **No roaming.** The peer endpoint is fixed at startup.
 
 ---
 

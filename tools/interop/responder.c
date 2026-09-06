@@ -121,6 +121,9 @@ static void usage(const char *argv0)
 "  --cookie   answer this many initiations with a cookie reply before\n"
 "             doing a real handshake, as a loaded peer would. Exercises\n"
 "             mac2 over a real socket, which an in-process test cannot\n"
+"  --roam-after  after this many data packets, move to a fresh port and\n"
+"             answer from there, abandoning the old socket. The client\n"
+"             must follow or the exchange stops dead\n"
 "  --ipv6     listen on IPv6 instead of IPv4\n", argv0);
 }
 
@@ -146,6 +149,8 @@ int main(int argc, char **argv)
     int packets = -1, echoed = 0;
     int cookie_challenges = 0;
     int challenged = 0;
+    int roam_after = -1;
+    int roamed = 0;
     uint8_t cookie_key[WG_KEY_LEN], cookie_secret[WG_KEY_LEN];
     uint8_t family = WG_AF_INET;
     uint16_t port = 0;
@@ -176,6 +181,8 @@ int main(int argc, char **argv)
             packets = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--cookie") == 0 && i + 1 < argc) {
             cookie_challenges = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--roam-after") == 0 && i + 1 < argc) {
+            roam_after = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--ipv6") == 0) {
             family = WG_AF_INET6;
         } else {
@@ -334,6 +341,33 @@ int main(int argc, char **argv)
                else, including a keepalive, goes back unchanged. */
             if (make_echo_reply(plain, plainlen))
                 printf("  (converted echo request to echo reply)\n");
+
+            /*
+             * Move before answering, so the reply itself comes from the
+             * new address. That is what the client authenticates and
+             * roams to; a reply from the old socket followed by a move
+             * would leave it with nothing to learn from.
+             *
+             * The old socket is closed rather than kept: if the client
+             * fails to follow, its next packet goes to a port nobody is
+             * listening on and the exchange stops dead. A test that
+             * would pass either way is no test.
+             */
+            if (roam_after >= 0 && !roamed && echoed >= roam_after) {
+                struct wg_socket *fresh = NULL;
+
+                if (wg_socket_open(&fresh, 0, family) != 0) {
+                    printf("  could not open a new socket to roam to\n");
+                } else {
+                    wg_socket_close(sock);
+                    sock = fresh;
+                    roamed = 1;
+                    printf("  roamed: now answering from port %u,"
+                           " old socket closed\n",
+                           (unsigned) wg_socket_port(sock));
+                    fflush(stdout);
+                }
+            }
 
             if (wg_transport_encrypt(out, &outlen, &kp, plain,
                                      plainlen) == 0)

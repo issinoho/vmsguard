@@ -92,6 +92,18 @@ int wg_endpoint_resolve(struct wg_endpoint *ep, const char *host,
 int wg_local_address_for(const struct wg_endpoint *peer,
                          struct wg_endpoint *out);
 
+/*
+ * Whether two endpoints denote the same address and port.
+ *
+ * Pure comparison with nothing platform-specific in it, but it lives
+ * here because struct wg_endpoint does: a $QIO implementation needs the
+ * same function and can copy it verbatim. Only the bytes the family
+ * gives meaning to are compared, so an IPv4 endpoint is not
+ * distinguished by whatever happens to sit in its unused twelve bytes.
+ */
+int wg_endpoint_equal(const struct wg_endpoint *a,
+                      const struct wg_endpoint *b);
+
 /* Format an endpoint as text, e.g. "10.0.0.1:51820". */
 void wg_endpoint_format(char *out, size_t cap, const struct wg_endpoint *ep);
 

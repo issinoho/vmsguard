@@ -284,6 +284,35 @@ assert the specific one — that a fragment is refused *as a fragment*
 rather than incidentally as a malformed header, which a return of plain
 `-1` could never distinguish.
 
+### Roaming
+
+The peer endpoint given at startup is where the first handshake goes,
+and after that the tunnel follows the peer. Any packet that
+*authenticates* — a handshake response that completed, or transport data
+that decrypted and passed the replay check — updates the endpoint to
+wherever it came from. A provider that moves a server, or a NAT that
+rebinds its port mid-session, no longer ends the session.
+
+The word that matters is *authenticates*. The endpoint is never moved by
+a packet that merely claims to be from the peer, and the update sits
+after the replay check rather than before it, so a captured packet
+replayed from somewhere else cannot drag the tunnel with it. Following
+an unauthenticated source address would let anyone able to forge one
+redirect the tunnel, which is a considerably worse failure than not
+roaming at all.
+
+The summary says so when it happened:
+
+```
+peer roamed 1 time; last seen at 64.20.211.140:1443
+```
+
+Not covered: an endpoint given as a hostname is resolved once, at
+startup. If a provider moves a server *and* stops answering at the old
+address before sending anything from the new one, there is nothing
+authenticated to learn from and the DNS name would have to be resolved
+again. No provider tested has done this.
+
 ### Using the provider's config file directly
 
 Every value above except the three that describe the local network is

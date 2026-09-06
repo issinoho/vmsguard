@@ -340,6 +340,34 @@ int main(int argc, char **argv)
     }
     printf("  sent\n");
 
+    /*
+     * Drain whatever comes back before sending anything else. The
+     * responder echoes keepalives, so there is usually one waiting, and
+     * leaving it queued would only confuse the ping loop below.
+     *
+     * It also matters for roaming: if the peer has moved, this echo is
+     * the first authenticated packet from its new address, and reading
+     * it here is what lets the ping go to the right place.
+     */
+    {
+        uint8_t drop[WG_MAX_PACKET];
+        size_t droplen;
+        uint64_t until = wg_time_ms() + 300;
+
+        while (wg_time_ms() < until) {
+            if (wg_client_recv(&client, drop, sizeof drop, &droplen, 50)
+                == WG_SOCK_OK)
+                break;
+        }
+    }
+
+    if (client.roams > 0) {
+        char epbuf[80];
+        wg_endpoint_format(epbuf, sizeof epbuf, &client.endpoint);
+        printf("  peer roamed %lu time%s; now sending to %s\n",
+               client.roams, client.roams == 1 ? "" : "s", epbuf);
+    }
+
     if (do_ping) {
         uint8_t pkt[256], reply[WG_MAX_PACKET];
         size_t pktlen, replylen;

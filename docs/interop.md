@@ -210,7 +210,6 @@ The client is an MVP and does not yet implement:
 
 - **a replay sliding window** — only counters above the highest seen are
   accepted, so legitimately reordered packets are dropped
-- **roaming** — the peer endpoint is fixed at startup
 
 None of these affect a short interop test, and all are noted in the code
 where they bite.

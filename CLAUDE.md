@@ -131,14 +131,13 @@ information justifies it.
 
 ## Known gaps, in priority order
 
-1. **Roaming.** The peer endpoint is fixed at startup.
-2. **ICMP unreachables.** The VMS stack answers for the tunnelled subnet
+1. **ICMP unreachables.** The VMS stack answers for the tunnelled subnet
    it cannot route, while the gateway tunnels the same packets.
 
 Done: rekeying, the replay sliding window, PersistentKeepalive, the
 gateway's source filter, source NAT, ICMP fragmentation-needed, NAT of
 fragmented datagrams, the cookie mechanism (`mac2`), and reading a
-provider's `.conf` directly.
+provider's `.conf` directly, and roaming.
 
 ## Commits
 

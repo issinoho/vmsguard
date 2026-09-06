@@ -30,9 +30,10 @@ cp=$(printf '%s\n' "$ck" | "$BUILD/vmsguard-key" pubkey)
 sp=$(printf '%s\n' "$sk" | "$BUILD/vmsguard-key" pubkey)
 
 log=$(mktemp)
+out=$(mktemp)
 cleanup() {
     [ -n "$rpid" ] && kill "$rpid" 2>/dev/null
-    rm -f "$log"
+    rm -f "$log" "$out"
 }
 trap cleanup EXIT
 
@@ -43,22 +44,28 @@ trap cleanup EXIT
 # client have to notice a challenge mid-handshake and retry.
 "$BUILD/vmsguard-responder" \
     --key "$sk" --peer-key "$cp" \
-    --listen-port "$PORT" --packets 2 --cookie 1 > "$log" 2>&1 &
+    --listen-port "$PORT" --packets 2 --cookie 1 --roam-after 0 > "$log" 2>&1 &
 rpid=$!
 
 # Give the responder a moment to bind before the client sends.
 sleep 1
 
+# Captured rather than piped: a pipeline reports the *last* command's
+# status, so `| tee` hid a failing client behind a succeeding tee, and
+# the wait below then blocked forever on a responder still counting
+# packets that were never going to arrive.
 if ! "$BUILD/vmsguard-interop" \
         --key "$ck" --peer-key "$sp" \
         --endpoint "127.0.0.1:$PORT" \
         --ping 10.9.0.2 10.9.0.1 \
-        --timeout 3000; then
+        --timeout 3000 > "$out" 2>&1; then
+    cat "$out"
     echo
     echo "--- responder output ---"
     cat "$log"
     exit 1
 fi
+cat "$out"
 
 wait "$rpid" 2>/dev/null || true
 rpid=
@@ -82,3 +89,21 @@ if ! grep -q "mac2 verified after the cookie challenge" "$log"; then
 fi
 echo
 echo "cookie challenge issued and answered with a valid mac2"
+
+# --roam-after 0 moves the responder to a fresh port before it answers
+# the keepalive, and closes the old socket. The ping that follows is
+# therefore delivered only if the client learned the new address from
+# that keepalive echo; had it kept aiming at the old port the packet
+# would have gone to a port nobody is listening on, and there would be
+# no echo reply above.
+if ! grep -q "roamed: now answering from port" "$log"; then
+    echo
+    echo "FAILED: the responder never roamed"
+    exit 1
+fi
+if ! grep -q "peer roamed 1 time" "$out"; then
+    echo
+    echo "FAILED: the client did not report following the peer"
+    exit 1
+fi
+echo "peer roamed mid-session and the client followed it"

@@ -112,6 +112,14 @@ struct stats {
  * has to outlive main's frame. That is why the counters and the NAT
  * table are file scope: not convenience, correctness.
  */
+/*
+ * File scope for the same reason as the counters: print_summary runs
+ * from atexit, after main has returned, so anything it reads must
+ * outlive main's frame. wg_client_close releases the socket but leaves
+ * the struct readable, which is all the summary needs.
+ */
+static struct wg_client client;
+
 static struct stats     st;
 static struct nat_table nat;
 static int              use_nat;
@@ -198,6 +206,23 @@ static void print_summary(void)
     if (st.too_big > 0)
         printf("oversized: %lu, of which %lu answered with ICMP"
                " fragmentation-needed\n", st.too_big, st.icmp_sent);
+    /*
+     * Only mentioned when it happened. A peer that never moved is the
+     * normal case and needs no line; one that did explains why the
+     * endpoint in the header is no longer where packets are going.
+     */
+    if (client.roams > 0) {
+        char epbuf[80];
+
+        wg_endpoint_format(epbuf, sizeof epbuf, &client.endpoint);
+        printf("peer roamed %lu time%s; last seen at %s\n",
+               client.roams, client.roams == 1 ? "" : "s", epbuf);
+    }
+    if (client.cookies_received > 0)
+        printf("answered %lu cookie challenge%s from a loaded peer\n",
+               client.cookies_received,
+               client.cookies_received == 1 ? "" : "s");
+
     if (use_nat) {
         printf("NAT: %lu translated, %lu restored, %d of %d mappings live,"
                " dropped %lu unsupported / %lu unmatched / %lu table-full"
@@ -394,7 +419,6 @@ static int read_key(uint8_t key[WG_KEY_LEN], const char *arg,
 
 int main(int argc, char **argv)
 {
-    struct wg_client client;
     struct wg_endpoint endpoint;
     struct raw_injector *inj = NULL;
     pcap_t *pc = NULL;

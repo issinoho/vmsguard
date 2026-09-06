@@ -86,6 +86,20 @@ struct wg_client {
     struct wg_cookie     cookie;
     unsigned long        cookies_received;
 
+    /*
+     * Roaming. A peer that moves — a new address, or a NAT rebinding
+     * its port — keeps working because the endpoint follows the source
+     * of packets from it.
+     *
+     * Only ever updated from a packet that has *authenticated*: a
+     * handshake response that completed, or transport data that
+     * decrypted. Following an unauthenticated source address would let
+     * anyone who can forge a source address redirect the tunnel, which
+     * is a far worse failure than not roaming at all.
+     */
+    unsigned long        roams;
+    int                  roaming_enabled;
+
     char                 error[160];
 };
 

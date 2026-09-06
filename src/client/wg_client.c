@@ -28,6 +28,7 @@ int wg_client_init(struct wg_client *c,
     }
     wg_peer_init(&c->peer, peer_public_key, psk);
     wg_cookie_init(&c->cookie, peer_public_key);
+    c->roaming_enabled = 1;   /* as WireGuard does; see wg_client.h */
     wg_mac1_key(c->self_mac1_key, c->local.static_public);
 
     c->endpoint = *endpoint;
@@ -102,6 +103,25 @@ int wg_client_session_expired(const struct wg_client *c)
  * caller decides what to do with the result, which is what allows a
  * failed rekey to leave the existing session intact.
  */
+/*
+ * Follow the peer to a new address.
+ *
+ * Called only from paths where the packet has already authenticated,
+ * which is the whole security argument: the endpoint moves because
+ * something arrived that only the peer could have produced, never
+ * because something arrived claiming to be from it.
+ */
+static void maybe_roam(struct wg_client *c, const struct wg_endpoint *from)
+{
+    if (!c->roaming_enabled)
+        return;
+    if (wg_endpoint_equal(&c->endpoint, from))
+        return;
+
+    c->endpoint = *from;
+    c->roams++;
+}
+
 static int do_handshake(struct wg_client *c, struct wg_keypair *out,
                         int attempts, int timeout_ms)
 {
@@ -224,6 +244,9 @@ static int do_handshake(struct wg_client *c, struct wg_keypair *out,
                                               &c->peer, out) != 0)
                 continue;   /* not for us, or corrupt: keep waiting */
 
+            /* It decrypted under keys only the peer holds, so this is
+               the peer, wherever it answered from. */
+            maybe_roam(c, &from);
             return 0;
         }
 
@@ -448,6 +471,15 @@ int wg_client_recv(struct wg_client *c, uint8_t *out, size_t cap,
         /* Sliding-window replay check, per keypair. */
         if (!wg_replay_check(&kp->replay, counter))
             continue;
+
+        /*
+         * Authenticated and not a replay, so the source is the peer.
+         * Deliberately after the replay check: a captured packet
+         * replayed from elsewhere must not be able to move the
+         * endpoint, and it is exactly the packets an attacker can
+         * resend that would otherwise do it.
+         */
+        maybe_roam(c, &from);
 
         /*
          * Receiving is also a rekey trigger, and at a slightly earlier
