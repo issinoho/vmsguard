@@ -24,6 +24,7 @@
  * See docs/gateway.md.
  */
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,6 +86,66 @@ struct stats {
     unsigned long too_big;
     unsigned long icmp_sent;
 };
+
+/*
+ * The forwarding loop runs until it is interrupted, so the summary
+ * after it used to be reachable only by an error breaking out. In
+ * practice every run ends at the keyboard, which meant every run threw
+ * its counters away — and the counters are how a run is judged.
+ *
+ * The two interrupt keys need different treatment, because they are not
+ * the same kind of event:
+ *
+ *   Ctrl-C raises SIGINT. A handler sets a flag and the loop leaves by
+ *   its own front door, so the capture and the tunnel socket are closed
+ *   in order rather than by image rundown.
+ *
+ *   Ctrl-Y on OpenVMS belongs to DCL, not to us; no handler in this
+ *   image will ever see it. What it does do is run the image down as
+ *   soon as the next DCL command is typed, and rundown calls exit
+ *   handlers — so the summary is registered with atexit() as well.
+ *   (Ctrl-Y followed by STOP skips exit handlers by design. Nothing
+ *   here can change that, and the manual is explicit about it.)
+ *
+ * atexit is therefore the route both keys share, and anything it prints
+ * has to outlive main's frame. That is why the counters and the NAT
+ * table are file scope: not convenience, correctness.
+ */
+static struct stats     st;
+static struct nat_table nat;
+static int              use_nat;
+
+static volatile sig_atomic_t stop_requested;
+
+static void on_interrupt(int sig)
+{
+    (void) sig;
+    stop_requested = 1;
+
+    /*
+     * Nothing else happens here. A handler may portably touch only a
+     * volatile sig_atomic_t, and the disposition is deliberately left
+     * reset to the default: a second Ctrl-C then terminates outright,
+     * which is the escape hatch if the loop is ever wedged.
+     */
+}
+
+static void print_summary(void)
+{
+    printf("\ncaptured %lu, tunnelled %lu, received %lu, injected %lu,"
+           " dropped %lu\n",
+           st.captured, st.tunnelled, st.received, st.injected, st.dropped);
+    if (st.too_big > 0)
+        printf("oversized: %lu, of which %lu answered with ICMP"
+               " fragmentation-needed\n", st.too_big, st.icmp_sent);
+    if (use_nat)
+        printf("NAT: %lu translated, %lu restored, %d mappings live,"
+               " dropped %lu unsupported / %lu unmatched / %lu table-full\n",
+               nat.translated, nat.restored, nat_active(&nat, wg_time_ms()),
+               nat.dropped_unsupported, nat.dropped_no_mapping,
+               nat.dropped_table_full);
+    fflush(stdout);
+}
 
 static void usage(const char *argv0)
 {
@@ -200,7 +261,6 @@ int main(int argc, char **argv)
     struct wg_client client;
     struct wg_endpoint endpoint;
     struct raw_injector *inj = NULL;
-    struct stats st;
     pcap_t *pc = NULL;
     char errbuf[PCAP_ERRBUF_SIZE];
     uint8_t privkey[WG_KEY_LEN], peerkey[WG_KEY_LEN], psk[WG_KEY_LEN];
@@ -210,9 +270,7 @@ int main(int argc, char **argv)
     int nclients = 0;
     struct client_filter excludes[MAX_CLIENTS];
     int nexcludes = 0;
-    struct nat_table nat;
     uint32_t tunnel_addr = 0, tunnel_addr_mask = 0;
-    int use_nat = 0;
     const char *endpoint_arg = NULL, *ifname = NULL, *subnet_arg = NULL;
     const char *colon;
     char host[128], b64[WG_KEY_B64_LEN], abuf[16], bbuf[16];
@@ -483,6 +541,14 @@ int main(int argc, char **argv)
     printf("forwarding. Ctrl-Y or Ctrl-C to stop.\n\n");
     fflush(stdout);
 
+    /* Armed only now, so that a failure before this point exits without
+       printing a summary of a run that never started. */
+    (void) signal(SIGINT, on_interrupt);
+#ifdef SIGTERM
+    (void) signal(SIGTERM, on_interrupt);
+#endif
+    (void) atexit(print_summary);
+
     /* ---- the loop ---- */
 
     for (;;) {
@@ -492,6 +558,9 @@ int main(int argc, char **argv)
         uint8_t natbuf[WG_MAX_PACKET];
         size_t plainlen = 0;
         int rc;
+
+        if (stop_requested)
+            break;
 
         /* Outbound: capture, filter, tunnel. */
         rc = pcap_next_ex(pc, &hdr, &frame);
@@ -668,18 +737,11 @@ after_out:
         }
     }
 
-    printf("\ncaptured %lu, tunnelled %lu, received %lu, injected %lu,"
-           " dropped %lu\n",
-           st.captured, st.tunnelled, st.received, st.injected, st.dropped);
-    if (st.too_big > 0)
-        printf("oversized: %lu, of which %lu answered with ICMP"
-               " fragmentation-needed\n", st.too_big, st.icmp_sent);
-    if (use_nat)
-        printf("NAT: %lu translated, %lu restored, %d mappings live,"
-               " dropped %lu unsupported / %lu unmatched / %lu table-full\n",
-               nat.translated, nat.restored, nat_active(&nat, wg_time_ms()),
-               nat.dropped_unsupported, nat.dropped_no_mapping,
-               nat.dropped_table_full);
+    if (stop_requested)
+        printf("\ninterrupted");
+
+    /* The summary itself is printed by print_summary, registered with
+       atexit above, so that it appears whichever way we leave. */
 
     raw_injector_close(inj);
     pcap_close(pc);

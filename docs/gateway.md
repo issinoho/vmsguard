@@ -267,6 +267,28 @@ packets and discard them.
 `--verbose` prints a line per packet in each direction, which is the
 quickest way to see which half of the path is working.
 
+### Stopping it, and the counters
+
+Both interrupt keys end the run with a summary — packets captured,
+tunnelled, received and injected, plus the oversized and NAT counters
+when those apply. They get there by different routes, because they are
+different kinds of event:
+
+- **Ctrl-C** raises `SIGINT`. A handler sets a flag, the forwarding loop
+  leaves by its own front door, and the capture and tunnel socket are
+  closed in order.
+- **Ctrl-Y** belongs to DCL, not to the image; no handler here ever sees
+  it. It runs the image down as soon as the next DCL command is typed,
+  and rundown calls exit handlers — so the summary is registered with
+  `atexit` as well, which is the route both keys share.
+
+The one gap is **Ctrl-Y followed by `STOP`**, which skips exit handlers
+by design. Use `EXIT` instead, or Ctrl-C, if the counters matter.
+
+Earlier builds printed the summary only when an error broke the loop, so
+every ordinary run threw its counters away — and the counters are how a
+run is judged.
+
 ## Full tunnels need exclusions
 
 `--tunnel-subnet 0.0.0.0/0` matches local destinations exactly as

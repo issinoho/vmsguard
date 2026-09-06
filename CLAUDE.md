@@ -7,10 +7,15 @@ things.
 ## Build and test
 
 ```sh
-make            # everything
-make test       # 233 checks across six binaries
+make            # everything, and syntax-checks the gateway
+make test       # 235 checks across six binaries
 make loopback   # end-to-end over real UDP, needs no privilege
 ```
+
+`tools/gateway/gateway.c` needs pcap and only runs on OpenVMS, so it is
+never linked here. `make gateway-check` compiles it for its diagnostics
+anyway, against the stub `<pcap.h>` in `tools/gateway/pcapstub/`, so a
+typo costs a second rather than a round trip. `all` depends on it.
 
 Always run `make test` before committing. `make loopback` too if you
 touched anything in `src/client/`, `src/platform/` or `src/proto/`.

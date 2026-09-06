@@ -44,9 +44,19 @@ TESTS   = build/test_proto build/test_slip build/test_hdlc \
 TOOLS   = build/vmsguard-interop build/vmsguard-responder \
           build/vmsguard-key
 
-.PHONY: all test loopback clean
+.PHONY: all test loopback gateway-check clean
 
-all: $(TESTS) $(TOOLS)
+all: $(TESTS) $(TOOLS) gateway-check
+
+# The gateway needs pcap and only ever runs on OpenVMS, so nothing here
+# links it — which meant it was never seen by -std=c99 -pedantic -Wall
+# -Wextra either, and a typo in it cost a round trip to a machine we
+# cannot reach. This compiles it for the diagnostics alone, against a
+# stub <pcap.h> declaring just what it uses, so no libpcap installation
+# is needed. See tools/gateway/pcapstub/pcap.h.
+gateway-check:
+	@$(CC) $(CFLAGS) -Itools/gateway/pcapstub -fsyntax-only \
+	    tools/gateway/gateway.c && echo "  gateway.c: clean"
 
 build:
 	mkdir -p build
