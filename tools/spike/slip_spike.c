@@ -192,12 +192,14 @@ int main(int argc, char **argv)
     unsigned char *iobase, *rbuf, *wbuf;
     size_t iolen, needed;
     unsigned long packets = 0, replies = 0, bytes = 0, reads = 0;
-    int quiet = 0;
+    int quiet = 0, raw = 0;
     int i;
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--quiet") == 0)
             quiet = 1;
+        else if (strcmp(argv[i], "--raw") == 0)
+            raw = 1;
     }
 
     printf("vmsguard SLIP-over-pseudoterminal spike\n\n");
@@ -262,6 +264,8 @@ int main(int argc, char **argv)
     printf("        /SERIAL_DEVICE=%s\n\n", devshort);
     printf("If accepted, generate traffic from a third session:\n\n");
     printf("  $ TCPIP PING 10.9.0.1\n\n");
+    if (raw)
+        printf("Raw mode: dumping all bytes received, unframed.\n\n");
     printf("Waiting for data. Ctrl-Y to stop.\n\n");
     fflush(stdout);
 
@@ -301,6 +305,19 @@ int main(int argc, char **argv)
         if (n == 0)
             continue;
         bytes += n;
+
+        /*
+         * Raw mode dumps everything received before any framing is
+         * applied. Needed to test protocols other than SLIP: PPP uses
+         * HDLC framing (0x7E flag, 0x7D escape), which the SLIP decoder
+         * will not recognise, so without this a working PPP attachment
+         * would look identical to no attachment at all.
+         */
+        if (raw) {
+            printf("raw %u byte%s:\n", n, n == 1 ? "" : "s");
+            hexdump(data, n);
+            fflush(stdout);
+        }
 
         for (k = 0; k < n; k++) {
             if (!slip_decode_byte(&dec, data[k]))

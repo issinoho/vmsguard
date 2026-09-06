@@ -4,9 +4,33 @@
 open.** This is the strongest lead for giving vmsguard a real network
 interface without writing a kernel driver.
 
-**Confirmed 2026-09-06**: SLIP still exists in VSI TCP/IP Services
-V6.0-30 on OpenVMS x86-64. `TCPIP SET INTERFACE SL0` was accepted as a
-command and rejected only on the device argument:
+### What actually happened
+
+`TCPIP SET INTERFACE SL0` is accepted, returns `SS$_NORMAL`, and creates
+no interface. `SHOW INTERFACE` does not list it, `SHOW INTERFACE SL0`
+reports `NODEVINTE, interface not found`, and the pseudoterminal's
+reference count stays at 0 — SLIP never even takes a channel.
+
+The reason is in the driver list. `LIST COMMUNICATION_CONTROLLER` knows
+about SLIP:
+
+```
+Controller:  SL   Internet Interface:  S
+             Description:  SLIP/CSLIP Serial Line Interface
+             Type:  SERIAL
+```
+
+but `SYS$LOADABLE_IMAGES:` contains **no SLIP driver**. The management
+command validates its arguments and then has nothing to load. Note it
+does validate: a nonexistent device is rejected with `NOSUCHDEV`, which
+is what made the earlier acceptance look like progress.
+
+`/DESTINATION` is rejected as `QUALNOTAPP`, so the missing-endpoint
+theory was wrong too.
+
+**Earlier, and superseded**: the first evidence suggested SLIP was
+present, because `TCPIP SET INTERFACE SL0` was accepted as a command and
+rejected only on the device argument:
 
 ```
 $ TCPIP SET INTERFACE SL0 /HOST=10.9.0.2 /NETWORK_MASK=255.255.255.0 -
