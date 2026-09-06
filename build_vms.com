@@ -21,14 +21,54 @@ $!---------------------------------------------------------------------
 $! Configuration — check these first
 $!---------------------------------------------------------------------
 $!
-$! Confirm the OpenSSL names on your system with:
-$!     $ show logical SSL3$*
-$!     $ directory sys$share:SSL3$*
-$!
-$! SSL3 is OpenSSL 3.0.x (the LTS branch). Switch to SSL31 for 3.1.x.
+$! SSL3 is OpenSSL 3.0.x (the LTS branch); SSL31 is 3.1.x.
 $!
 $ ssl_include = "SSL3$INCLUDE"
-$ ssl_library = "SSL3$LIBCRYPTO_SHR"
+$!
+$! The crypto shareable image is located rather than assumed. Naming it
+$! bare as "SSL3$LIBCRYPTO_SHR" makes the linker look in the current
+$! directory when no such logical name is defined, which fails with
+$! %ILINK-F-OPENIN. An explicit SYS$SHARE: path avoids that, and the
+$! exact file name varies with pointer size, so try each in turn.
+$!
+$! Confirmed present on the test system as
+$! SYS$COMMON:[SYSLIB]SSL3$LIBCRYPTO_SHR.EXE, reached via SYS$LIBRARY:.
+$! SYS$SHARE: is checked too since both normally point there, and the
+$! _SHR32 variants cover a different pointer size.
+$!
+$ ssl_library = ""
+$ ssl_candidates = "SYS$LIBRARY:SSL3$LIBCRYPTO_SHR," + -
+                   "SYS$SHARE:SSL3$LIBCRYPTO_SHR," + -
+                   "SYS$LIBRARY:SSL3$LIBCRYPTO_SHR32," + -
+                   "SYS$SHARE:SSL3$LIBCRYPTO_SHR32," + -
+                   "SYS$LIBRARY:SSL31$LIBCRYPTO_SHR," + -
+                   "SYS$LIBRARY:SSL31$LIBCRYPTO_SHR32"
+$ i = 0
+$ ssl_loop:
+$   name = f$element(i, ",", ssl_candidates)
+$   if name .eqs. "," then goto ssl_done
+$   if f$search(name + ".EXE") .nes. ""
+$   then
+$       ssl_library = name
+$       goto ssl_done
+$   endif
+$   i = i + 1
+$   goto ssl_loop
+$ ssl_done:
+$!
+$ if ssl_library .eqs. ""
+$ then
+$     say "ERROR: could not find the OpenSSL crypto shareable image."
+$     say "Tried each of:"
+$     say "  ''ssl_candidates'"
+$     say ""
+$     say "Find the real name with:"
+$     say "  $ directory sys$library:*LIBCRYPTO*"
+$     say "then set ssl_library in this procedure to its full path,"
+$     say "without the .EXE suffix."
+$     exit 2
+$ endif
+$ say "using OpenSSL image: ''ssl_library'"
 $!
 $! _SOCKADDR_LEN selects the BSD 4.4 socket structures, which is what
 $! provides sockaddr_in6 and sockaddr_storage. Section 1.4.1 of the

@@ -13,12 +13,16 @@
 ! any line, comment included, is treated as a continuation character.
 ! That is why no divider or comment here ends in a dash.
 !
-! Configuration is below. Confirm the OpenSSL names with:
-!     $ SHOW LOGICAL SSL3$*
-!     $ DIRECTORY SYS$SHARE:SSL3$*
+! Configuration is below. The crypto image must be named with an
+! explicit path: given a bare name the linker looks in the current
+! directory and fails with %ILINK-F-OPENIN. Confirm yours with:
+!     $ DIRECTORY SYS$LIBRARY:*LIBCRYPTO*
+!
+! build_vms.com locates it automatically; MMS cannot, so it is fixed
+! here to the path confirmed on the test system.
 
 SSL_INCLUDE = SSL3$INCLUDE
-SSL_LIBRARY = SSL3$LIBCRYPTO_SHR
+SSL_LIBRARY = SYS$LIBRARY:SSL3$LIBCRYPTO_SHR
 
 ! _SOCKADDR_LEN selects the BSD 4.4 socket structures, which is where
 ! sockaddr_in6 and sockaddr_storage come from (Sockets API manual,

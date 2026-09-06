@@ -1,10 +1,9 @@
 # Building on OpenVMS x86-64
 
-**Neither build file has been run on a real system.** They were written
-from the VSI TCP/IP Services Sockets API manual and the toolchain
-inventory in `docs/research/`, but everything here is a first attempt.
-Expect to adjust it. This document records what is known, what is
-guessed, and what to check first.
+First run on a real OpenVMS x86-64 system on 2026-09-06. The protocol
+core and client compiled cleanly on the first attempt; two problems
+turned up and both are fixed. The build has not yet been carried all the
+way through to a linked executable.
 
 ## Get the source onto the box
 
@@ -46,22 +45,47 @@ first draft had wrong:
 - `$(CC)`, `$(LINK)`, `$(MMS$SOURCE)`, `.FIRST` and the `@` (silent) and
   `-` (ignore) action-line prefixes are all real and used as documented.
 
-## Check these first
+## What the first real build found
 
-Both build files start with configuration that is very likely to need
-changing:
+### `SSL3$INCLUDE` works as-is
+
+The protocol core compiled including `<openssl/evp.h>` without
+complaint, so the include logical is defined and correct. No change
+needed.
+
+### The crypto image needs an explicit path
+
+Naming it bare as `SSL3$LIBCRYPTO_SHR` made the linker look in the
+current directory:
 
 ```
-$ SHOW LOGICAL SSL3$*
-$ DIRECTORY SYS$SHARE:SSL3$*
+%ILINK-F-OPENIN, error opening DISK$TOOLS:[CODE.VMSGUARD]SSL3$LIBCRYPTO_SHR.EXE;
+-RMS-E-FNF, file not found
 ```
 
-`SSL3` is OpenSSL 3.0.21, the LTS branch, and is what the build assumes.
-`SSL31` (3.1.4) is also installed if 3.0 turns out to be missing
-something. The two names the build needs are the include directory
-(`SSL3$INCLUDE`) and the crypto shareable image (`SSL3$LIBCRYPTO_SHR`) —
-there may be a `_SHR32` variant, and the correct one depends on pointer
-size.
+There is no such logical name; the file lives in
+`SYS$COMMON:[SYSLIB]`, reachable as
+`SYS$LIBRARY:SSL3$LIBCRYPTO_SHR.EXE`. `build_vms.com` now searches for
+it across `SYS$LIBRARY:` and `SYS$SHARE:`, including the `_SHR32`
+variants, and fails with a clear message naming what it tried.
+`descrip.mms` cannot search, so it is fixed to the confirmed path.
+
+### `gettimeofday` does not exist on OpenVMS
+
+```
+%CC-I-IMPLICITFUNC, In this statement, the identifier "gettimeofday"
+is implicitly declared as a function.
+```
+
+Informational rather than fatal, but an implicitly declared function
+would likely have failed at link time. `wg_time_ms` now uses `$GETTIM`
+under `#ifdef __VMS`, which returns 100-nanosecond intervals since
+17-NOV-1858 — divide by 10000 for milliseconds. It is a core system
+service, so availability is not in question.
+
+That is the only VMS-specific branch in the platform layer so far.
+Everything else — sockets, `poll()`, `bind`, `recvfrom`, `fcntl` — was
+accepted unchanged, which is a good sign for the bet described below.
 
 ## What the build does, and why
 

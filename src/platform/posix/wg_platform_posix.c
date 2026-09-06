@@ -23,7 +23,15 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <time.h>
-#include <sys/time.h>
+
+#ifdef __VMS
+/* OpenVMS has no gettimeofday: VSI C V7.7 declares it implicitly and it
+   may not resolve at link time. $GETTIM is the native equivalent and is
+   guaranteed present. See wg_time_ms below. */
+#  include <starlet.h>
+#else
+#  include <sys/time.h>
+#endif
 
 #include "wg_platform.h"
 
@@ -287,19 +295,33 @@ void wg_endpoint_format(char *out, size_t cap, const struct wg_endpoint *ep)
 uint64_t wg_time_ms(void)
 {
     /*
-     * gettimeofday rather than clock_gettime: it is the older and more
-     * widely available of the two, and millisecond resolution is ample
-     * for retry pacing. This is the POSIX implementation, so it is free
-     * to use POSIX facilities — the OpenVMS implementation will use
-     * $GETTIM, which offers finer resolution than either.
-     *
-     * Note this is wall-clock time and so can step. Only differences
-     * over short intervals are used, where that does not matter.
+     * Wall-clock time in milliseconds. Only differences over short
+     * intervals are used, so the clock stepping does not matter.
      */
+#ifdef __VMS
+    /*
+     * $GETTIM returns a quadword counting 100-nanosecond intervals
+     * since 17-NOV-1858, so dividing by 10000 gives milliseconds.
+     *
+     * This replaces gettimeofday, which VSI C only declares implicitly
+     * (%CC-I-IMPLICITFUNC) and which may not resolve at link time.
+     * $GETTIM is a core system service and is always available.
+     *
+     * The cast through void * avoids a prototype mismatch: starlet.h
+     * declares the argument as a struct _generic_64 *.
+     */
+    unsigned long long now = 0;
+
+    if (!(sys$gettim((void *) &now) & 1))    /* odd status is success */
+        return (uint64_t) time(NULL) * 1000;
+
+    return (uint64_t) (now / 10000ULL);
+#else
     struct timeval tv;
 
     if (gettimeofday(&tv, NULL) != 0)
         return (uint64_t) time(NULL) * 1000;
 
     return (uint64_t) tv.tv_sec * 1000 + (uint64_t) (tv.tv_usec / 1000);
+#endif
 }
