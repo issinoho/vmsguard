@@ -98,6 +98,25 @@ capture is layer 2 because pcap is what exists, injection is layer 3
 because raw sockets are cleaner. The remaining question is whether
 `SOCK_RAW` and `IP_HDRINCL` work, which `probe_sockets` answers.
 
+### Outbound path: confirmed working end to end (2026-09-06)
+
+With the gateway running on OpenVMS and a LAN host routing
+`10.99.0.0/24` via it, three pings produced three tunnelled packets:
+
+```
+out 192.168.0.131 -> 10.99.0.1  proto 1  84 bytes
+out 192.168.0.131 -> 10.99.0.1  proto 1  84 bytes
+out 192.168.0.131 -> 10.99.0.1  proto 1  84 bytes
+```
+
+pcap captured the frames, `ethip` accepted them as IPv4 for the tunnel
+subnet, and the protocol core encrypted and sent them to the peer. The
+capture half of the gateway works on real traffic.
+
+The pings did not reply, which is expected: the peer's `allowed-ips`
+covers `10.9.0.2/32` and so it discards packets sourced from
+`192.168.0.131`.
+
 ### SOCK_RAW: confirmed working
 
 ```
@@ -107,8 +126,33 @@ because raw sockets are cleaner. The remaining question is whether
 
 Both halves of the design are therefore available: capture through
 pcap, injection through a raw socket. What has not been exercised is
-`IP_HDRINCL` actually transmitting a packet, which only a live run will
-show.
+`IP_HDRINCL` actually putting a packet on the wire.
+
+### Why the inbound path needs its own probe
+
+Testing injection through the gateway needs the LAN host and the
+WireGuard peer to be *different machines*. When they are the same host,
+the reply never traverses the tunnel: the kernel sees a destination that
+is local and delivers it directly. Any test built that way is circular
+and proves nothing about injection.
+
+`tools/probes/probe_inject.c` sidesteps the topology. It injects an ICMP
+echo request with addresses of your choosing, straight from a raw
+socket, and leaves verification to whatever is watching the network:
+
+```
+$ PINJ := $SYS$DISK:[.build]PROBE_INJECT.EXE
+$ PINJ --src 192.168.0.80 --dst 192.168.0.131
+```
+
+and on the destination:
+
+```sh
+sudo tcpdump -ni any icmp and host 192.168.0.80
+```
+
+`sendto` succeeding only means the stack accepted the packet. Seeing it
+arrive is what proves injection works.
 
 ## Running it
 

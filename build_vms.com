@@ -237,6 +237,10 @@ $!
 $ cc 'cc_flags'/OBJECT=[.build]probe_sockets.obj [.tools.probes]probe_sockets.c
 $ link/executable=[.build]probe_sockets.exe [.build]probe_sockets.obj
 $!
+$ cc 'cc_flags'/OBJECT=[.build]probe_inject.obj [.tools.probes]probe_inject.c
+$ link/executable=[.build]probe_inject.exe -
+      [.build]probe_inject.obj,[.build]ethip.obj,[.build]rawinject.obj
+$!
 $ pcap_image = ""
 $ if f$search("SYS$LIBRARY:TCPIP$LIBPCAP_SHR.EXE") .nes. "" then -
      pcap_image = "SYS$LIBRARY:TCPIP$LIBPCAP_SHR"
@@ -275,6 +279,8 @@ $ say ""
 $ say "  $ run [.build]probe_openssl      OpenSSL primitives"
 $ say "  $ run [.build]probe_sockets       sockets, poll, SOCK_RAW"
 $ say "  $ run [.build]probe_pcap          libpcap capture and injection"
+$ say "  $ pinj := $sys$disk:[.build]probe_inject.exe"
+$ say "  $ pinj --src <ip> --dst <ip>      raw-socket injection"
 $ say ""
 $ say "  $ spike := $sys$disk:[.build]slip_spike.exe"
 $ say "  $ spike --raw                     SLIP/PPP over-pty spike"
