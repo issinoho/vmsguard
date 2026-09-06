@@ -22,16 +22,27 @@
 ! here to the path confirmed on the test system.
 
 SSL_INCLUDE = SSL3$INCLUDE
-SSL_LIBRARY = SYS$LIBRARY:SSL3$LIBCRYPTO_SHR
+SSL_LIBRARY = SYS$LIBRARY:SSL3$LIBCRYPTO_SHR32
 
 ! _SOCKADDR_LEN selects the BSD 4.4 socket structures, which is where
 ! sockaddr_in6 and sockaddr_storage come from (Sockets API manual,
 ! section 1.4.1). The platform layer will not compile without it.
 !
+! PREFIX_LIBRARY_ENTRIES=ALL_ENTRIES is required too. Without it only
+! ANSI names get the DECC$ prefix the C RTL actually exports, so every
+! POSIX and BSD entry point (socket, close, fcntl, poll, getaddrinfo)
+! is left as a bare uppercase symbol and fails to resolve at link time.
+!
+! POINTER_SIZE must match the OpenSSL image named above: SHR32 is built
+! for 32-bit pointers, SHR for 64-bit. Mixing them links cleanly and
+! then crashes inside OpenSSL with an access violation at a
+! sign-extended address such as FFFFFFFF806F8C30.
+!
 ! VSI C V7.7 is GEM-based rather than Clang, so C99 is the ceiling. If
 ! /STANDARD=C99 rejects something, try /STANDARD=RELAXED.
 
-CFLAGS = /STANDARD=C99/DEFINE=(_SOCKADDR_LEN)-
+CFLAGS = /STANDARD=C99/DEFINE=(_SOCKADDR_LEN)/POINTER_SIZE=32-
+/PREFIX_LIBRARY_ENTRIES=ALL_ENTRIES-
 /INCLUDE_DIRECTORY=([.src.proto],[.src.platform],[.src.client],$(SSL_INCLUDE))
 
 ! No socket library is named on the link line: per section 1.4 of the

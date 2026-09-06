@@ -31,18 +31,32 @@ $! directory when no such logical name is defined, which fails with
 $! %ILINK-F-OPENIN. An explicit SYS$SHARE: path avoids that, and the
 $! exact file name varies with pointer size, so try each in turn.
 $!
-$! Confirmed present on the test system as
-$! SYS$COMMON:[SYSLIB]SSL3$LIBCRYPTO_SHR.EXE, reached via SYS$LIBRARY:.
-$! SYS$SHARE: is checked too since both normally point there, and the
-$! _SHR32 variants cover a different pointer size.
+$! Pointer size. VSI C defaults to 32-bit pointers, and the OpenSSL
+$! shareable images come in matching flavours: SSL3$LIBCRYPTO_SHR32 is
+$! built for 32-bit pointers, SSL3$LIBCRYPTO_SHR for 64-bit. The two
+$! must agree.
+$!
+$! Mixing them produces an access violation inside the OpenSSL image at
+$! an address like FFFFFFFF806F8C30 — a 32-bit pointer sign-extended to
+$! 64 bits. If you see that, this setting and the image below disagree.
+$!
+$! If the image for your chosen size is not installed, change this to
+$! the other value rather than linking the mismatched one.
+$!
+$ pointer_size = "32"
+$!
+$ if pointer_size .eqs. "32"
+$ then
+$     ssl_candidates = "SYS$LIBRARY:SSL3$LIBCRYPTO_SHR32," + -
+                       "SYS$SHARE:SSL3$LIBCRYPTO_SHR32," + -
+                       "SYS$LIBRARY:SSL31$LIBCRYPTO_SHR32"
+$ else
+$     ssl_candidates = "SYS$LIBRARY:SSL3$LIBCRYPTO_SHR," + -
+                       "SYS$SHARE:SSL3$LIBCRYPTO_SHR," + -
+                       "SYS$LIBRARY:SSL31$LIBCRYPTO_SHR"
+$ endif
 $!
 $ ssl_library = ""
-$ ssl_candidates = "SYS$LIBRARY:SSL3$LIBCRYPTO_SHR," + -
-                   "SYS$SHARE:SSL3$LIBCRYPTO_SHR," + -
-                   "SYS$LIBRARY:SSL3$LIBCRYPTO_SHR32," + -
-                   "SYS$SHARE:SSL3$LIBCRYPTO_SHR32," + -
-                   "SYS$LIBRARY:SSL31$LIBCRYPTO_SHR," + -
-                   "SYS$LIBRARY:SSL31$LIBCRYPTO_SHR32"
 $ i = 0
 $ ssl_loop:
 $   name = f$element(i, ",", ssl_candidates)
@@ -58,14 +72,16 @@ $ ssl_done:
 $!
 $ if ssl_library .eqs. ""
 $ then
-$     say "ERROR: could not find the OpenSSL crypto shareable image."
+$     say "ERROR: no OpenSSL crypto image for ''pointer_size'-bit pointers."
 $     say "Tried each of:"
 $     say "  ''ssl_candidates'"
 $     say ""
-$     say "Find the real name with:"
+$     say "See what is installed with:"
 $     say "  $ directory sys$library:*LIBCRYPTO*"
-$     say "then set ssl_library in this procedure to its full path,"
-$     say "without the .EXE suffix."
+$     say ""
+$     say "then set pointer_size in this procedure to match what you"
+$     say "have. Do not link an image of the other pointer size: it"
+$     say "builds cleanly and then crashes inside OpenSSL."
 $     exit 2
 $ endif
 $ say "using OpenSSL image: ''ssl_library'"
@@ -81,13 +97,25 @@ $! /STANDARD=C99 rejects something, try /STANDARD=RELAXED.
 $!
 $ cc_standard = "/STANDARD=C99"
 $!
+$! Without this, only ANSI-standard names get the DECC$ prefix that the
+$! C RTL actually exports, so every POSIX and BSD entry point — socket,
+$! close, fcntl, poll, getaddrinfo — fails to resolve at link time as a
+$! bare uppercase symbol. ANSI-only programs link fine, which is why the
+$! test program built while the platform layer did not.
+$!
+$ cc_prefix = "/PREFIX_LIBRARY_ENTRIES=ALL_ENTRIES"
+$!
+$! Must match the OpenSSL image selected above.
+$!
+$ cc_pointer = "/POINTER_SIZE=" + pointer_size
+$!
 $! Built by concatenation rather than a continued line: a "-" inside a
 $! quoted string would fold the next line's leading spaces into the
 $! string and corrupt the include list.
 $ cc_includes = "/INCLUDE_DIRECTORY=([.src.proto],[.src.platform]," + -
                 "[.src.client]," + ssl_include + ")"
 $!
-$ cc_flags = cc_standard + cc_defines + cc_includes
+$ cc_flags = cc_standard + cc_defines + cc_prefix + cc_pointer + cc_includes
 $!
 $!---------------------------------------------------------------------
 $! Housekeeping

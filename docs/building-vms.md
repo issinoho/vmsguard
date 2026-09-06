@@ -1,9 +1,19 @@
 # Building on OpenVMS x86-64
 
-First run on a real OpenVMS x86-64 system on 2026-09-06. The protocol
-core and client compiled cleanly on the first attempt; two problems
-turned up and both are fixed. The build has not yet been carried all the
-way through to a linked executable.
+Built and partly running on a real OpenVMS x86-64 system as of
+2026-09-06. Everything compiles, `test_proto` links and runs, and the
+hand-written crypto passes natively:
+
+```
+BLAKE2s              8/8 checks pass
+HMAC / KDF           4/4 checks pass
+X25519 / ChaCha20    access violation inside OpenSSL
+```
+
+BLAKE2s and the KDF producing identical results under VSI C on x86-64
+OpenVMS, having been developed under GCC on Linux, is a real result: the
+pure-C protocol code is portable as written. The remaining failures are
+all build and linkage issues, documented below with fixes applied.
 
 ## Get the source onto the box
 
@@ -69,6 +79,58 @@ There is no such logical name; the file lives in
 it across `SYS$LIBRARY:` and `SYS$SHARE:`, including the `_SHR32`
 variants, and fails with a clear message naming what it tried.
 `descrip.mms` cannot search, so it is fixed to the confirmed path.
+
+### The C RTL needs `/PREFIX_LIBRARY_ENTRIES=ALL_ENTRIES`
+
+Linking the platform layer produced 15 undefined symbols:
+
+```
+%ILINK-I-UDFSYM,     SOCKET
+%ILINK-I-UDFSYM,     CLOSE
+%ILINK-I-UDFSYM,     FCNTL
+%ILINK-I-UDFSYM,     POLL
+%ILINK-I-UDFSYM,     GETADDRINFO
+%ILINK-I-UDFSYM,     __BSD44_BIND
+...
+```
+
+The names are the clue: the VMS C RTL exports these as `DECC$SOCKET` and
+so on. Under a strict standard mode only ANSI names get that prefix
+applied, so POSIX and BSD entry points are emitted as bare uppercase
+symbols that match nothing. `/PREFIX_LIBRARY_ENTRIES=ALL_ENTRIES` fixes
+it.
+
+This is also why `test_proto` linked and ran while the platform layer
+did not — `printf` and `malloc` are ANSI and were prefixed correctly.
+
+The `__BSD44_*` symbols are incidentally good news: they confirm
+`/DEFINE=(_SOCKADDR_LEN)` is doing its job and selecting the BSD 4.4
+socket interfaces.
+
+### Pointer size must match the OpenSSL image
+
+The test program reached the X25519 tests and died inside OpenSSL:
+
+```
+%SYSTEM-F-ACCVIO, access violation, reason mask=07,
+    virtual address=FFFFFFFF806F8C30
+image     module    routine
+SSL3$LIBCRYPTO_SHR
+test_proto  WG_CRYPTO  wg_dh_generate
+```
+
+`FFFFFFFF806F8C30` is `0x806F8C30` sign-extended from 32 bits. VSI C
+defaults to 32-bit pointers, and `SSL3$LIBCRYPTO_SHR` is the 64-bit
+build — the two disagreed.
+
+The images come in matching flavours: `SSL3$LIBCRYPTO_SHR32` for 32-bit
+pointers, `SSL3$LIBCRYPTO_SHR` for 64-bit. `build_vms.com` now has a
+single `pointer_size` setting that selects both the `/POINTER_SIZE`
+qualifier and the matching image, and refuses to build if the matching
+image is absent rather than linking a mismatched one — that combination
+links cleanly and only fails at run time, which is a poor trade.
+
+If `SSL3$LIBCRYPTO_SHR32` is not installed, set `pointer_size` to `64`.
 
 ### `gettimeofday` does not exist on OpenVMS
 
