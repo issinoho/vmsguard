@@ -207,8 +207,6 @@ pings. Try `--verbose` to see the decrypted packets that did arrive.
 
 The client is an MVP and does not yet implement:
 
-- **rekeying** — WireGuard rekeys after roughly 2 minutes; long sessions
-  will stop working
 - **a replay sliding window** — only counters above the highest seen are
   accepted, so legitimately reordered packets are dropped
 - **the cookie mechanism** — `mac2` is always zero
@@ -216,3 +214,44 @@ The client is an MVP and does not yet implement:
 
 None of these affect a short interop test, and all are noted in the code
 where they bite.
+
+## Rekeying
+
+Implemented, following the whitepaper's section 6.5: the session is
+replaced once it reaches `REKEY_AFTER_TIME` (120s) or
+`REKEY_AFTER_MESSAGES` (2^60), and refused outright past
+`REJECT_AFTER_TIME` (180s). Receiving triggers a rekey slightly earlier
+than sending does, so the session is replaced before the far side starts
+rejecting it.
+
+Two details worth knowing:
+
+- **The previous keypair is retained** after a rekey, so packets already
+  in flight under the old key still decrypt instead of being dropped.
+  WireGuard proper keeps three keypairs; two is enough for a client that
+  always initiates.
+- **A failed rekey is not fatal.** While the session is still inside
+  `REJECT_AFTER_TIME` the old key keeps working, and the attempt is made
+  again later — a briefly unreachable peer costs no traffic. Attempts
+  are paced by `REKEY_TIMEOUT` and abandoned after
+  `REKEY_ATTEMPT_TIME`.
+
+To exercise it without waiting two minutes, `vmsguard-interop` takes
+`--rekey-after` and `--duration`:
+
+```sh
+./build/vmsguard-interop --key ... --peer-key ... \
+    --endpoint 127.0.0.1:51820 --rekey-after 2000 --duration 12
+```
+
+```
+  rekeyed (1) at 2 s, new index 0x7775d019
+  rekeyed (2) at 5 s, new index 0x7775d01a
+  rekeyed (3) at 8 s, new index 0x7775d01b
+  rekeyed (4) at 11 s, new index 0x7775d01c
+
+  12 keepalives sent, 0 failed, 4 rekeys
+```
+
+It fails if no rekey happens or if any send fails, so it is a genuine
+check rather than a demonstration.

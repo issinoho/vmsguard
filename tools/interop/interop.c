@@ -174,6 +174,10 @@ static void usage(const char *argv0)
 "                  to <dst-ip> and wait for the reply\n"
 "  --attempts      handshake attempts (default 3)\n"
 "  --timeout       milliseconds to wait per attempt (default 5000)\n"
+"  --rekey-after   override the rekey interval, ms (default 120000).\n"
+"                  reject-after is scaled to keep the same 2:3 ratio\n"
+"  --duration      after the handshake, send a keepalive a second for\n"
+"                  this many seconds, reporting each rekey\n"
 "\n"
 "Reads no configuration files: everything is on the command line so the\n"
 "same invocation works identically on OpenVMS.\n", argv0);
@@ -194,6 +198,8 @@ int main(int argc, char **argv)
     const char *colon;
     int have_key = 0, have_peer = 0, do_ping = 0, verbose = 0;
     int attempts = 3, timeout_ms = 5000;
+    unsigned long rekey_after_ms = 0;
+    int duration_s = 0;
     uint16_t listen_port = 0, peer_port;
     int i;
 
@@ -225,6 +231,10 @@ int main(int argc, char **argv)
                 return 2;
             }
             do_ping = 1;
+        } else if (strcmp(argv[i], "--rekey-after") == 0 && i + 1 < argc) {
+            rekey_after_ms = strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--duration") == 0 && i + 1 < argc) {
+            duration_s = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--verbose") == 0) {
             verbose = 1;
         } else {
@@ -264,6 +274,13 @@ int main(int argc, char **argv)
                        listen_port) != 0) {
         fprintf(stderr, "error: %s\n", client.error);
         return 1;
+    }
+
+    if (rekey_after_ms > 0) {
+        client.rekey_after_ms = rekey_after_ms;
+        /* Keep the whitepaper's 120:180 proportion so a shortened
+           interval still leaves room to rekey before expiry. */
+        client.reject_after_ms = rekey_after_ms * 3 / 2;
     }
 
     wg_key_to_base64(b64, client.local.static_public);
@@ -362,6 +379,65 @@ int main(int argc, char **argv)
                    "  %u.%u.%u.%u, or the destination does not answer\n"
                    "  pings.\n",
                    ping_src[0], ping_src[1], ping_src[2], ping_src[3]);
+            wg_client_close(&client);
+            return 1;
+        }
+    }
+
+    /* ---- optional soak, to exercise rekeying ---- */
+
+    if (duration_s > 0) {
+        uint64_t started = wg_time_ms();
+        uint32_t last_index = client.kp.local_index;
+        unsigned long rekeys = 0, sent = 0, failed = 0;
+        uint8_t rbuf[WG_MAX_PACKET];
+        size_t rlen;
+
+        printf("\nrunning for %d seconds, rekeying every %lu ms\n",
+               duration_s,
+               (unsigned long) client.rekey_after_ms);
+
+        while (wg_time_ms() - started < (uint64_t) duration_s * 1000) {
+            uint64_t tick = wg_time_ms();
+
+            if (wg_client_send(&client, NULL, 0) == 0)
+                sent++;
+            else
+                failed++;
+
+            if (client.kp.local_index != last_index) {
+                rekeys++;
+                last_index = client.kp.local_index;
+                printf("  rekeyed (%lu) at %lu s, new index 0x%08lx\n",
+                       rekeys,
+                       (unsigned long) ((wg_time_ms() - started) / 1000),
+                       (unsigned long) client.kp.local_index);
+                fflush(stdout);
+            }
+
+            /*
+             * Absorb whatever comes back, then wait out the rest of the
+             * second. The responder echoes keepalives immediately, so
+             * receiving alone would spin rather than pace the loop.
+             */
+            while (wg_time_ms() - tick < 1000) {
+                if (wg_client_recv(&client, rbuf, sizeof rbuf, &rlen,
+                                   (int) (1000 - (wg_time_ms() - tick)))
+                    != WG_SOCK_OK)
+                    break;
+            }
+        }
+
+        printf("\n  %lu keepalives sent, %lu failed, %lu rekey%s\n",
+               sent, failed, rekeys, rekeys == 1 ? "" : "s");
+
+        if (rekeys == 0) {
+            printf("\nFAILED: no rekey happened\n");
+            wg_client_close(&client);
+            return 1;
+        }
+        if (failed > 0) {
+            printf("\nFAILED: %lu sends failed\n", failed);
             wg_client_close(&client);
             return 1;
         }

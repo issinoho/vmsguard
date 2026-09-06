@@ -7,7 +7,6 @@
  * which is the MVP's agreed scope.
  *
  * What this does not yet do, and would need before production use:
- *   - rekeying (WireGuard rekeys after 2 minutes or 2^60 messages)
  *   - a replay sliding window (only a highest-counter check is done)
  *   - cookie replies under load (mac2 is always zero; a cookie reply is
  *     detected and reported rather than answered)
@@ -40,10 +39,30 @@ struct wg_client {
     struct wg_socket    *sock;
 
     struct wg_handshake  hs;
+
+    /*
+     * Current and previous keypairs. The previous one is retained after
+     * a rekey so packets already in flight, encrypted under the old
+     * key, still decrypt rather than being dropped. WireGuard proper
+     * keeps three (previous, current, next); two is enough for a client
+     * that always initiates.
+     */
     struct wg_keypair    kp;
+    struct wg_keypair    prev_kp;
+    int                  have_prev;
+    uint64_t             established_ms;
+    uint64_t             prev_established_ms;
+    uint64_t             last_rekey_attempt_ms;
+    uint64_t             rekey_started_ms;
+
+    /*
+     * Overridable so tests need not wait two minutes. Both default to
+     * the whitepaper's figures in wg_client_init.
+     */
+    uint64_t             rekey_after_ms;
+    uint64_t             reject_after_ms;
 
     uint32_t             local_index;
-    uint64_t             recv_counter_max;   /* crude replay guard */
     int                  state;
 
     /* Our own mac1 key, for validating messages sent back to us. */
@@ -77,8 +96,26 @@ int wg_client_handshake(struct wg_client *c, int attempts, int timeout_ms);
 /*
  * Send a plaintext IP packet through the tunnel. A NULL/zero payload
  * sends a keepalive. Returns 0 on success.
+ *
+ * Rekeys first if the session is old enough to need it. A failed rekey
+ * is not fatal while the current session is still within
+ * reject_after_ms: the old key keeps working and the attempt is made
+ * again later, so a momentarily unreachable peer does not cost traffic.
  */
 int wg_client_send(struct wg_client *c, const uint8_t *pt, size_t ptlen);
+
+/*
+ * Whether the session needs replacing, and whether it is past use.
+ * Exposed mainly so callers can report state; wg_client_send applies
+ * both itself.
+ */
+int wg_client_needs_rekey(const struct wg_client *c);
+int wg_client_session_expired(const struct wg_client *c);
+
+/*
+ * Age of the current session in milliseconds, or 0 if none.
+ */
+uint64_t wg_client_session_age_ms(const struct wg_client *c);
 
 /*
  * Wait for a transport data packet and decrypt it. Returns WG_SOCK_OK

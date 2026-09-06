@@ -48,11 +48,34 @@ struct wg_handshake {
     uint32_t remote_index;
 };
 
+/*
+ * Timer and counter limits from the WireGuard whitepaper, section 6.5.
+ * Times are milliseconds here; the paper gives seconds.
+ */
+#define WG_REKEY_AFTER_TIME_MS    120000UL  /* rekey once a session is this old */
+#define WG_REJECT_AFTER_TIME_MS   180000UL  /* a session older than this is dead */
+#define WG_REKEY_TIMEOUT_MS         5000UL  /* pace between handshake attempts */
+#define WG_KEEPALIVE_TIMEOUT_MS    10000UL
+#define WG_REKEY_ATTEMPT_TIME_MS   90000UL  /* give up rekeying after this */
+
+/*
+ * The receiver rekeys slightly earlier than the sender would, so that a
+ * session is replaced before the far side starts rejecting it. The
+ * paper's figure is REKEY_AFTER_TIME - KEEPALIVE_TIMEOUT - REKEY_TIMEOUT.
+ */
+#define WG_REKEY_AFTER_TIME_RECV_MS \
+    (WG_REKEY_AFTER_TIME_MS - WG_KEEPALIVE_TIMEOUT_MS - WG_REKEY_TIMEOUT_MS)
+
+/* 2^60 messages. Reaching this before the time limit takes some doing,
+   but the counter must not be allowed to wrap. */
+#define WG_REKEY_AFTER_MESSAGES   (1ULL << 60)
+
 /* Derived transport keys. */
 struct wg_keypair {
     uint8_t  send_key[WG_KEY_LEN];
     uint8_t  recv_key[WG_KEY_LEN];
     uint64_t send_counter;
+    uint64_t recv_counter_max;   /* replay guard, per keypair */
     uint32_t local_index;
     uint32_t remote_index;
 };
