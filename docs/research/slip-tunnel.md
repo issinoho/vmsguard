@@ -92,6 +92,28 @@ appended to the stale bytes. Only the back-to-back test exposed it. Had
 that gone undetected, it would have surfaced on OpenVMS as SLIP
 "nearly working", which is a far worse place to debug it.
 
+## PTD$ buffer rules, learned the hard way
+
+Two things about the PTD$ control connection routines that are easy to
+miss in Appendix D, and cost a run each:
+
+1. **The routines are declared in `<starlet.h>`.** Declaring them
+   locally from the manual's argument lists produces
+   `%CC-E-NOTCOMPAT` against the real prototypes.
+
+2. **`readbuf` and `wrtbuf` are not what they sound like.** Each is the
+   address of an *I/O status longword*, with the data starting four
+   bytes later: "The first character position in an I/O buffer to
+   receive all output is this address plus 4." And both must lie inside
+   the address range given to `PTD$CREATE` as `inadr`; a buffer on the
+   stack returns `SS$_ACCVIO` (`%X0000000C`).
+
+The second point also answers a question the manual otherwise leaves
+open. `PTD$READ` takes no IOSB argument and nothing documents how the
+byte count is returned — but that status longword follows the usual
+IOSB layout, so the low word is a condition value and the high word the
+transfer count. That is where the count comes from.
+
 ## The assumption that decides this
 
 **Does SLIP accept a pseudo-terminal (`FTAn:`) rather than a real terminal

@@ -1,31 +1,34 @@
 /*
  * SLIP-over-pseudoterminal spike — vmsguard, OpenVMS only
  *
- * Answers the one question that decides whether a transparent tunnel on
- * OpenVMS is achievable in userspace: will SLIP attach to a
- * PTD$-created pseudoterminal?
+ * Answers the question that decides whether a transparent tunnel on
+ * OpenVMS is reachable in userspace: will SLIP attach to a PTD$-created
+ * pseudoterminal?
  *
- * If it does, a SLIP interface backed by this process is functionally a
+ * If it will, a SLIP interface backed by this process is functionally a
  * TUN device — the stack gets a real point-to-point interface to route
  * at, and traffic sent to it is *claimed* rather than copied, which is
  * the problem the pcap approach could never solve. See
  * docs/research/slip-tunnel.md.
  *
- * What it does:
- *   1. Creates a pseudoterminal and reports its FTAn: device name.
- *   2. Waits while you attach SLIP to that device from another session.
- *   3. Reads what the SLIP driver writes, decodes the framing, and
- *      reports the IP packets it finds.
- *   4. Answers ICMP echo requests, so a successful ping proves both
- *      directions.
+ * Direction, from I/O User's Reference Manual chapter 6: this program
+ * is the "control connection". What the SLIP driver writes to FTAn: we
+ * read with PTD$READW; what we write with PTD$WRITE appears to SLIP as
+ * if typed at the terminal. Reads are outbound packets, writes inbound.
  *
- * UNTESTED — written from the I/O User's Reference Manual, Appendix D,
- * and never run. Expect to iterate.
+ * Two things about PTD$ I/O buffers, both from Appendix D and both
+ * easy to get wrong:
  *
- * Direction, from chapter 6: this program is the "control connection".
- * What the SLIP driver writes to FTAn: we read with PTD$READW; what we
- * write with PTD$WRITE appears to SLIP as if typed at the terminal. So
- * reads are outbound packets, writes are inbound ones.
+ *   - readbuf and wrtbuf must lie inside the address range handed to
+ *     PTD$CREATE as inadr. A buffer anywhere else — the stack, say —
+ *     returns SS$_ACCVIO.
+ *
+ *   - Those arguments point at an I/O status longword, not at the data.
+ *     "The first character position in an I/O buffer to receive all
+ *     output is this address plus 4." The status longword follows the
+ *     usual IOSB layout, so the low word is a condition value and the
+ *     high word the transfer count — which is how the byte count comes
+ *     back, there being no separate IOSB argument.
  */
 
 #ifndef __VMS
@@ -44,12 +47,7 @@
 
 /*
  * PTD$CREATE, PTD$READW, PTD$WRITE and PTD$DELETE are declared in
- * <starlet.h> (the STARLET text module), so no local declarations are
- * needed — an earlier version declared them from the manual and the
- * compiler rejected the duplicates as incompatible.
- *
- * For reference, the argument lists per the I/O User's Reference
- * Manual, Appendix D:
+ * <starlet.h>. For reference, their argument lists:
  *
  *   PTD$CREATE chan [,acmode] [,charbuff] [,bufflen] [,astadr]
  *              [,astprm] [,ast_acmode], inadr
@@ -59,7 +57,12 @@
  *   PTD$DELETE chan
  */
 
-#define IO_PAGES 4
+/* Pagelets for $EXPREG. Generous: the range must hold both buffers. */
+#define IO_PAGES       32
+
+#define IOSB_LEN       4          /* status longword ahead of the data */
+#define READ_DATA_MAX  512
+#define WRITE_DATA_MAX (2 * SLIP_MTU + 2)
 
 /* ---- helpers --------------------------------------------------------- */
 
@@ -69,6 +72,9 @@ static int vms_ok(unsigned int status, const char *what)
     if (status & 1)
         return 1;
     fprintf(stderr, "%s failed, status = %%X%08X\n", what, status);
+    if (status == SS$_ACCVIO)
+        fprintf(stderr, "  (SS$_ACCVIO — a PTD$ buffer must lie inside the\n"
+                        "   address range given to PTD$CREATE as inadr)\n");
     return 0;
 }
 
@@ -174,6 +180,7 @@ int main(int argc, char **argv)
     unsigned int status;
     unsigned short pt_chan = 0;
     char devname[64];
+    const char *devshort;
     unsigned short devname_len = 0;
     struct {
         unsigned short  buflen;
@@ -182,9 +189,9 @@ int main(int argc, char **argv)
         unsigned short *retlen;
     } itmlst[2];
     struct slip_decoder dec;
-    unsigned char encbuf[2 * SLIP_MTU + 2];
-    unsigned char c;
-    unsigned long packets = 0, replies = 0, bytes = 0;
+    unsigned char *iobase, *rbuf, *wbuf;
+    size_t iolen, needed;
+    unsigned long packets = 0, replies = 0, bytes = 0, reads = 0;
     int quiet = 0;
     int i;
 
@@ -196,13 +203,26 @@ int main(int argc, char **argv)
     printf("vmsguard SLIP-over-pseudoterminal spike\n\n");
 
     /*
-     * PTD$CREATE requires a page-aligned address range for its I/O
-     * buffers. $EXPREG returns precisely that format: a two-longword
-     * array holding the start and end addresses of newly created pages.
+     * PTD$CREATE needs a page-aligned address range, and every PTD$ I/O
+     * buffer must sit inside it. $EXPREG returns exactly the two-longword
+     * start/end format inadr expects.
      */
     status = sys$expreg(IO_PAGES, inadr, 0, 0);
     if (!vms_ok(status, "sys$expreg"))
         return 1;
+
+    iobase = (unsigned char *) inadr[0];
+    iolen  = (size_t) (inadr[1] - inadr[0] + 1);
+
+    needed = (IOSB_LEN + READ_DATA_MAX) + (IOSB_LEN + WRITE_DATA_MAX);
+    if (iolen < needed) {
+        fprintf(stderr, "$EXPREG gave %lu bytes, need %lu; raise IO_PAGES\n",
+                (unsigned long) iolen, (unsigned long) needed);
+        return 1;
+    }
+
+    rbuf = iobase;
+    wbuf = iobase + IOSB_LEN + READ_DATA_MAX;
 
     status = PTD$CREATE(&pt_chan, 0, NULL, 0, NULL, 0, 0, inadr);
     if (!vms_ok(status, "PTD$CREATE")) {
@@ -212,8 +232,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Recover the FTAn: name from the channel — that is what has to be
-       handed to TCPIP SET INTERFACE. */
+    /* Recover the FTAn: name — that is what TCPIP SET INTERFACE needs. */
     itmlst[0].buflen = (unsigned short) (sizeof devname - 1);
     itmlst[0].itmcod = DVI$_DEVNAM;
     itmlst[0].bufadr = devname;
@@ -229,11 +248,18 @@ int main(int argc, char **argv)
         devname_len = sizeof devname - 1;
     devname[devname_len] = '\0';
 
-    printf("pseudoterminal created: %s\n\n", devname);
+    /* $GETDVI returns the unambiguous form, with a leading underscore.
+       DCL takes it either way, but the plain name reads better. */
+    devshort = (devname[0] == '_') ? devname + 1 : devname;
+
+    printf("pseudoterminal created: %s\n", devname);
+    printf("I/O buffer range: %%X%08X..%%X%08X (%lu bytes)\n\n",
+           inadr[0], inadr[1], (unsigned long) iolen);
+
     printf("From another session, attach SLIP to it:\n\n");
     printf("  $ TCPIP SET INTERFACE SL0 /HOST=10.9.0.2 -\n");
     printf("        /NETWORK_MASK=255.255.255.0 -\n");
-    printf("        /SERIAL_DEVICE=%s\n\n", devname);
+    printf("        /SERIAL_DEVICE=%s\n\n", devshort);
     printf("If accepted, generate traffic from a third session:\n\n");
     printf("  $ TCPIP PING 10.9.0.1\n\n");
     printf("Waiting for data. Ctrl-Y to stop.\n\n");
@@ -241,61 +267,75 @@ int main(int argc, char **argv)
 
     slip_decoder_init(&dec);
 
-    /*
-     * One byte per read, deliberately.
-     *
-     * PTD$READ and PTD$READW take six arguments and no IOSB, and the
-     * manual does not say how the byte count is reported — only that a
-     * read completes with at least one character and at most
-     * readbuf_len. Asking for exactly one byte makes the count
-     * unambiguous without depending on undocumented behaviour.
-     *
-     * This is a system call per byte, which is fine for a spike whose
-     * job is to answer a yes/no question, and is worth revisiting if
-     * this becomes the basis of a real interface.
-     *
-     * Caveat: the manual notes a rare case where a read completes with
-     * zero bytes. That is indistinguishable from reading a genuine
-     * 0x00, so an occasional spurious zero could corrupt a frame. It
-     * would show up as a malformed IP header in the output rather than
-     * passing silently.
-     */
     for (;;) {
-        c = 0;
-        status = PTD$READW(0, pt_chan, NULL, 0, &c, 1);
+        unsigned int iosb;
+        unsigned int io_status, n;
+        unsigned char *data;
+        size_t k;
+
+        memset(rbuf, 0, IOSB_LEN);
+        status = PTD$READW(0, pt_chan, NULL, 0, rbuf, READ_DATA_MAX);
         if (!vms_ok(status, "PTD$READW"))
             break;
-        bytes++;
 
-        if (!slip_decode_byte(&dec, c))
-            continue;
+        /* Standard IOSB first longword: condition value in the low
+           word, transfer count in the high word. */
+        memcpy(&iosb, rbuf, sizeof iosb);
+        io_status = iosb & 0xFFFF;
+        n         = (iosb >> 16) & 0xFFFF;
+        data      = rbuf + IOSB_LEN;
+        reads++;
 
-        packets++;
-        printf("packet %lu: %lu bytes (after %lu raw bytes)\n",
-               packets, (unsigned long) dec.len, bytes);
-        if (!quiet) {
-            describe_ip(dec.buf, dec.len);
-            hexdump(dec.buf, dec.len);
+        /* Print the raw status for the first few reads: the layout is
+           inferred from the usual IOSB convention rather than stated
+           in the manual, so it is worth being able to check it. */
+        if (reads <= 3)
+            printf("[read %lu: iosb=%%X%08X status=%u count=%u]\n",
+                   reads, iosb, io_status, n);
+
+        if (n > READ_DATA_MAX) {
+            printf("implausible count %u; the status longword layout is\n"
+                   "not what was assumed. Raw iosb = %%X%08X\n", n, iosb);
+            break;
         }
+        if (n == 0)
+            continue;
+        bytes += n;
 
-        if (make_echo_reply(dec.buf, dec.len)) {
-            size_t enclen = slip_encode(encbuf, sizeof encbuf,
-                                        dec.buf, dec.len);
-            if (enclen > 0) {
-                status = PTD$WRITE(pt_chan, NULL, 0, encbuf,
-                                   (unsigned int) enclen, NULL, 0);
-                if (status & 1) {
-                    replies++;
-                    printf("    -> echo reply written (%lu total)\n", replies);
-                } else {
-                    printf("    -> PTD$WRITE failed, %%X%08X\n", status);
+        for (k = 0; k < n; k++) {
+            if (!slip_decode_byte(&dec, data[k]))
+                continue;
+
+            packets++;
+            printf("packet %lu: %lu bytes (after %lu raw bytes)\n",
+                   packets, (unsigned long) dec.len, bytes);
+            if (!quiet) {
+                describe_ip(dec.buf, dec.len);
+                hexdump(dec.buf, dec.len);
+            }
+
+            if (make_echo_reply(dec.buf, dec.len)) {
+                size_t enclen = slip_encode(wbuf + IOSB_LEN, WRITE_DATA_MAX,
+                                            dec.buf, dec.len);
+                if (enclen > 0) {
+                    memset(wbuf, 0, IOSB_LEN);
+                    status = PTD$WRITE(pt_chan, NULL, 0, wbuf,
+                                       (unsigned int) enclen, NULL, 0);
+                    if (status & 1) {
+                        replies++;
+                        printf("    -> echo reply written (%lu total)\n",
+                               replies);
+                    } else {
+                        printf("    -> PTD$WRITE failed, %%X%08X\n", status);
+                    }
                 }
             }
+            fflush(stdout);
         }
-        fflush(stdout);
     }
 
-    printf("\n%lu byte%s read, %lu packet%s decoded, %lu repl%s sent\n",
+    printf("\n%lu read%s, %lu byte%s, %lu packet%s decoded, %lu repl%s sent\n",
+           reads, reads == 1 ? "" : "s",
            bytes, bytes == 1 ? "" : "s",
            packets, packets == 1 ? "" : "s",
            replies, replies == 1 ? "y" : "ies");
