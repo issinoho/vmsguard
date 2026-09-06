@@ -169,9 +169,19 @@ vmsguard does not fragment, and does not send ICMP "fragmentation
 needed" back to clients, so large packets would fail silently — the
 classic symptom being that small requests work and large transfers hang.
 
-The minimum viable answer is to emit ICMP Type 3 Code 4 with the correct
-next-hop MTU when an oversized packet arrives with DF set, so client
-path-MTU discovery adapts. Fragmenting ourselves is the fuller answer.
+**Implemented.** `--tunnel-mtu` sets the largest inner packet the tunnel
+carries, defaulting to 1420 — 1500 less the 60 bytes of WireGuard, UDP
+and outer IP headers. For TorGuard's config that would be `1390`.
+
+An oversized packet with DF set is answered with ICMP type 3 code 4,
+carrying the next-hop MTU where RFC 1191 says a sender will look for it,
+and quoting the original header plus eight bytes so the sender can match
+it to a connection. The error is sourced from the gateway's own address,
+found by asking the routing table which of our addresses faces the peer.
+
+An oversized packet *without* DF is dropped and counted. Fragmenting it
+ourselves would be the fuller answer, but almost everything that matters
+— TCP doing path-MTU discovery — sets DF.
 
 Note also that OpenVMS offers **no per-socket DF control** — there is no
 `IP_MTU_DISCOVER` or `IP_DONTFRAG` (see
@@ -255,9 +265,11 @@ handshake today, which would be a worthwhile first test — it isolates
    over TCP, UDP and ICMP echo. 37 checks, including every translated
    packet cross-checked against an independently written full checksum
    recomputation.
-6. **ICMP fragmentation-needed.** Enough to make large transfers work.
-   Now the last thing standing in the way of a usable provider gateway.
-7. **Config parsing.** Last, because it is ergonomics.
+6. ~~ICMP fragmentation-needed.~~ **Done.** `--tunnel-mtu` sets the
+   limit; a larger packet with DF set is answered with ICMP type 3
+   code 4 carrying the next-hop MTU, so the sender's path-MTU discovery
+   adapts. 20 checks.
+7. **Config parsing.** All that remains, and it is ergonomics.
 
 Cookie support is off the critical path: this provider did not challenge
 us. Worth revisiting only if one does.

@@ -270,6 +270,38 @@ int wg_endpoint_resolve(struct wg_endpoint *ep, const char *host,
     return 0;
 }
 
+int wg_local_address_for(const struct wg_endpoint *peer,
+                         struct wg_endpoint *out)
+{
+    struct sockaddr_storage ss;
+    socklen_t slen = 0, alen;
+    int fd;
+    int rc = -1;
+
+    if (endpoint_to_sockaddr(peer, &ss, &slen) != 0)
+        return -1;
+
+    fd = socket(peer->family == WG_AF_INET6 ? AF_INET6 : AF_INET,
+                SOCK_DGRAM, 0);
+    if (fd < 0)
+        return -1;
+
+    /*
+     * connect() on a datagram socket sends nothing; it just asks the
+     * routing table which local address would be used. getsockname then
+     * reports it. Binding to the wildcard and asking directly would
+     * only ever return 0.0.0.0.
+     */
+    if (connect(fd, (struct sockaddr *) &ss, slen) == 0) {
+        alen = (socklen_t) sizeof ss;
+        if (getsockname(fd, (struct sockaddr *) &ss, &alen) == 0)
+            rc = sockaddr_to_endpoint(out, (struct sockaddr *) &ss);
+    }
+
+    close(fd);
+    return rc;
+}
+
 void wg_endpoint_format(char *out, size_t cap, const struct wg_endpoint *ep)
 {
     char host[64];

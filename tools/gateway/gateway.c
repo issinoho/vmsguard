@@ -48,6 +48,7 @@
 #endif
 
 #include "ethip.h"
+#include "icmp.h"
 #include "nat.h"
 #include "rawinject.h"
 #include "wg_client.h"
@@ -81,6 +82,8 @@ struct stats {
     unsigned long received;
     unsigned long injected;
     unsigned long dropped;
+    unsigned long too_big;
+    unsigned long icmp_sent;
 };
 
 static void usage(const char *argv0)
@@ -114,6 +117,11 @@ static void usage(const char *argv0)
 "                   tunnel other machines' traffic\n"
 "  --psk            optional preshared key, base64\n"
 "  --listen-port    local UDP port (default: any)\n"
+"  --tunnel-mtu     largest inner packet the tunnel carries. Default\n"
+"                   1420, which is 1500 less WireGuard, UDP and outer\n"
+"                   IP headers. Set it from the provider's config: a\n"
+"                   larger packet with DF set is answered with ICMP\n"
+"                   fragmentation-needed so the sender adapts\n"
 "  --keepalive      seconds between keepalives when otherwise idle,\n"
 "                   as PersistentKeepalive in a provider config.\n"
 "                   0 disables, which is the default\n"
@@ -211,6 +219,10 @@ int main(int argc, char **argv)
     char realif[64];
     int have_key = 0, have_peer = 0, verbose = 0;
     int keepalive_s = 0;
+    int tunnel_mtu = 1420;
+    struct wg_endpoint local_ep;
+    uint32_t gw_addr = 0;
+    int have_gw_addr = 0;
     uint16_t listen_port = 0, peer_port;
     int i;
 
@@ -272,6 +284,13 @@ int main(int argc, char **argv)
             nclients++;
         } else if (strcmp(argv[i], "--listen-port") == 0 && i + 1 < argc) {
             listen_port = (uint16_t) atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--tunnel-mtu") == 0 && i + 1 < argc) {
+            tunnel_mtu = atoi(argv[++i]);
+            if (tunnel_mtu < 576 || tunnel_mtu > 1500) {
+                fprintf(stderr,
+                        "error: --tunnel-mtu must be between 576 and 1500\n");
+                return 2;
+            }
         } else if (strcmp(argv[i], "--keepalive") == 0 && i + 1 < argc) {
             keepalive_s = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--verbose") == 0) {
@@ -414,6 +433,27 @@ int main(int argc, char **argv)
 
     nat_init(&nat, tunnel_addr);
 
+    /*
+     * ICMP errors have to come from an address the client recognises as
+     * the hop that dropped its packet. Ask the routing table which of
+     * our addresses faces the peer; that is the one a LAN client sees
+     * us as.
+     */
+    if (wg_local_address_for(&endpoint, &local_ep) == 0 &&
+        local_ep.family == WG_AF_INET) {
+        gw_addr = ((uint32_t) local_ep.addr[0] << 24) |
+                  ((uint32_t) local_ep.addr[1] << 16) |
+                  ((uint32_t) local_ep.addr[2] << 8) |
+                  (uint32_t) local_ep.addr[3];
+        have_gw_addr = 1;
+        ipv4_format(abuf, sizeof abuf, gw_addr);
+        printf("  our address    : %s\n", abuf);
+    } else {
+        printf("  our address    : unknown, so oversized packets will be\n"
+               "                   dropped without an ICMP reply\n");
+    }
+    printf("  tunnel MTU     : %d\n\n", tunnel_mtu);
+
     /* ---- injection ---- */
 
     if (raw_injector_open(&inj) != 0) {
@@ -507,6 +547,34 @@ int main(int argc, char **argv)
             if (ip != NULL && ipv4_in_subnet(ipv4_dst(ip),
                                              tun_net, tun_mask)) {
                 st.captured++;
+
+                /*
+                 * Too large for the tunnel. Tell the sender rather than
+                 * dropping in silence: without the ICMP its path-MTU
+                 * discovery never learns, and the symptom is small
+                 * requests working while transfers hang.
+                 */
+                if (iplen > (size_t) tunnel_mtu) {
+                    st.too_big++;
+                    if (have_gw_addr && ipv4_dont_fragment(ip, iplen)) {
+                        uint8_t err[128];
+                        size_t elen = icmp_frag_needed(err, sizeof err,
+                                                       gw_addr, ip, iplen,
+                                                       (uint16_t) tunnel_mtu);
+                        if (elen > 0 &&
+                            raw_injector_send(inj, err, elen) == 0) {
+                            st.icmp_sent++;
+                            if (verbose) {
+                                ipv4_format(abuf, sizeof abuf, ipv4_src(ip));
+                                printf("big %lu bytes from %s, told to use"
+                                       " %d\n", (unsigned long) iplen,
+                                       abuf, tunnel_mtu);
+                                fflush(stdout);
+                            }
+                        }
+                    }
+                    goto after_out;
+                }
 
                 /*
                  * Translation needs a writable copy: the capture buffer
@@ -603,6 +671,9 @@ after_out:
     printf("\ncaptured %lu, tunnelled %lu, received %lu, injected %lu,"
            " dropped %lu\n",
            st.captured, st.tunnelled, st.received, st.injected, st.dropped);
+    if (st.too_big > 0)
+        printf("oversized: %lu, of which %lu answered with ICMP"
+               " fragmentation-needed\n", st.too_big, st.icmp_sent);
     if (use_nat)
         printf("NAT: %lu translated, %lu restored, %d mappings live,"
                " dropped %lu unsupported / %lu unmatched / %lu table-full\n",

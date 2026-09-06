@@ -80,6 +80,18 @@ uint16_t wg_socket_port(const struct wg_socket *sock);
 int wg_endpoint_resolve(struct wg_endpoint *ep, const char *host,
                         uint16_t port);
 
+/*
+ * The local address the system would use to reach `peer`.
+ *
+ * Answered by the routing table rather than by asking an interface,
+ * because the gateway needs the address a client would see it as — the
+ * one to source ICMP errors from. The port in `out` is meaningless.
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+int wg_local_address_for(const struct wg_endpoint *peer,
+                         struct wg_endpoint *out);
+
 /* Format an endpoint as text, e.g. "10.0.0.1:51820". */
 void wg_endpoint_format(char *out, size_t cap, const struct wg_endpoint *ep);
 

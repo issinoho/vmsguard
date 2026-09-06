@@ -20,6 +20,7 @@ module and against a commercial VPN provider over the public internet.
 | Rekeying | Verified against real WireGuard |
 | Replay window | 64-bit sliding window, RFC-style |
 | Source NAT | TCP, UDP and ICMP echo, with connection tracking |
+| Path MTU | ICMP fragmentation-needed, RFC 1191 |
 | PersistentKeepalive | Verified: fires on an idle tunnel |
 | Gateway | Forwards a subnet through the tunnel, end to end |
 | Key tooling | `genkey`/`pubkey` agree with `wg(8)` on 100/100 keys |
@@ -91,10 +92,11 @@ never ours, so there is no plaintext original to suppress.
 - **No cookie support.** `mac2` is always zero, so a peer under load will
   refuse us. Detected and reported rather than retried forever. No
   provider tested so far has demanded one.
-- **No fragmentation or ICMP "fragmentation needed".** Large packets fail
-  silently where the tunnel MTU is below the LAN's — the last thing
-  standing between the gateway and a commercial provider. See
-  [`docs/vpn-provider.md`](docs/vpn-provider.md).
+- **No fragmentation** of oversized packets that permit it. Those with
+  DF set — which is almost everything that matters — are answered with
+  ICMP fragmentation-needed instead; the rest are dropped and counted.
+- **No provider config file parsing.** Everything is command-line
+  arguments. See [`docs/vpn-provider.md`](docs/vpn-provider.md).
 - **No roaming.** The peer endpoint is fixed at startup.
 
 ---
@@ -105,7 +107,7 @@ never ours, so there is no plaintext original to suppress.
 
 ```sh
 make          # protocol core, tools, tests
-make test     # 213 checks across five binaries
+make test     # 233 checks across six binaries
 make loopback # end-to-end self-test over real UDP
 ```
 

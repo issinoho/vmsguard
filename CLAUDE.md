@@ -8,7 +8,7 @@ things.
 
 ```sh
 make            # everything
-make test       # 213 checks across five binaries
+make test       # 233 checks across six binaries
 make loopback   # end-to-end over real UDP, needs no privilege
 ```
 
@@ -136,7 +136,7 @@ information justifies it.
    it cannot route, while the gateway tunnels the same packets.
 
 Done: rekeying, the replay sliding window, PersistentKeepalive, the
-gateway's source filter, and source NAT.
+gateway's source filter, source NAT, and ICMP fragmentation-needed.
 
 ## Commits
 
