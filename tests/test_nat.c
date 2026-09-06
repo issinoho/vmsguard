@@ -351,29 +351,29 @@ static void test_rejections(void)
     /* Unsolicited inbound traffic has no mapping and must not be
        guessed at. */
     len = build_l4(pkt, 6, PEER_ADDR, TUNNEL_ADDR, 80, 41234, 10);
-    check(nat_inbound(&t, pkt, len, 1000) == -1,
-          "inbound with no mapping is rejected");
+    check(nat_inbound(&t, pkt, len, 1000) == NAT_DROP_NO_MAPPING,
+          "inbound with no mapping is rejected, and says so");
 
     /* A protocol with no ports cannot be demultiplexed on the way back. */
     len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 1000, 80, 10);
     pkt[9] = 47;   /* GRE */
     put16(pkt + 10, ip_checksum(pkt));
-    check(nat_outbound(&t, pkt, len, 1000) == -1,
-          "an unsupported protocol is rejected");
+    check(nat_outbound(&t, pkt, len, 1000) == NAT_DROP_PROTOCOL,
+          "an unsupported protocol is rejected, and says so");
 
     /* ICMP errors embed the original header, which would need
        translating too; not handled, so refused rather than mangled. */
     len = build_icmp(pkt, LAN_ADDR, PEER_ADDR, 3 /* dest unreachable */,
                      0x1234, 1);
-    check(nat_outbound(&t, pkt, len, 1000) == -1,
-          "a non-echo ICMP type is rejected");
+    check(nat_outbound(&t, pkt, len, 1000) == NAT_DROP_ICMP_TYPE,
+          "a non-echo ICMP type is rejected, and says so");
 
     /* A later fragment has no transport header at all. */
     len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 1000, 80, 10);
     put16(pkt + 6, 0x0001);   /* fragment offset 1 */
     put16(pkt + 10, ip_checksum(pkt));
-    check(nat_outbound(&t, pkt, len, 1000) == -1,
-          "a non-first fragment is rejected");
+    check(nat_outbound(&t, pkt, len, 1000) == NAT_DROP_FRAGMENT,
+          "a non-first fragment is rejected as a fragment");
 
     /*
      * A first fragment could be translated, but its remainder cannot,
@@ -383,19 +383,51 @@ static void test_rejections(void)
     len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 1000, 80, 10);
     put16(pkt + 6, 0x2000);   /* More Fragments, offset 0 */
     put16(pkt + 10, ip_checksum(pkt));
-    check(nat_outbound(&t, pkt, len, 1000) == -1,
-          "a first fragment with More Fragments set is also rejected");
+    check(nat_outbound(&t, pkt, len, 1000) == NAT_DROP_FRAGMENT,
+          "a first fragment with More Fragments set is also a fragment");
 
     /* But DF, which shares the same field, must not be mistaken for a
        fragment flag. */
     len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 1000, 80, 10);
     put16(pkt + 6, 0x4000);   /* Don't Fragment */
     put16(pkt + 10, ip_checksum(pkt));
-    check(nat_outbound(&t, pkt, len, 1000) == 0,
+    check(nat_outbound(&t, pkt, len, 1000) == NAT_OK,
           "a packet with DF set is translated normally");
 
     /* Truncated. */
-    check(nat_outbound(&t, pkt, 10, 1000) == -1, "a runt packet is rejected");
+    check(nat_outbound(&t, pkt, 10, 1000) == NAT_DROP_MALFORMED,
+          "a runt packet is rejected as malformed");
+
+    /*
+     * The reasons are only worth distinguishing if they reach a log
+     * line, so every code must name itself, and no two may share a
+     * name. Checked by comparison rather than by eye, because a
+     * copy-and-paste in the switch would otherwise be invisible.
+     */
+    {
+        static const int codes[] = {
+            NAT_OK, NAT_DROP_MALFORMED, NAT_DROP_FRAGMENT,
+            NAT_DROP_PROTOCOL, NAT_DROP_ICMP_TYPE,
+            NAT_DROP_TABLE_FULL, NAT_DROP_NO_MAPPING
+        };
+        size_t i, j;
+        int named = 1, distinct = 1;
+
+        for (i = 0; i < sizeof codes / sizeof codes[0]; i++) {
+            const char *a = nat_reason(codes[i]);
+            if (a == NULL || a[0] == '\0' ||
+                strcmp(a, nat_reason(999)) == 0)
+                named = 0;
+            for (j = i + 1; j < sizeof codes / sizeof codes[0]; j++) {
+                if (strcmp(a, nat_reason(codes[j])) == 0)
+                    distinct = 0;
+            }
+        }
+        check(named, "every reason code has a name of its own");
+        check(distinct, "no two reason codes share a name");
+        check(strcmp(nat_reason(999), "unknown") == 0,
+              "an unrecognised code is named rather than crashing");
+    }
 }
 
 static void test_expiry(void)
@@ -419,7 +451,7 @@ static void test_expiry(void)
         uint64_t late = 1000 + NAT_TIMEOUT_MS + 1;
 
         check(nat_active(&t, late) == 0, "it has expired by the timeout");
-        check(nat_inbound(&t, reply, rlen, late) == -1,
+        check(nat_inbound(&t, reply, rlen, late) == NAT_DROP_NO_MAPPING,
               "and a reply after expiry no longer matches");
     }
 }

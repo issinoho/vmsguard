@@ -265,7 +265,24 @@ the LAN hosts' addresses in its `allowed-ips`, or it will decrypt the
 packets and discard them.
 
 `--verbose` prints a line per packet in each direction, which is the
-quickest way to see which half of the path is working.
+quickest way to see which half of the path is working:
+
+```
+out 10.13.127.177 -> 1.1.1.1  proto 17  76 bytes
+in  1.1.1.1 -> 192.168.0.218  proto 17  122 bytes
+out 192.168.0.218 -> 224.0.0.22  proto 2  40 bytes  DROPPED: unsupported protocol
+```
+
+Refusals are printed in the same shape, with the reason. This matters
+more than it looks: the first live run against a provider ended with
+`dropped 2 unsupported` and nothing at all in the log to say what those
+two had been, because every packet that *did* print was ordinary UDP.
+A count you cannot explain is barely better than no count.
+
+The reasons come from `nat_reason()` in `src/tun/nat.c`, so the tests
+assert the specific one — that a fragment is refused *as a fragment*
+rather than incidentally as a malformed header, which a return of plain
+`-1` could never distinguish.
 
 ### Stopping it, and the counters
 

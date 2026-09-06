@@ -130,6 +130,30 @@ static void on_interrupt(int sig)
      */
 }
 
+/*
+ * One line for a packet we refused.
+ *
+ * A live run against a provider ended with "dropped 2 unsupported" and
+ * nothing whatever to say what those two had been — every packet in the
+ * log was ordinary UDP. A count you cannot explain is barely better
+ * than no count, so under --verbose each refusal now names itself.
+ *
+ * Direction is spelled the same way as the forwarding lines, so the
+ * three read as one column.
+ */
+static void log_drop(const char *dir, const uint8_t *ip, size_t iplen,
+                     const char *why)
+{
+    char abuf[32], bbuf[32];
+
+    ipv4_format(abuf, sizeof abuf, ipv4_src(ip));
+    ipv4_format(bbuf, sizeof bbuf, ipv4_dst(ip));
+    printf("%s %s -> %s  proto %u  %lu bytes  DROPPED: %s\n",
+           dir, abuf, bbuf, (unsigned) ipv4_proto(ip),
+           (unsigned long) iplen, why);
+    fflush(stdout);
+}
+
 static void print_summary(void)
 {
     printf("\ncaptured %lu, tunnelled %lu, received %lu, injected %lu,"
@@ -624,6 +648,8 @@ int main(int argc, char **argv)
                  * requests working while transfers hang.
                  */
                 if (iplen > (size_t) tunnel_mtu) {
+                    int told = 0;
+
                     st.too_big++;
                     if (have_gw_addr && ipv4_dont_fragment(ip, iplen)) {
                         uint8_t err[128];
@@ -633,6 +659,7 @@ int main(int argc, char **argv)
                         if (elen > 0 &&
                             raw_injector_send(inj, err, elen) == 0) {
                             st.icmp_sent++;
+                            told = 1;
                             if (verbose) {
                                 ipv4_format(abuf, sizeof abuf, ipv4_src(ip));
                                 printf("big %lu bytes from %s, told to use"
@@ -642,6 +669,18 @@ int main(int argc, char **argv)
                             }
                         }
                     }
+                    /*
+                     * An oversized packet we could not answer is the
+                     * silent failure the ICMP exists to prevent, so say
+                     * so rather than letting it vanish into a counter.
+                     * Without DF the sender is entitled to expect us to
+                     * fragment, and we do not.
+                     */
+                    if (!told && verbose)
+                        log_drop("out", ip, iplen,
+                                 ipv4_dont_fragment(ip, iplen)
+                                 ? "too big, and no ICMP could be sent"
+                                 : "too big, and DF is not set");
                     goto after_out;
                 }
 
@@ -651,17 +690,24 @@ int main(int argc, char **argv)
                  * on the next call.
                  */
                 if (use_nat) {
+                    int nrc;
+
                     if (iplen > sizeof natbuf) {
                         st.dropped++;
+                        if (verbose)
+                            log_drop("out", ip, iplen,
+                                     "larger than the translation buffer");
                         goto after_out;
                     }
                     memcpy(natbuf, ip, iplen);
-                    if (nat_outbound(&nat, natbuf, iplen,
-                                     wg_time_ms()) != 0) {
+                    nrc = nat_outbound(&nat, natbuf, iplen, wg_time_ms());
+                    if (nrc != NAT_OK) {
                         /* Untranslatable: sending it anyway would leak
                            the client's address and be discarded by the
                            peer regardless. */
                         st.dropped++;
+                        if (verbose)
+                            log_drop("out", ip, iplen, nat_reason(nrc));
                         goto after_out;
                     }
                     ip = natbuf;
@@ -679,6 +725,8 @@ int main(int argc, char **argv)
                     }
                 } else {
                     st.dropped++;
+                    if (verbose)
+                        log_drop("out", ip, iplen, "tunnel send failed");
                 }
             }
 after_out:
@@ -706,10 +754,16 @@ after_out:
              * injecting that padding would corrupt the packet.
              */
             if (iplen >= IPV4_MIN_HDR && iplen <= plainlen) {
-                if (use_nat &&
-                    nat_inbound(&nat, plain, iplen, wg_time_ms()) != 0) {
+                int nrc = NAT_OK;
+
+                if (use_nat)
+                    nrc = nat_inbound(&nat, plain, iplen, wg_time_ms());
+
+                if (nrc != NAT_OK) {
                     /* No mapping: unsolicited, or the flow expired. */
                     st.dropped++;
+                    if (verbose)
+                        log_drop("in ", plain, iplen, nat_reason(nrc));
                 } else if (raw_injector_send(inj, plain, iplen) == 0) {
                     st.injected++;
                     if (verbose) {
@@ -730,6 +784,12 @@ after_out:
                 }
             } else {
                 st.dropped++;
+                if (verbose) {
+                    printf("in  decrypted %lu bytes claiming an IP length"
+                           " of %lu  DROPPED: malformed\n",
+                           (unsigned long) plainlen, (unsigned long) iplen);
+                    fflush(stdout);
+                }
             }
         } else if (rc == WG_SOCK_ERROR) {
             fprintf(stderr, "tunnel receive error\n");

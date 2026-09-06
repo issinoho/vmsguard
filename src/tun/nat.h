@@ -62,6 +62,30 @@ struct nat_table {
     unsigned long dropped_table_full;
 };
 
+/*
+ * Why a packet could not be translated.
+ *
+ * The counters above say how many were refused; these say what any one
+ * of them was, which is what a log line needs. A live run refusing two
+ * packets an hour tells you nothing useful until it can name them.
+ *
+ * Negative, so that the existing "non-zero means refused" tests in
+ * callers keep working, and so that NAT_DROP_MALFORMED stays -1 — the
+ * value the functions returned for every refusal before they could
+ * distinguish one from another.
+ */
+#define NAT_OK                0
+#define NAT_DROP_MALFORMED  (-1)   /* truncated, or not IPv4          */
+#define NAT_DROP_FRAGMENT   (-2)   /* any fragment of a datagram      */
+#define NAT_DROP_PROTOCOL   (-3)   /* not TCP, UDP or ICMP            */
+#define NAT_DROP_ICMP_TYPE  (-4)   /* ICMP, but not echo              */
+#define NAT_DROP_TABLE_FULL (-5)   /* no free entry, or no free port  */
+#define NAT_DROP_NO_MAPPING (-6)   /* inbound, matching nothing       */
+
+/* A short phrase for a reason code, suitable for a log line. Never
+   returns NULL, so it can be used directly in a format string. */
+const char *nat_reason(int code);
+
 /* tunnel_addr is in host order, as ipv4_dst returns. */
 void nat_init(struct nat_table *t, uint32_t tunnel_addr);
 
@@ -69,10 +93,10 @@ void nat_init(struct nat_table *t, uint32_t tunnel_addr);
  * Rewrite an outbound packet in place so it appears to originate from
  * the tunnel address, creating or refreshing a mapping.
  *
- * Returns 0 on success, -1 if the packet cannot be translated — an
- * unsupported protocol, a malformed header, or a full table. A rejected
- * packet must not be sent: it would be discarded by the far end anyway,
- * and would leak the client's address in doing so.
+ * Returns NAT_OK, or one of the negative NAT_DROP_* codes saying why
+ * the packet cannot be translated. A rejected packet must not be sent:
+ * it would be discarded by the far end anyway, and would leak the
+ * client's address in doing so.
  */
 int nat_outbound(struct nat_table *t, uint8_t *pkt, size_t len,
                  uint64_t now_ms);
@@ -81,8 +105,8 @@ int nat_outbound(struct nat_table *t, uint8_t *pkt, size_t len,
  * Rewrite an inbound packet in place, restoring the original client
  * address and port from the mapping.
  *
- * Returns 0 on success, -1 if no mapping matches, which is the normal
- * fate of unsolicited inbound traffic.
+ * Returns NAT_OK, or a negative NAT_DROP_* code. NAT_DROP_NO_MAPPING is
+ * the normal fate of unsolicited inbound traffic and is not a fault.
  */
 int nat_inbound(struct nat_table *t, uint8_t *pkt, size_t len,
                 uint64_t now_ms);

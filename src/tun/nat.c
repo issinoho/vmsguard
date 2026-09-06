@@ -114,20 +114,25 @@ struct pkt_view {
     int      is_icmp_echo;
 };
 
+/*
+ * Returns NAT_OK, or the NAT_DROP_* code saying why not. The reason
+ * matters as much as the refusal: a run that quietly declines a couple
+ * of packets is impossible to explain from a counter alone.
+ */
 static int inspect(uint8_t *pkt, size_t len, struct pkt_view *v)
 {
     size_t total;
 
     if (len < IPV4_MIN_HDR || (pkt[0] >> 4) != 4)
-        return -1;
+        return NAT_DROP_MALFORMED;
 
     v->ihl = (size_t) (pkt[0] & 0x0F) * 4;
     if (v->ihl < IPV4_MIN_HDR || v->ihl > len)
-        return -1;
+        return NAT_DROP_MALFORMED;
 
     total = (size_t) get16(pkt + 2);
     if (total > len || total < v->ihl)
-        return -1;
+        return NAT_DROP_MALFORMED;
 
     /*
      * Refuse every fragment of a fragmented datagram, not merely the
@@ -148,7 +153,7 @@ static int inspect(uint8_t *pkt, size_t len, struct pkt_view *v)
      * fragment offset.
      */
     if ((get16(pkt + 6) & (0x2000 | 0x1FFF)) != 0)
-        return -1;
+        return NAT_DROP_FRAGMENT;
 
     v->proto = pkt[9];
     v->l4 = pkt + v->ihl;
@@ -158,27 +163,42 @@ static int inspect(uint8_t *pkt, size_t len, struct pkt_view *v)
     switch (v->proto) {
     case IPPROTO_TCP_:
         if (v->l4len < 20)
-            return -1;
+            return NAT_DROP_MALFORMED;
         v->csum_off = 16;
         v->csum_covers_addrs = 1;
-        return 0;
+        return NAT_OK;
     case IPPROTO_UDP_:
         if (v->l4len < 8)
-            return -1;
+            return NAT_DROP_MALFORMED;
         v->csum_off = 6;
         v->csum_covers_addrs = 1;
-        return 0;
+        return NAT_OK;
     case IPPROTO_ICMP_:
         if (v->l4len < 8)
-            return -1;
+            return NAT_DROP_MALFORMED;
         if (v->l4[0] != ICMP_ECHO_REQUEST && v->l4[0] != ICMP_ECHO_REPLY)
-            return -1;   /* errors carry an embedded header; not handled */
+            return NAT_DROP_ICMP_TYPE;   /* errors carry an embedded
+                                            header; not handled */
         v->csum_off = 2;
         v->csum_covers_addrs = 0;   /* ICMP has no pseudo-header */
         v->is_icmp_echo = 1;
-        return 0;
+        return NAT_OK;
     default:
-        return -1;
+        return NAT_DROP_PROTOCOL;
+    }
+}
+
+const char *nat_reason(int code)
+{
+    switch (code) {
+    case NAT_OK:                return "translated";
+    case NAT_DROP_MALFORMED:    return "malformed header";
+    case NAT_DROP_FRAGMENT:     return "fragment";
+    case NAT_DROP_PROTOCOL:     return "unsupported protocol";
+    case NAT_DROP_ICMP_TYPE:    return "ICMP, but not echo";
+    case NAT_DROP_TABLE_FULL:   return "NAT table full";
+    case NAT_DROP_NO_MAPPING:   return "no matching mapping";
+    default:                    return "unknown";
     }
 }
 
@@ -298,10 +318,12 @@ int nat_outbound(struct nat_table *t, uint8_t *pkt, size_t len,
     struct nat_entry *e;
     uint32_t lan_addr, peer_addr;
     uint16_t lan_id, peer_id, nat_id, csum;
+    int rc;
 
-    if (inspect(pkt, len, &v) != 0) {
+    rc = inspect(pkt, len, &v);
+    if (rc != NAT_OK) {
         t->dropped_unsupported++;
-        return -1;
+        return rc;
     }
 
     lan_addr = ipv4_src(pkt);
@@ -320,12 +342,12 @@ int nat_outbound(struct nat_table *t, uint8_t *pkt, size_t len,
     if (e == NULL) {
         if (allocate_id(t, v.proto, now_ms, &nat_id) != 0) {
             t->dropped_table_full++;
-            return -1;
+            return NAT_DROP_TABLE_FULL;
         }
         e = claim_slot(t, now_ms);
         if (e == NULL) {
             t->dropped_table_full++;
-            return -1;
+            return NAT_DROP_TABLE_FULL;
         }
         e->proto = v.proto;
         e->lan_addr = lan_addr;
@@ -366,7 +388,7 @@ int nat_outbound(struct nat_table *t, uint8_t *pkt, size_t len,
     ip_checksum_fix(pkt, v.ihl);
 
     t->translated++;
-    return 0;
+    return NAT_OK;
 }
 
 int nat_inbound(struct nat_table *t, uint8_t *pkt, size_t len,
@@ -376,10 +398,12 @@ int nat_inbound(struct nat_table *t, uint8_t *pkt, size_t len,
     struct nat_entry *e;
     uint32_t peer_addr;
     uint16_t nat_id, peer_id, csum;
+    int rc;
 
-    if (inspect(pkt, len, &v) != 0) {
+    rc = inspect(pkt, len, &v);
+    if (rc != NAT_OK) {
         t->dropped_unsupported++;
-        return -1;
+        return rc;
     }
 
     peer_addr = ipv4_src(pkt);
@@ -395,7 +419,7 @@ int nat_inbound(struct nat_table *t, uint8_t *pkt, size_t len,
     e = find_inbound(t, v.proto, nat_id, peer_addr, peer_id, now_ms);
     if (e == NULL) {
         t->dropped_no_mapping++;
-        return -1;
+        return NAT_DROP_NO_MAPPING;
     }
     e->last_used_ms = now_ms;
 
@@ -419,5 +443,5 @@ int nat_inbound(struct nat_table *t, uint8_t *pkt, size_t len,
     ip_checksum_fix(pkt, v.ihl);
 
     t->restored++;
-    return 0;
+    return NAT_OK;
 }
