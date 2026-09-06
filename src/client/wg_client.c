@@ -31,7 +31,9 @@ int wg_client_init(struct wg_client *c,
 
     c->endpoint = *endpoint;
 
-    if (wg_socket_open(&c->sock, listen_port) != 0) {
+    /* Open in the peer's address family. A dual-stack IPv6 socket
+       would need IPv4-mapped destinations, which OpenVMS rejects. */
+    if (wg_socket_open(&c->sock, listen_port, endpoint->family) != 0) {
         set_error(c, "could not open UDP socket");
         return -1;
     }

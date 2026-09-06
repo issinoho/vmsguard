@@ -40,10 +40,21 @@ struct wg_endpoint {
 struct wg_socket;   /* opaque, defined by the platform implementation */
 
 /*
- * Open a UDP socket. listen_port may be 0 to let the system choose,
- * which is what a client wants. Returns 0 on success, -1 on failure.
+ * Open a UDP socket bound to the wildcard address of `family`
+ * (WG_AF_INET or WG_AF_INET6). listen_port may be 0 to let the system
+ * choose, which is what a client wants.
+ *
+ * The family is explicit rather than opening a dual-stack IPv6 socket
+ * and relying on IPv4-mapped addresses. Linux accepts an AF_INET
+ * destination on such a socket; OpenVMS rejects it, and OpenVMS is the
+ * stricter and more standard reading. Callers know which family their
+ * peer uses, so asking for it directly avoids depending on either
+ * behaviour.
+ *
+ * Returns 0 on success, -1 on failure.
  */
-int wg_socket_open(struct wg_socket **sock, uint16_t listen_port);
+int wg_socket_open(struct wg_socket **sock, uint16_t listen_port,
+                   uint8_t family);
 
 void wg_socket_close(struct wg_socket *sock);
 

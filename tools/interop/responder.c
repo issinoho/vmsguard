@@ -102,7 +102,8 @@ static void usage(const char *argv0)
 "          [--psk <base64>] [--packets <n>]\n"
 "\n"
 "  --packets  exit after echoing this many data packets (default: run\n"
-"             until interrupted); a keepalive counts as a packet\n", argv0);
+"             until interrupted); a keepalive counts as a packet\n"
+"  --ipv6     listen on IPv6 instead of IPv4\n", argv0);
 }
 
 int main(int argc, char **argv)
@@ -125,6 +126,7 @@ int main(int argc, char **argv)
     int have_key = 0, have_peer = 0;
     int established = 0;
     int packets = -1, echoed = 0;
+    uint8_t family = WG_AF_INET;
     uint16_t port = 0;
     int i;
 
@@ -151,6 +153,8 @@ int main(int argc, char **argv)
             port = (uint16_t) atoi(argv[++i]);
         } else if (strcmp(argv[i], "--packets") == 0 && i + 1 < argc) {
             packets = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--ipv6") == 0) {
+            family = WG_AF_INET6;
         } else {
             usage(argv[0]);
             return 2;
@@ -169,7 +173,7 @@ int main(int argc, char **argv)
     wg_peer_init(&peer, peerkey, pskp);
     wg_mac1_key(self_mac1, local.static_public);
 
-    if (wg_socket_open(&sock, port) != 0) {
+    if (wg_socket_open(&sock, port, family) != 0) {
         fprintf(stderr, "cannot bind UDP port %u\n", (unsigned) port);
         return 1;
     }

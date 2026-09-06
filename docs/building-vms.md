@@ -149,6 +149,25 @@ working around it: the `sockaddr_in6` is already zeroed with `memset`
 before use, and all-zeroes *is* the unspecified address, so the
 assignment was redundant on every platform.
 
+### Dual-stack IPv6 sockets do not accept IPv4 destinations
+
+`wg_socket_open` originally opened an `AF_INET6` socket with
+`IPV6_V6ONLY` off, intending one socket to serve both families. Sending
+to an IPv4 peer then failed on OpenVMS:
+
+```
+FAILED: failed to send handshake initiation
+```
+
+Linux accepts an `AF_INET` destination on such a socket; OpenVMS
+rejects it, and OpenVMS has the stricter and more defensible reading —
+the mapped-address form would be required. The code was relying on
+Linux being lenient.
+
+`wg_socket_open` now takes an explicit address family, and the client
+passes the peer's. That removes the dual-stack assumption entirely
+rather than papering over it with IPv4-mapped addresses.
+
 ### `gettimeofday` does not exist on OpenVMS
 
 ```

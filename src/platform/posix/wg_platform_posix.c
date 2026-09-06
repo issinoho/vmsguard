@@ -90,65 +90,59 @@ static int sockaddr_to_endpoint(struct wg_endpoint *ep,
 
 /* ---- socket --------------------------------------------------------- */
 
-int wg_socket_open(struct wg_socket **out, uint16_t listen_port)
+int wg_socket_open(struct wg_socket **out, uint16_t listen_port,
+                   uint8_t family)
 {
     struct wg_socket *s;
-    struct sockaddr_in6 addr;
+    struct sockaddr_storage ss;
+    socklen_t slen;
     socklen_t alen;
     int on = 1;
-    int off = 0;
     int flags;
+    int af;
+
+    if (family == WG_AF_INET) {
+        af = AF_INET;
+    } else if (family == WG_AF_INET6) {
+        af = AF_INET6;
+    } else {
+        return -1;
+    }
 
     s = (struct wg_socket *) calloc(1, sizeof *s);
     if (s == NULL)
         return -1;
-    s->fd = -1;
 
-    /* An IPv6 socket with V6ONLY off accepts IPv4 too, so one socket
-       covers both families. If that fails, fall back to IPv4 only. */
-    s->fd = socket(AF_INET6, SOCK_DGRAM, 0);
-    if (s->fd >= 0) {
-        if (setsockopt(s->fd, IPPROTO_IPV6, IPV6_V6ONLY,
-                       (void *) &off, sizeof off) < 0) {
-            /* Not fatal: we simply may not get IPv4 mapping. */
-        }
-        memset(&addr, 0, sizeof addr);
-        addr.sin6_family = AF_INET6;
-        addr.sin6_port = htons(listen_port);
-        /* The memset above already leaves sin6_addr as all zeroes, which
-           is the unspecified address (::) — exactly what in6addr_any
-           holds. Assigning that global explicitly would add a symbol
-           dependency for no benefit, and OpenVMS does not export it
-           (%ILINK-I-UDFSYM, IN6ADDR_ANY). */
-
-        (void) setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR,
-                          (void *) &on, sizeof on);
-
-        if (bind(s->fd, (struct sockaddr *) &addr, sizeof addr) < 0) {
-            close(s->fd);
-            s->fd = -1;
-        }
+    s->fd = socket(af, SOCK_DGRAM, 0);
+    if (s->fd < 0) {
+        free(s);
+        return -1;
     }
 
-    if (s->fd < 0) {
-        struct sockaddr_in a4;
+    (void) setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR,
+                      (void *) &on, sizeof on);
 
-        s->fd = socket(AF_INET, SOCK_DGRAM, 0);
-        if (s->fd < 0) {
-            free(s);
-            return -1;
-        }
-        (void) setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR,
-                          (void *) &on, sizeof on);
-        memset(&a4, 0, sizeof a4);
-        a4.sin_family = AF_INET;
-        a4.sin_port = htons(listen_port);
-        a4.sin_addr.s_addr = INADDR_ANY;
-        if (bind(s->fd, (struct sockaddr *) &a4, sizeof a4) < 0) {
-            close(s->fd);
-            free(s);
-            return -1;
-        }
+    /* Bind to the wildcard address of the chosen family. A zeroed
+       sockaddr already holds INADDR_ANY / the unspecified IPv6 address,
+       so no address constant is needed — which also avoids referencing
+       in6addr_any, a symbol OpenVMS does not export. */
+    memset(&ss, 0, sizeof ss);
+    if (af == AF_INET) {
+        struct sockaddr_in *sin = (struct sockaddr_in *) &ss;
+        sin->sin_family = AF_INET;
+        sin->sin_port = htons(listen_port);
+        slen = (socklen_t) sizeof *sin;
+    } else {
+        struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *) &ss;
+        sin6->sin6_family = AF_INET6;
+        sin6->sin6_port = htons(listen_port);
+        slen = (socklen_t) sizeof *sin6;
+    }
+
+    if (bind(s->fd, (struct sockaddr *) &ss, slen) < 0) {
+        close(s->fd);
+        free(s);
+        return -1;
     }
 
     /* Non-blocking, so poll() alone governs when we wait. */
@@ -156,15 +150,14 @@ int wg_socket_open(struct wg_socket **out, uint16_t listen_port)
     if (flags >= 0)
         (void) fcntl(s->fd, F_SETFL, flags | O_NONBLOCK);
 
-    /* Record the port actually assigned. */
-    {
-        struct sockaddr_storage ss;
-        alen = (socklen_t) sizeof ss;
-        if (getsockname(s->fd, (struct sockaddr *) &ss, &alen) == 0) {
-            struct wg_endpoint ep;
-            if (sockaddr_to_endpoint(&ep, (struct sockaddr *) &ss) == 0)
-                s->port = ep.port;
-        }
+    /* Record the port actually assigned, which matters when 0 was
+       passed and the system chose one. */
+    memset(&ss, 0, sizeof ss);
+    alen = (socklen_t) sizeof ss;
+    if (getsockname(s->fd, (struct sockaddr *) &ss, &alen) == 0) {
+        struct wg_endpoint ep;
+        if (sockaddr_to_endpoint(&ep, (struct sockaddr *) &ss) == 0)
+            s->port = ep.port;
     }
 
     *out = s;
