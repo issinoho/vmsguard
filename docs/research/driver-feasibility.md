@@ -2,11 +2,11 @@
 
 ## Status: not started — this is a feasibility investigation, not committed work
 
-> **See `slip-tunnel.md` first.** SLIP over a pseudo-terminal now looks like
-> a stronger candidate than anything in this document: it solves the
-> suppression problem outright and provides a real interface for the routing
-> table, without a kernel driver. The pcap material below remains as the
-> fallback if that approach doesn't hold up.
+> **`slip-tunnel.md` is now closed.** SLIP has no driver on OpenVMS
+> x86-64, and PPP — which does have one — requires a modem-controlled
+> dialup line that a `PTD$` pseudoterminal cannot provide. The
+> serial-line route to a virtual interface is ruled out, which makes the
+> material below the live option again.
 
 Per the project plan, the MVP (Phase 1) does not require a kernel-mode
 virtual network interface: it proves out WireGuard protocol/crypto
