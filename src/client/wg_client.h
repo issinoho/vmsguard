@@ -62,6 +62,14 @@ struct wg_client {
     uint64_t             rekey_after_ms;
     uint64_t             reject_after_ms;
 
+    /*
+     * PersistentKeepalive. Zero disables it, which is the default and
+     * matches WireGuard. A provider config's "PersistentKeepalive = 25"
+     * becomes 25000 here.
+     */
+    uint64_t             keepalive_interval_ms;
+    uint64_t             last_send_ms;
+
     uint32_t             local_index;
     int                  state;
 
@@ -116,6 +124,20 @@ int wg_client_session_expired(const struct wg_client *c);
  * Age of the current session in milliseconds, or 0 if none.
  */
 uint64_t wg_client_session_age_ms(const struct wg_client *c);
+
+/*
+ * Periodic work: sends a keepalive if keepalive_interval_ms has elapsed
+ * since anything was last sent, and rekeys if the session is due.
+ *
+ * Call it regularly from an event loop. Cheap when there is nothing to
+ * do. Returns 0 on success, -1 if a keepalive was due and could not be
+ * sent, with client->error set.
+ *
+ * Without this a NAT or stateful firewall between us and the peer drops
+ * its mapping after a minute or two of silence, and inbound packets
+ * stop arriving — which is what PersistentKeepalive exists to prevent.
+ */
+int wg_client_tick(struct wg_client *c);
 
 /*
  * Wait for a transport data packet and decrypt it. Returns WG_SOCK_OK

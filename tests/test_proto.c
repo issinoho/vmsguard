@@ -494,6 +494,79 @@ static void test_keys(void)
           "rejects non-canonical trailing bits");
 }
 
+/* ---- replay window --------------------------------------------------- */
+
+static void test_replay(void)
+{
+    struct wg_replay r;
+    int i, all;
+
+    printf("\nreplay window\n");
+
+    /* A fresh window accepts counter 0 exactly once. WireGuard's first
+       transport packet uses counter 0, so rejecting it would break the
+       session before it started. */
+    wg_replay_init(&r);
+    check(wg_replay_check(&r, 0) == 1, "counter 0 accepted on a fresh window");
+    check(wg_replay_check(&r, 0) == 0, "counter 0 rejected the second time");
+
+    /* Ordinary ascending traffic. */
+    wg_replay_init(&r);
+    all = 1;
+    for (i = 0; i < 1000; i++) {
+        if (!wg_replay_check(&r, (uint64_t) i))
+            all = 0;
+    }
+    check(all, "1000 packets in order are all accepted");
+    check(wg_replay_check(&r, 500) == 0,
+          "a counter well inside the window is rejected as seen");
+
+    /* Reordering within the window: the whole point of having one. */
+    wg_replay_init(&r);
+    check(wg_replay_check(&r, 10) == 1, "counter 10 accepted");
+    check(wg_replay_check(&r, 8) == 1, "an earlier counter is still accepted");
+    check(wg_replay_check(&r, 9) == 1, "and the one between them");
+    check(wg_replay_check(&r, 8) == 0, "but not a second time");
+    check(wg_replay_check(&r, 11) == 1, "and forward progress continues");
+
+    /* Out of order across the whole window, delivered backwards. */
+    wg_replay_init(&r);
+    (void) wg_replay_check(&r, 63);
+    all = 1;
+    for (i = 62; i >= 0; i--) {
+        if (!wg_replay_check(&r, (uint64_t) i))
+            all = 0;
+    }
+    check(all, "a full window delivered in reverse is all accepted");
+
+    /* Too old to judge. */
+    wg_replay_init(&r);
+    check(wg_replay_check(&r, 1000) == 1, "a large counter is accepted");
+    check(wg_replay_check(&r, 1000 - WG_REPLAY_WINDOW + 1) == 1,
+          "the oldest counter still inside the window is accepted");
+    check(wg_replay_check(&r, 1000 - WG_REPLAY_WINDOW) == 0,
+          "one counter beyond the window is rejected");
+    check(wg_replay_check(&r, 0) == 0, "and anything far older");
+
+    /* A jump of more than a window clears history rather than leaving
+       stale bits that would reject fresh counters. */
+    wg_replay_init(&r);
+    (void) wg_replay_check(&r, 5);
+    check(wg_replay_check(&r, 5000) == 1, "a large forward jump is accepted");
+    check(wg_replay_check(&r, 4999) == 1,
+          "and the window behind it is clear, not stale");
+    check(wg_replay_check(&r, 5000) == 0, "while the jumped-to counter is seen");
+
+    /* Counters near the 64-bit ceiling must not wrap or misbehave. */
+    wg_replay_init(&r);
+    check(wg_replay_check(&r, 0xFFFFFFFFFFFFFFF0ULL) == 1,
+          "a counter near the 64-bit maximum is accepted");
+    check(wg_replay_check(&r, 0xFFFFFFFFFFFFFFF0ULL) == 0,
+          "and rejected on repeat");
+    check(wg_replay_check(&r, 0xFFFFFFFFFFFFFFF1ULL) == 1,
+          "and the next one still advances");
+}
+
 /* ---- timestamp ------------------------------------------------------ */
 
 static void test_timestamp(void)
@@ -523,6 +596,7 @@ int main(void)
     test_handshake();
     test_psk_mismatch();
     test_keys();
+    test_replay();
     test_timestamp();
 
     printf("\n%s — %d checks, %d failure%s\n",

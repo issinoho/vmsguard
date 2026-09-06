@@ -8,7 +8,7 @@ things.
 
 ```sh
 make            # everything
-make test       # 156 checks across four binaries
+make test       # 176 checks across four binaries
 make loopback   # end-to-end over real UDP, needs no privilege
 ```
 
@@ -126,14 +126,19 @@ information justifies it.
 
 ## Known gaps, in priority order
 
-1. **Replay sliding window.** Currently a strict highest-counter check,
-   so reordered packets are dropped. Fails safe, but real networks
-   reorder. Self-contained and testable on Linux.
-2. **Cookie support.** `mac2` is always zero; a peer under load will
-   refuse us. Detected and reported rather than retried forever.
-3. **Roaming.** The peer endpoint is fixed at startup.
-4. **ICMP unreachables.** The VMS stack answers for the tunnelled subnet
+1. **Source NAT with connection tracking.** Needed before a commercial
+   provider can be used as a gateway: they accept only their assigned
+   tunnel address as a source. The largest remaining piece.
+2. **ICMP fragmentation-needed.** Providers set a tunnel MTU well below
+   1500, and large packets currently fail silently.
+3. **Cookie support.** `mac2` is always zero; a peer under load will
+   refuse us. No provider tested has demanded one.
+4. **Roaming.** The peer endpoint is fixed at startup.
+5. **ICMP unreachables.** The VMS stack answers for the tunnelled subnet
    it cannot route, while the gateway tunnels the same packets.
+
+Done: rekeying, the replay sliding window, PersistentKeepalive, and the
+gateway's source filter.
 
 ## Commits
 

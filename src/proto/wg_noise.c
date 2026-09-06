@@ -450,6 +450,42 @@ int wg_transport_decrypt(uint8_t *out, size_t *outlen, uint64_t *counter,
     return 0;
 }
 
+/* ---- replay window --------------------------------------------------- */
+
+void wg_replay_init(struct wg_replay *r)
+{
+    r->max = 0;
+    r->bitmap = 0;
+}
+
+int wg_replay_check(struct wg_replay *r, uint64_t counter)
+{
+    uint64_t diff;
+
+    if (counter > r->max) {
+        /* Newer than anything seen: slide the window up. A jump of a
+           whole window or more leaves nothing worth keeping. */
+        diff = counter - r->max;
+        if (diff >= WG_REPLAY_WINDOW)
+            r->bitmap = 1;
+        else
+            r->bitmap = (r->bitmap << diff) | 1;
+        r->max = counter;
+        return 1;
+    }
+
+    /* At or below the highest seen. Bit 0 represents max itself, so the
+       distance below max is the bit position. */
+    diff = r->max - counter;
+    if (diff >= WG_REPLAY_WINDOW)
+        return 0;                       /* too old to judge */
+    if (r->bitmap & (1ULL << diff))
+        return 0;                       /* already seen */
+
+    r->bitmap |= (1ULL << diff);
+    return 1;
+}
+
 /* ---- misc ----------------------------------------------------------- */
 
 void wg_timestamp(uint8_t out[WG_TIMESTAMP_LEN])

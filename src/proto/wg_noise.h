@@ -70,12 +70,41 @@ struct wg_handshake {
    but the counter must not be allowed to wrap. */
 #define WG_REKEY_AFTER_MESSAGES   (1ULL << 60)
 
+/*
+ * Replay protection.
+ *
+ * A strict "counter must exceed the highest seen" rule rejects any
+ * packet the network reorders, and networks reorder. WireGuard specifies
+ * a sliding window instead: a packet is accepted if it is newer than
+ * everything seen, or within the window and not already seen.
+ *
+ * 64 bits is narrower than the kernel implementation's 2048 but far
+ * simpler, and covers ordinary reordering comfortably. The bitmap holds
+ * one bit per counter below max, bit 0 being max itself.
+ */
+#define WG_REPLAY_WINDOW 64
+
+struct wg_replay {
+    uint64_t max;
+    uint64_t bitmap;
+};
+
+void wg_replay_init(struct wg_replay *r);
+
+/*
+ * Test a counter and record it. Returns 1 to accept, 0 to reject as a
+ * duplicate or as too old to judge.
+ *
+ * Counter 0 is valid: a fresh window accepts it exactly once.
+ */
+int wg_replay_check(struct wg_replay *r, uint64_t counter);
+
 /* Derived transport keys. */
 struct wg_keypair {
     uint8_t  send_key[WG_KEY_LEN];
     uint8_t  recv_key[WG_KEY_LEN];
     uint64_t send_counter;
-    uint64_t recv_counter_max;   /* replay guard, per keypair */
+    struct wg_replay replay;
     uint32_t local_index;
     uint32_t remote_index;
 };

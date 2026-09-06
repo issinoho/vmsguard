@@ -18,6 +18,8 @@ module and against a commercial VPN provider over the public internet.
 | Protocol core | 93 self-tests pass natively on OpenVMS |
 | Handshake and transport | Wire-compatible with upstream WireGuard |
 | Rekeying | Verified against real WireGuard |
+| Replay window | 64-bit sliding window, RFC-style |
+| PersistentKeepalive | Verified: fires on an idle tunnel |
 | Gateway | Forwards a subnet through the tunnel, end to end |
 | Key tooling | `genkey`/`pubkey` agree with `wg(8)` on 100/100 keys |
 
@@ -79,11 +81,14 @@ never ours, so there is no plaintext original to suppress.
 
 ### Remaining gaps
 
-- **No replay sliding window.** Only counters above the highest seen are
-  accepted, so reordered packets are dropped. Stricter than the spec, so
-  it fails safe, but real networks reorder.
 - **No cookie support.** `mac2` is always zero, so a peer under load will
-  refuse us. Detected and reported rather than retried forever.
+  refuse us. Detected and reported rather than retried forever. No
+  provider tested so far has demanded one.
+- **No source NAT.** Needed to use a commercial provider as a gateway,
+  since they accept only their assigned tunnel address as a source. See
+  [`docs/vpn-provider.md`](docs/vpn-provider.md).
+- **No fragmentation or ICMP "fragmentation needed".** Large packets fail
+  silently where the tunnel MTU is below the LAN's.
 - **No roaming.** The peer endpoint is fixed at startup.
 
 ---
@@ -94,7 +99,7 @@ never ours, so there is no plaintext original to suppress.
 
 ```sh
 make          # protocol core, tools, tests
-make test     # 156 checks across four binaries
+make test     # 176 checks across four binaries
 make loopback # end-to-end self-test over real UDP
 ```
 

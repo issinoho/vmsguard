@@ -192,12 +192,20 @@ handshake today, which would be a worthwhile first test — it isolates
 ## Suggested order
 
 1. ~~Handshake against the provider.~~ **Done** — see above.
-2. **Source filtering** in the gateway. Small, and required before
-   `0.0.0.0/0` is safe to point at anything.
-3. **PersistentKeepalive.** Small, and needed for any long-lived session
-   through NAT.
-4. **Replay window.** Self-contained, testable entirely on Linux.
-5. **Source NAT with connection tracking.** The substantial one.
+2. ~~Source filtering in the gateway.~~ **Done.** `--client` takes a
+   repeatable address or subnet, and is *required* when the tunnel
+   subnet is wider than /8. The gateway also refuses to tunnel packets
+   addressed to the peer endpoint, so its own outer traffic cannot loop.
+3. ~~PersistentKeepalive.~~ **Done.** `--keepalive` on the gateway and
+   the interop client. Verified idle: four packets in nine seconds at a
+   two-second interval, none with it disabled.
+4. ~~Replay window.~~ **Done.** A 64-bit sliding window replaces the
+   strict counter check, so reordered packets are accepted and
+   duplicates still rejected. 20 checks cover reordering, duplicates,
+   window edges, large forward jumps and counters near the 64-bit
+   ceiling.
+5. **Source NAT with connection tracking.** The substantial one, and now
+   the next thing standing in the way.
 6. **ICMP fragmentation-needed.** Enough to make large transfers work.
 7. **Config parsing.** Last, because it is ergonomics.
 

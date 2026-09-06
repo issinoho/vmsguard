@@ -66,6 +66,14 @@
  */
 #define PCAP_TIMEOUT_MS 50
 
+/* Plenty for a gateway serving a handful of hosts. */
+#define MAX_CLIENTS 16
+
+struct client_filter {
+    uint32_t net;
+    uint32_t mask;
+};
+
 struct stats {
     unsigned long captured;
     unsigned long tunnelled;
@@ -87,8 +95,16 @@ static void usage(const char *argv0)
 "  --interface      LAN interface to capture on, e.g. IE0\n"
 "  --tunnel-subnet  traffic for this subnet is tunnelled,\n"
 "                   e.g. 10.9.0.0/24\n"
+"  --client         only forward for this source address or subnet.\n"
+"                   Repeatable. Required when the tunnel subnet is\n"
+"                   wider than /8, because packet capture is\n"
+"                   promiscuous and an unfiltered wide subnet would\n"
+"                   tunnel other machines' traffic\n"
 "  --psk            optional preshared key, base64\n"
 "  --listen-port    local UDP port (default: any)\n"
+"  --keepalive      seconds between keepalives when otherwise idle,\n"
+"                   as PersistentKeepalive in a provider config.\n"
+"                   0 disables, which is the default\n"
 "\n"
 "LAN hosts must route the tunnel subnet via this machine. Needs\n"
 "privilege for both packet capture and raw sockets (SYSPRV on\n"
@@ -170,11 +186,14 @@ int main(int argc, char **argv)
     uint8_t privkey[WG_KEY_LEN], peerkey[WG_KEY_LEN], psk[WG_KEY_LEN];
     uint8_t *pskp = NULL;
     uint32_t tun_net = 0, tun_mask = 0;
+    struct client_filter clients[MAX_CLIENTS];
+    int nclients = 0;
     const char *endpoint_arg = NULL, *ifname = NULL, *subnet_arg = NULL;
     const char *colon;
     char host[128], b64[WG_KEY_B64_LEN], abuf[16], bbuf[16];
     char realif[64];
     int have_key = 0, have_peer = 0, verbose = 0;
+    int keepalive_s = 0;
     uint16_t listen_port = 0, peer_port;
     int i;
 
@@ -199,8 +218,23 @@ int main(int argc, char **argv)
             ifname = argv[++i];
         } else if (strcmp(argv[i], "--tunnel-subnet") == 0 && i + 1 < argc) {
             subnet_arg = argv[++i];
+        } else if (strcmp(argv[i], "--client") == 0 && i + 1 < argc) {
+            if (nclients >= MAX_CLIENTS) {
+                fprintf(stderr, "error: at most %d --client entries\n",
+                        MAX_CLIENTS);
+                return 2;
+            }
+            if (ethip_parse_cidr(argv[++i], &clients[nclients].net,
+                                 &clients[nclients].mask) != 0) {
+                fprintf(stderr, "error: --client '%s' is not valid CIDR\n",
+                        argv[i]);
+                return 2;
+            }
+            nclients++;
         } else if (strcmp(argv[i], "--listen-port") == 0 && i + 1 < argc) {
             listen_port = (uint16_t) atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--keepalive") == 0 && i + 1 < argc) {
+            keepalive_s = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--verbose") == 0) {
             verbose = 1;
         } else {
@@ -218,6 +252,26 @@ int main(int argc, char **argv)
     if (ethip_parse_cidr(subnet_arg, &tun_net, &tun_mask) != 0) {
         fprintf(stderr, "error: --tunnel-subnet '%s' is not valid CIDR\n",
                 subnet_arg);
+        return 2;
+    }
+
+    /*
+     * Packet capture is promiscuous: every frame on the segment is
+     * visible, not just those addressed to this machine. A narrow
+     * tunnel subnet is self-limiting, but a wide one would match
+     * traffic between machines that have nothing to do with vmsguard
+     * and tunnel it to the far end.
+     *
+     * So a wide subnet requires an explicit list of hosts to forward
+     * for. /8 is the cut-off: anything broader is almost certainly a
+     * full tunnel, where this matters most.
+     */
+    if (tun_mask < 0xFF000000UL && nclients == 0) {
+        fprintf(stderr,
+            "error: --tunnel-subnet %s is wider than /8, so --client is\n"
+            "       required. Capture is promiscuous, and without a source\n"
+            "       filter this would tunnel other machines' traffic.\n",
+            subnet_arg);
         return 2;
     }
 
@@ -253,6 +307,15 @@ int main(int argc, char **argv)
     ipv4_format(abuf, sizeof abuf, tun_net);
     ipv4_format(bbuf, sizeof bbuf, tun_mask);
     printf("  tunnel subnet  : %s mask %s\n", abuf, bbuf);
+    if (nclients == 0) {
+        printf("  forwarding for : any source\n");
+    } else {
+        for (i = 0; i < nclients; i++) {
+            ipv4_format(abuf, sizeof abuf, clients[i].net);
+            ipv4_format(bbuf, sizeof bbuf, clients[i].mask);
+            printf("  forwarding for : %s mask %s\n", abuf, bbuf);
+        }
+    }
 
     /* ---- capture ---- */
 
@@ -299,7 +362,12 @@ int main(int argc, char **argv)
         wg_client_close(&client);
         return 1;
     }
-    printf("  established\n\n");
+    if (keepalive_s > 0) {
+        client.keepalive_interval_ms = (uint64_t) keepalive_s * 1000;
+        printf("  established, keepalive every %d s\n\n", keepalive_s);
+    } else {
+        printf("  established\n\n");
+    }
     printf("forwarding. Ctrl-Y or Ctrl-C to stop.\n\n");
     fflush(stdout);
 
@@ -319,6 +387,30 @@ int main(int argc, char **argv)
             size_t iplen = 0;
 
             ip = ethip_ipv4((const uint8_t *) frame, hdr->caplen, &iplen);
+
+            /*
+             * Never tunnel our own encrypted traffic. With a wide
+             * tunnel subnet the outer packets heading to the peer would
+             * otherwise match and be re-tunnelled, recursively.
+             */
+            if (ip != NULL && endpoint.family == WG_AF_INET &&
+                memcmp(ip + 16, endpoint.addr, 4) == 0)
+                ip = NULL;
+
+            /* Only forward for hosts we were told to serve. */
+            if (ip != NULL && nclients > 0) {
+                int j, allowed = 0;
+                for (j = 0; j < nclients; j++) {
+                    if (ipv4_in_subnet(ipv4_src(ip), clients[j].net,
+                                       clients[j].mask)) {
+                        allowed = 1;
+                        break;
+                    }
+                }
+                if (!allowed)
+                    ip = NULL;
+            }
+
             if (ip != NULL && ipv4_in_subnet(ipv4_dst(ip),
                                              tun_net, tun_mask)) {
                 st.captured++;
@@ -340,6 +432,10 @@ int main(int argc, char **argv)
             fprintf(stderr, "capture error: %s\n", pcap_geterr(pc));
             break;
         }
+
+        /* Keepalives and rekeying are time-driven, so an idle tunnel
+           still needs the clock looked at. */
+        (void) wg_client_tick(&client);
 
         /* Inbound: decrypt and put it back on the LAN. Zero timeout,
            because pcap_next_ex above already did the waiting. */

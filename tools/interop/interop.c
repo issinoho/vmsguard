@@ -178,6 +178,11 @@ static void usage(const char *argv0)
 "                  reject-after is scaled to keep the same 2:3 ratio\n"
 "  --duration      after the handshake, send a keepalive a second for\n"
 "                  this many seconds, reporting each rekey\n"
+"  --keepalive     seconds between keepalives when idle, as\n"
+"                  PersistentKeepalive in a provider config\n"
+"  --idle          sit idle for this many seconds, sending nothing but\n"
+"                  what --keepalive causes. Checks the keepalive timer\n"
+"                  actually fires; fails if it does not\n"
 "\n"
 "Reads no configuration files: everything is on the command line so the\n"
 "same invocation works identically on OpenVMS.\n", argv0);
@@ -199,7 +204,7 @@ int main(int argc, char **argv)
     int have_key = 0, have_peer = 0, do_ping = 0, verbose = 0;
     int attempts = 3, timeout_ms = 5000;
     unsigned long rekey_after_ms = 0;
-    int duration_s = 0;
+    int duration_s = 0, keepalive_s = 0, idle_s = 0;
     uint16_t listen_port = 0, peer_port;
     int i;
 
@@ -235,6 +240,10 @@ int main(int argc, char **argv)
             rekey_after_ms = strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--duration") == 0 && i + 1 < argc) {
             duration_s = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--keepalive") == 0 && i + 1 < argc) {
+            keepalive_s = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--idle") == 0 && i + 1 < argc) {
+            idle_s = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--verbose") == 0) {
             verbose = 1;
         } else {
@@ -275,6 +284,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "error: %s\n", client.error);
         return 1;
     }
+
+    if (keepalive_s > 0)
+        client.keepalive_interval_ms = (uint64_t) keepalive_s * 1000;
 
     if (rekey_after_ms > 0) {
         client.rekey_after_ms = rekey_after_ms;
@@ -387,6 +399,56 @@ int main(int argc, char **argv)
                    "  %u.%u.%u.%u, or the destination does not answer\n"
                    "  pings.\n",
                    ping_src[0], ping_src[1], ping_src[2], ping_src[3]);
+            wg_client_close(&client);
+            return 1;
+        }
+    }
+
+    /* ---- optional idle, to exercise the keepalive timer ---- */
+
+    if (idle_s > 0) {
+        uint64_t started = wg_time_ms();
+        uint64_t before = client.kp.send_counter;
+        uint64_t after, expected;
+        uint8_t rbuf[WG_MAX_PACKET];
+        size_t rlen;
+
+        printf("\nidling for %d seconds with keepalive every %d s\n",
+               idle_s, keepalive_s);
+
+        /*
+         * Send nothing directly. Only wg_client_tick may produce
+         * traffic, so anything the counter records came from the
+         * keepalive timer.
+         */
+        while (wg_time_ms() - started < (uint64_t) idle_s * 1000) {
+            if (wg_client_tick(&client) != 0) {
+                printf("FAILED: %s\n", client.error);
+                wg_client_close(&client);
+                return 1;
+            }
+            (void) wg_client_recv(&client, rbuf, sizeof rbuf, &rlen, 200);
+        }
+
+        after = client.kp.send_counter;
+        printf("  %lu packet%s sent while idle\n",
+               (unsigned long) (after - before),
+               (after - before) == 1 ? "" : "s");
+
+        if (keepalive_s > 0) {
+            /* One per interval, allowing for the partial one at each
+               end of the window. */
+            expected = (uint64_t) (idle_s / keepalive_s);
+            if (after - before < expected - 1) {
+                printf("\nFAILED: expected about %lu keepalives, saw %lu\n",
+                       (unsigned long) expected,
+                       (unsigned long) (after - before));
+                wg_client_close(&client);
+                return 1;
+            }
+        } else if (after != before) {
+            printf("\nFAILED: sent %lu packets with keepalive disabled\n",
+                   (unsigned long) (after - before));
             wg_client_close(&client);
             return 1;
         }

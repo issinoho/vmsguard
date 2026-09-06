@@ -211,8 +211,10 @@ static void install_keypair(struct wg_client *c, const struct wg_keypair *kp)
         c->have_prev = 1;
     }
     c->kp = *kp;
-    c->kp.recv_counter_max = 0;
+    wg_replay_init(&c->kp.replay);
     c->established_ms = wg_time_ms();
+    if (c->last_send_ms == 0)
+        c->last_send_ms = c->established_ms;
     c->state = WG_STATE_ESTABLISHED;
     c->rekey_started_ms = 0;
 }
@@ -301,7 +303,33 @@ int wg_client_send(struct wg_client *c, const uint8_t *pt, size_t ptlen)
         set_error(c, "send failed");
         return -1;
     }
+
+    c->last_send_ms = wg_time_ms();
     return 0;
+}
+
+int wg_client_tick(struct wg_client *c)
+{
+    uint64_t now;
+
+    if (c->state != WG_STATE_ESTABLISHED)
+        return 0;
+
+    /* Rekeying is time-driven too, and an idle tunnel would otherwise
+       never notice its session ageing out. */
+    maybe_rekey(c);
+
+    if (c->keepalive_interval_ms == 0)
+        return 0;
+
+    now = wg_time_ms();
+    if (c->last_send_ms != 0 &&
+        now - c->last_send_ms < c->keepalive_interval_ms)
+        return 0;
+
+    /* An empty transport packet: enough to refresh a NAT mapping, and
+       what WireGuard itself sends. */
+    return wg_client_send(c, NULL, 0);
 }
 
 /*
@@ -383,16 +411,9 @@ int wg_client_recv(struct wg_client *c, uint8_t *out, size_t cap,
                                  buf, len) != 0)
             continue;
 
-        /*
-         * Replay guard, per keypair. WireGuard proper keeps a sliding
-         * window so that packets reordered by the network are still
-         * accepted; this only rejects counters at or below the highest
-         * seen, which is stricter than the spec and will drop
-         * legitimately reordered packets.
-         */
-        if (counter != 0 && counter <= kp->recv_counter_max)
+        /* Sliding-window replay check, per keypair. */
+        if (!wg_replay_check(&kp->replay, counter))
             continue;
-        kp->recv_counter_max = counter;
 
         /*
          * Receiving is also a rekey trigger, and at a slightly earlier
