@@ -115,7 +115,11 @@ int wg_socket_open(struct wg_socket **out, uint16_t listen_port)
         memset(&addr, 0, sizeof addr);
         addr.sin6_family = AF_INET6;
         addr.sin6_port = htons(listen_port);
-        addr.sin6_addr = in6addr_any;
+        /* The memset above already leaves sin6_addr as all zeroes, which
+           is the unspecified address (::) — exactly what in6addr_any
+           holds. Assigning that global explicitly would add a symbol
+           dependency for no benefit, and OpenVMS does not export it
+           (%ILINK-I-UDFSYM, IN6ADDR_ANY). */
 
         (void) setsockopt(s->fd, SOL_SOCKET, SO_REUSEADDR,
                           (void *) &on, sizeof on);

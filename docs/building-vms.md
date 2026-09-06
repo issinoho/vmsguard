@@ -1,19 +1,22 @@
 # Building on OpenVMS x86-64
 
-Built and partly running on a real OpenVMS x86-64 system as of
-2026-09-06. Everything compiles, `test_proto` links and runs, and the
-hand-written crypto passes natively:
+**The protocol core passes all 92 checks natively on OpenVMS x86-64**
+(2026-09-06, OpenVMS V9.2-3, VSI C V7.7-003, OpenSSL 3.0.21). BLAKE2s,
+HMAC/KDF, X25519, ChaCha20-Poly1305, both handshake roles with and
+without a preshared key, transport data, and key encoding — the same
+results as under GCC on Linux.
 
-```
-BLAKE2s              8/8 checks pass
-HMAC / KDF           4/4 checks pass
-X25519 / ChaCha20    access violation inside OpenSSL
-```
+The C RTL provided everything the platform layer needed:
+`getaddrinfo`, `freeaddrinfo`, `inet_ntop`, `poll`, `fcntl`, `socket`,
+`bind`, `recvfrom` and `sendto` all resolved once library prefixing was
+enabled. Only two source changes were needed for OpenVMS in total, both
+noted below.
 
-BLAKE2s and the KDF producing identical results under VSI C on x86-64
-OpenVMS, having been developed under GCC on Linux, is a real result: the
-pure-C protocol code is portable as written. The remaining failures are
-all build and linkage issues, documented below with fixes applied.
+What has not been done yet: running the interop client on OpenVMS
+against a peer. See `docs/interop.md`.
+
+Getting there took four fixes, all recorded below so the reasoning is
+not lost.
 
 ## Get the source onto the box
 
@@ -131,6 +134,20 @@ image is absent rather than linking a mismatched one — that combination
 links cleanly and only fails at run time, which is a poor trade.
 
 If `SSL3$LIBCRYPTO_SHR32` is not installed, set `pointer_size` to `64`.
+
+### `in6addr_any` is not exported
+
+The last undefined symbol, after library prefixing was sorted out:
+
+```
+%ILINK-I-UDFSYM,     IN6ADDR_ANY
+```
+
+`in6addr_any` is a global holding the unspecified IPv6 address, and
+OpenVMS does not export it. The fix removes the dependency rather than
+working around it: the `sockaddr_in6` is already zeroed with `memset`
+before use, and all-zeroes *is* the unspecified address, so the
+assignment was redundant on every platform.
 
 ### `gettimeofday` does not exist on OpenVMS
 
