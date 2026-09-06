@@ -463,9 +463,27 @@ static void test_keys(void)
     check(wg_key_from_base64(back,
               "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=") != 0,
           "rejects a key that is too long");
+    /* 43 characters without the trailing '=' is the unpadded form, which
+       some providers' configuration files use. It must round-trip to the
+       same key as the padded form. */
+    {
+        char unpadded[WG_KEY_B64_LEN];
+        uint8_t padded_key[32], unpadded_key[32];
+
+        memset(key, 0x5A, sizeof key);
+        wg_key_to_base64(b64, key);
+        memcpy(unpadded, b64, 43);
+        unpadded[43] = '\0';
+
+        check(wg_key_from_base64(padded_key, b64) == 0 &&
+              wg_key_from_base64(unpadded_key, unpadded) == 0 &&
+              memcmp(padded_key, unpadded_key, 32) == 0,
+              "accepts unpadded 43-character keys, same result as padded");
+    }
+
     check(wg_key_from_base64(back,
-              "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") != 0,
-          "rejects a key with no padding");
+              "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") != 0,
+          "still rejects a key of the wrong length entirely");
     check(wg_key_from_base64(back,
               "!AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=") != 0,
           "rejects invalid base64 characters");

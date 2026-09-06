@@ -62,10 +62,25 @@ static int b64_value(char c)
 int wg_key_from_base64(uint8_t key[WG_KEY_LEN], const char *in)
 {
     uint8_t out[WG_KEY_LEN];
-    size_t i, o = 0;
+    size_t len, i, o = 0;
 
-    if (in == NULL || strlen(in) != 44 || in[43] != '=')
+    if (in == NULL)
         return -1;
+    len = strlen(in);
+
+    /*
+     * 44 characters with the trailing '=', or 43 without it. Thirty-two
+     * bytes encode unambiguously either way, and real configurations
+     * contain both: wg(8) writes the padded form, but some providers
+     * (TorGuard among them) omit it. Rejecting the shorter form would
+     * refuse perfectly valid keys.
+     */
+    if (len == 44) {
+        if (in[43] != '=')
+            return -1;
+    } else if (len != 43) {
+        return -1;
+    }
 
     for (i = 0; i < 40; i += 4) {
         int a = b64_value(in[i]);
