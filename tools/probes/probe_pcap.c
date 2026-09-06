@@ -29,11 +29,17 @@
 #include <stdlib.h>
 
 /*
- * <pcap.h> uses struct timeval in struct pcap_pkthdr but does not
- * define it, so a time header has to come first or the member is an
- * incomplete type (%CC-E-INCOMPMEM on VSI C). On OpenVMS <time.h>
- * supplies it; on glibc it lives in <sys/time.h>.
+ * <pcap.h> uses struct timeval in struct pcap_pkthdr without defining
+ * it, so it must already be complete by the time pcap.h is read, or
+ * VSI C reports %CC-E-INCOMPMEM on the member.
+ *
+ * Which header supplies it varies: glibc puts it in <sys/time.h>, and
+ * on OpenVMS it is reached through the socket headers rather than
+ * <time.h>. Including the plausible set is cheaper than being precise,
+ * and none of them costs anything here.
  */
+#include <sys/types.h>
+#include <sys/socket.h>
 #include <time.h>
 #ifndef __VMS
 #  include <sys/time.h>
