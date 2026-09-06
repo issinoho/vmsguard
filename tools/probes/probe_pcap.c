@@ -45,7 +45,26 @@
 #  include <sys/time.h>
 #endif
 
+/*
+ * VSI C upcases external names by default, so calls come out as
+ * PCAP_OPEN_LIVE and friends. TCPIP$LIBPCAP_SHR is a port of a C
+ * library and exports them in their original lower case, so the two do
+ * not meet and the link reports every pcap symbol undefined.
+ *
+ * "#pragma names as_is" around the header keeps the case of everything
+ * it declares. The save/restore pair confines that to pcap, leaving
+ * the C RTL calls elsewhere in this file on the default setting.
+ */
+#ifdef __VMS
+#  pragma names save
+#  pragma names as_is
+#endif
+
 #include <pcap.h>
+
+#ifdef __VMS
+#  pragma names restore
+#endif
 
 int main(int argc, char **argv)
 {
