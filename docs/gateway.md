@@ -198,6 +198,56 @@ packet was still accepted. The stack therefore recomputes it. So
 `rawinject.c` zeroes the checksum and leaves it to the stack, which both
 Linux and the BSD-derived stacks fill in under `IP_HDRINCL`.
 
+## Confirmed working end to end (2026-09-06)
+
+A LAN host reaching a WireGuard peer through OpenVMS, and getting
+answers back:
+
+```
+iain@docker-nuc:~$ ping -I 10.50.0.50 -c3 10.9.0.1
+64 bytes from 10.9.0.1: icmp_seq=1 ttl=64 time=16.7 ms
+64 bytes from 10.9.0.1: icmp_seq=2 ttl=64 time=10.9 ms
+64 bytes from 10.9.0.1: icmp_seq=3 ttl=64 time=13.2 ms
+
+3 packets transmitted, 3 received, 0% packet loss
+```
+
+Every stage of the path ran on OpenVMS x86-64: pcap captured the frames
+off `IE0`, `ethip` accepted them as IPv4 for the tunnel subnet, the
+protocol core encrypted them, the Linux kernel WireGuard module decrypted
+and answered, and the replies came back through the tunnel to be
+decrypted and injected onto the LAN with a raw socket.
+
+### The topology that makes this a real test
+
+Three machines, and the arrangement matters:
+
+```
+  machine B                OpenVMS                  laptop
+  192.168.0.218            192.168.0.80             192.168.0.131
+  + 10.50.0.50/32          (gateway)                wg peer, 10.9.0.1
+```
+
+- **B** routes `10.9.0.0/24` via OpenVMS and sources from a secondary
+  address, `10.50.0.50`.
+- **The laptop** lists `10.50.0.50/32` in the peer's `allowed-ips` and
+  has a route for it via the tunnel interface, so replies go back
+  through the tunnel rather than straight across the LAN.
+- **OpenVMS** has a host route for `10.50.0.50` via B, so injected
+  replies know where to go.
+
+Two earlier arrangements were rejected for being circular. With the LAN
+host and the WireGuard peer on the *same* machine, the reply never
+traverses the tunnel — the kernel sees a local destination and delivers
+it directly, so injection is never exercised and the test proves
+nothing.
+
+Using B's real LAN address also fails, more subtly: the laptop would
+answer directly over the LAN, so the request goes via the tunnel and the
+reply does not. The secondary address exists precisely to force both
+directions through the tunnel, and it has the practical advantage of
+leaving SSH to `192.168.0.218` untouched throughout.
+
 ## Running it
 
 ```

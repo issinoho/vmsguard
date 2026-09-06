@@ -39,18 +39,27 @@ the kernel module, not by any part of vmsguard.
 
 The protocol core also passes all 92 self-tests natively on OpenVMS.
 
-### What this does not yet do
+### Forwarding for a subnet
 
-vmsguard is a working WireGuard endpoint, but **not yet a network
-interface OpenVMS can route through** — there is no TUN device on VMS to
-attach it to. Traffic has to be handed to it explicitly. Closing that
-gap is the next phase; SLIP over a pseudo-terminal looks like the most
-promising route and would need no kernel driver. See
+vmsguard also works as a **gateway**, forwarding traffic for other hosts
+through the tunnel. Confirmed end to end: a LAN host pinging through
+OpenVMS to a WireGuard peer and getting replies, 3/3 with no loss.
+
+Capture is done with libpcap and injection with a raw socket and
+`IP_HDRINCL`. See `docs/gateway.md`.
+
+There is no transparent path for traffic *originating* on the OpenVMS
+box itself, because that would need a TUN device to claim outbound
+packets and OpenVMS has nothing that can. SLIP and PPP over a
+pseudo-terminal were both investigated and ruled out — see
 `docs/research/slip-tunnel.md`.
 
-It is also an MVP in the protocol sense: no rekeying, no replay sliding
-window, no cookie support, no roaming. Each is noted in the code where
-it matters, and listed in `docs/interop.md`.
+### Remaining gaps
+
+Rekeying is implemented and verified against real WireGuard. Still
+outstanding: no replay sliding window, no cookie support, no roaming.
+Each is noted in the code where it matters, and listed in
+`docs/interop.md`.
 
 ## Layout
 
