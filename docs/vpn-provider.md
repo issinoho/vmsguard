@@ -139,6 +139,21 @@ client the tunnel MTU is 1390 makes it fragment to fit, and refusing
 fragments then dropped what our own message had asked for — the two
 mechanisms were each correct alone and defeated each other in sequence.
 
+Confirmed on the target (2026-09-06). `ping -s 1400` from the client
+completed four round trips with nothing dropped: `8 fragmented
+datagrams, 8 later fragments carried on the first one's mapping`, four
+outbound and four inbound.
+
+The inbound half is the part worth noting, because it was not a mirror
+of the outbound one. We split at 1388+60 to fit the 1390 we advertise;
+the provider split its replies at 1420+28, from its own path MTU. So the
+inbound path ran against an offset we did not choose, on a datagram we
+did not fragment — which is the one thing the tests could only simulate.
+
+The same run showed `32 translated, 26 new flows`, the first time those
+two numbers have differed: four pings share one ICMP mapping, and later
+fragments translate without creating one.
+
 The checksums are the delicate part. A TCP or UDP checksum covers the
 payload plus a pseudo-header built from the addresses, so changing the
 source address invalidates it. NAT adjusts incrementally (RFC 1624)
