@@ -10,7 +10,11 @@
 
 CC      ?= cc
 CFLAGS  ?= -std=c99 -pedantic -Wall -Wextra -O2
-CFLAGS  += -Isrc/proto
+CFLAGS  += -Isrc/proto -Isrc/platform -Isrc/client
+# glibc hides getaddrinfo, IPV6_V6ONLY and gettimeofday under strict
+# -std=c99 unless a feature-test macro asks for them. This is a property
+# of this build host, not of the code: the OpenVMS build does not need it.
+CFLAGS  += -D_DEFAULT_SOURCE
 LDLIBS  ?= -lcrypto
 
 PROTO_SRC = src/proto/blake2s.c \
@@ -19,13 +23,20 @@ PROTO_SRC = src/proto/blake2s.c \
             src/proto/wg_noise.c \
             src/proto/wg_key.c
 
-PROTO_OBJ = $(PROTO_SRC:.c=.o)
+PLATFORM_SRC = src/platform/posix/wg_platform_posix.c
+CLIENT_SRC   = src/client/wg_client.c
 
-TESTS     = build/test_proto
+PROTO_OBJ    = $(PROTO_SRC:.c=.o)
+PLATFORM_OBJ = $(PLATFORM_SRC:.c=.o)
+CLIENT_OBJ   = $(CLIENT_SRC:.c=.o)
 
-.PHONY: all test clean
+TESTS   = build/test_proto
+TOOLS   = build/vmsguard-interop build/vmsguard-responder \
+          build/vmsguard-key
 
-all: $(TESTS)
+.PHONY: all test loopback clean
+
+all: $(TESTS) $(TOOLS)
 
 build:
 	mkdir -p build
@@ -33,13 +44,30 @@ build:
 build/test_proto: tests/test_proto.c $(PROTO_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tests/test_proto.c $(PROTO_OBJ) $(LDLIBS)
 
+build/vmsguard-interop: tools/interop/interop.c $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) | build
+	$(CC) $(CFLAGS) -o $@ tools/interop/interop.c \
+	    $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) $(LDLIBS)
+
+build/vmsguard-responder: tools/interop/responder.c $(PROTO_OBJ) $(PLATFORM_OBJ) | build
+	$(CC) $(CFLAGS) -o $@ tools/interop/responder.c \
+	    $(PROTO_OBJ) $(PLATFORM_OBJ) $(LDLIBS)
+
+build/vmsguard-key: tools/keys/keys.c $(PROTO_OBJ) | build
+	$(CC) $(CFLAGS) -o $@ tools/keys/keys.c $(PROTO_OBJ) $(LDLIBS)
+
 test: $(TESTS)
 	@./build/test_proto
 
+loopback: $(TOOLS)
+	@sh tools/interop/loopback.sh
+
 clean:
-	rm -f $(PROTO_OBJ)
+	rm -f $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ)
 	rm -rf build
 
 $(PROTO_OBJ): src/proto/blake2s.h src/proto/wg_crypto.h \
               src/proto/wg_proto.h src/proto/wg_noise.h \
               src/proto/wg_key.h
+$(PLATFORM_OBJ): src/platform/wg_platform.h
+$(CLIENT_OBJ): src/client/wg_client.h src/platform/wg_platform.h \
+               src/proto/wg_noise.h

@@ -1,0 +1,134 @@
+# Interop testing
+
+Two levels of testing, and the difference between them matters.
+
+| | What it proves | What it does not |
+| --- | --- | --- |
+| `make loopback` | Socket layer, client state machine, and protocol work end to end over real UDP | Nothing about upstream WireGuard — both ends are our code |
+| Against a real `wg` peer | **Wire compatibility with WireGuard** | — |
+
+The in-process tests in `tests/test_proto.c` and the loopback test share a
+blind spot: our initiator and our responder are written from the same
+reading of the specification. A misreading would be made identically by
+both halves and still pass. Only a genuine WireGuard peer settles it.
+
+## Loopback self-test
+
+```sh
+make loopback
+```
+
+Starts `vmsguard-responder`, points `vmsguard-interop` at it over
+localhost, and runs a handshake, a keepalive, and an ICMP echo through
+the tunnel. Useful as a smoke test, and — once the OpenVMS build
+exists — as a cross-platform test: run the responder on Linux, point the
+OpenVMS client at it, and the VMS socket shim is exercised before any
+real WireGuard peer is involved.
+
+## Against a real WireGuard peer
+
+This is the MVP acceptance test.
+
+### 1. Generate keys
+
+On any machine with `wg`:
+
+```sh
+wg genkey | tee client.key | wg pubkey > client.pub
+wg genkey | tee server.key | wg pubkey > server.pub
+```
+
+### 2. Configure the Linux peer
+
+Needs root. `10.9.0.0/24` is used here as the tunnel subnet; the peer
+takes `.1` and vmsguard takes `.2`.
+
+```sh
+ip link add dev wg0 type wireguard
+ip addr add 10.9.0.1/24 dev wg0
+wg set wg0 \
+    listen-port 51820 \
+    private-key ./server.key \
+    peer "$(cat client.pub)" \
+        allowed-ips 10.9.0.2/32
+ip link set wg0 up
+```
+
+`allowed-ips` must cover the source address vmsguard will send from, or
+the peer will decrypt the packet and then discard it. That is the most
+common reason for a successful handshake followed by no echo reply.
+
+Add `preshared-key ./psk` to the `peer` line if testing with a PSK, and
+pass the same key to `--psk`.
+
+### 3. Run vmsguard against it
+
+```sh
+./build/vmsguard-interop \
+    --key      "$(cat client.key)" \
+    --peer-key "$(cat server.pub)" \
+    --endpoint 192.0.2.10:51820 \
+    --ping     10.9.0.2 10.9.0.1
+```
+
+Expected:
+
+```
+handshake: sending initiation (3 attempts, 5000 ms each)
+  handshake complete
+  our index      : 0x...
+  peer index     : 0x...
+
+sending keepalive
+  sent
+
+sending ICMP echo request through the tunnel
+  10.9.0.2 -> 10.9.0.1
+  echo reply received — data path works both ways
+
+PASS — handshake completed and data path verified
+```
+
+### 4. Confirm from the peer's side
+
+```sh
+wg show wg0
+```
+
+A `latest handshake` timestamp and non-zero `transfer` figures confirm
+the peer accepted our handshake and our data — independent evidence, not
+just our own tool reporting success.
+
+## Interpreting failures
+
+**`no handshake response received`** — the peer never replied, or replied
+with something we rejected. Check that the peer lists our public key
+(the tool prints it) under `allowed-ips`, that UDP reaches the endpoint,
+and that the preshared key matches on both sides if used. A wrong peer
+public key produces exactly this message too, because the peer cannot
+decrypt an initiation addressed to a key it does not hold.
+
+**`peer sent a cookie reply (it is under load)`** — the peer wants a
+cookie-derived `mac2` before processing handshakes. The MVP does not
+implement the cookie mechanism; `mac2` is always zero. This only happens
+on a peer under load, so it is unlikely in testing, but it is a real gap
+before production use.
+
+**Handshake succeeds, no echo reply** — key agreement and transport
+framing are working. Almost always `allowed-ips` on the peer not covering
+the `--ping` source address, or the destination simply not answering
+pings. Try `--verbose` to see the decrypted packets that did arrive.
+
+## Known gaps
+
+The client is an MVP and does not yet implement:
+
+- **rekeying** — WireGuard rekeys after roughly 2 minutes; long sessions
+  will stop working
+- **a replay sliding window** — only counters above the highest seen are
+  accepted, so legitimately reordered packets are dropped
+- **the cookie mechanism** — `mac2` is always zero
+- **roaming** — the peer endpoint is fixed at startup
+
+None of these affect a short interop test, and all are noted in the code
+where they bite.
