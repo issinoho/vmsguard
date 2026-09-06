@@ -46,10 +46,19 @@ static unsigned short inet_checksum(const unsigned char *data, size_t len)
     return (unsigned short) (~sum & 0xFFFF);
 }
 
-/* Build an ICMP echo request. Returns the total length. */
+/*
+ * Build an ICMP echo request. Returns the total length.
+ *
+ * host_order_len selects how the IP total length field is written.
+ * 4.4BSD-derived stacks traditionally expect ip_len and ip_off in host
+ * byte order when IP_HDRINCL is set, while Linux expects network order.
+ * Getting it wrong makes the stack read a wildly different length —
+ * 0x0031 becomes 0x3100 — which shows up as ENOBUFS rather than as
+ * anything that names the real problem.
+ */
 static size_t build_echo(unsigned char *out, unsigned long src,
                          unsigned long dst, unsigned short id,
-                         unsigned short seq)
+                         unsigned short seq, int host_order_len)
 {
     static const char payload[] = "vmsguard inject probe";
     const size_t paylen = sizeof payload - 1;
@@ -60,8 +69,14 @@ static size_t build_echo(unsigned char *out, unsigned long src,
     memset(out, 0, total);
 
     out[0] = 0x45;                          /* IPv4, IHL 5 */
-    out[2] = (unsigned char) (total >> 8);
-    out[3] = (unsigned char) (total & 0xFF);
+    if (host_order_len) {
+        /* Little-endian host; x86 in both cases here. */
+        out[2] = (unsigned char) (total & 0xFF);
+        out[3] = (unsigned char) (total >> 8);
+    } else {
+        out[2] = (unsigned char) (total >> 8);
+        out[3] = (unsigned char) (total & 0xFF);
+    }
     out[4] = (unsigned char) (id >> 8);
     out[5] = (unsigned char) (id & 0xFF);
     out[8] = 64;                            /* TTL  */
@@ -103,7 +118,7 @@ int main(int argc, char **argv)
     char abuf[16], bbuf[16];
     size_t len;
     int count = 3;
-    int i;
+    int i, order;
     int sent = 0;
 
     for (i = 1; i < argc; i++) {
@@ -159,22 +174,41 @@ int main(int argc, char **argv)
     }
     printf("  ok    raw socket open with IP_HDRINCL\n");
 
-    for (i = 0; i < count; i++) {
-        len = build_echo(pkt, src_net, dst_net, 0x7601,
-                         (unsigned short) (i + 1));
-        if (raw_injector_send(inj, pkt, len) == 0) {
-            printf("  ok    injected %lu bytes, seq %d\n",
-                   (unsigned long) len, i + 1);
-            sent++;
-        } else {
-            printf("  FAIL  %s\n", raw_injector_error(inj));
+    /*
+     * Try both byte orders for the IP total length. Which one a stack
+     * wants with IP_HDRINCL is a genuine platform difference, and one
+     * run that tests both settles it rather than guessing.
+     */
+    for (order = 0; order < 2; order++) {
+        int ok = 0;
+
+        printf("\n  --- IP total length in %s byte order ---\n",
+               order == 0 ? "network" : "host");
+
+        for (i = 0; i < count; i++) {
+            len = build_echo(pkt, src_net, dst_net,
+                             (unsigned short) (0x7601 + order),
+                             (unsigned short) (i + 1), order);
+            if (raw_injector_send(inj, pkt, len) == 0) {
+                printf("  ok    injected %lu bytes, seq %d\n",
+                       (unsigned long) len, i + 1);
+                ok++;
+                sent++;
+            } else {
+                printf("  FAIL  %s\n", raw_injector_error(inj));
+            }
         }
+        if (ok == count)
+            printf("  ==>   %s byte order is accepted\n",
+                   order == 0 ? "network" : "host");
     }
 
-    printf("\n%d of %d injected\n", sent, count);
+    printf("\n%d of %d injected\n", sent, count * 2);
     if (sent > 0)
         printf("Check the destination for arrival — sendto succeeding\n"
-               "means the stack accepted the packet, not that it left.\n");
+               "means the stack accepted the packet, not that it left.\n"
+               "The id field distinguishes them: 0x7601 network order,\n"
+               "0x7602 host order.\n");
 
     raw_injector_close(inj);
     return sent == count ? 0 : 1;
