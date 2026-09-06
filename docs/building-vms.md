@@ -24,12 +24,18 @@ That avoids any question of file transfer mangling line endings.
 | `@build_vms` | Higher | Uses only `CC` and `LINK` |
 | `$ MMS` | Good | Syntax checked against the MMS manual |
 
-**Start with `@build_vms.com`.** It has fewer moving parts. `descrip.mms`
-has since been checked against the VSI DECset *Guide to the Module
-Management System*, so it is no longer guesswork, but it has still never
-been run.
+**Start with `@build_vms.com`.** It has fewer moving parts.
 
-Four things that manual settled, all of which the first draft had wrong:
+```
+$ @build_vms          ! build everything
+$ @build_vms TEST     ! build, then run the protocol self-tests
+$ @build_vms CLEAN    ! remove build products
+```
+
+`descrip.mms` has since been checked against the VSI DECset *Guide to
+the Module Management System*, so it is no longer guesswork, but it has
+still never been run. Four things that manual settled, all of which the
+first draft had wrong:
 
 - Comments are `!`, not `#`.
 - **A hyphen as the last character of any line — a comment included — is
@@ -39,12 +45,6 @@ Four things that manual settled, all of which the first draft had wrong:
   exist in MMS.
 - `$(CC)`, `$(LINK)`, `$(MMS$SOURCE)`, `.FIRST` and the `@` (silent) and
   `-` (ignore) action-line prefixes are all real and used as documented.
-
-```
-$ @build_vms          ! build everything
-$ @build_vms TEST     ! build, then run the protocol self-tests
-$ @build_vms CLEAN    ! remove build products
-```
 
 ## Check these first
 
