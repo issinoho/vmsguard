@@ -9,13 +9,13 @@ running on OpenVMS and interoperating with the reference implementation.
 
 ## Status
 
-Working and verified against the Linux kernel WireGuard module, on
-OpenVMS V9.2-3 x86-64 (VSI C V7.7-003, VSI TCP/IP Services V6.0-30,
-OpenSSL 3.0.21).
+Working on OpenVMS V9.2-3 x86-64 (VSI C V7.7-003, VSI TCP/IP Services
+V6.0-30, OpenSSL 3.0.21), verified against the Linux kernel WireGuard
+module and against a commercial VPN provider over the public internet.
 
 | | |
 | --- | --- |
-| Protocol core | 92 self-tests pass natively on OpenVMS |
+| Protocol core | 93 self-tests pass natively on OpenVMS |
 | Handshake and transport | Wire-compatible with upstream WireGuard |
 | Rekeying | Verified against real WireGuard |
 | Gateway | Forwards a subnet through the tunnel, end to end |
@@ -94,7 +94,7 @@ never ours, so there is no plaintext original to suppress.
 
 ```sh
 make          # protocol core, tools, tests
-make test     # 155 checks across four binaries
+make test     # 156 checks across four binaries
 make loopback # end-to-end self-test over real UDP
 ```
 

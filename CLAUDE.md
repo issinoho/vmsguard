@@ -8,7 +8,7 @@ things.
 
 ```sh
 make            # everything
-make test       # 155 checks across four binaries
+make test       # 156 checks across four binaries
 make loopback   # end-to-end over real UDP, needs no privilege
 ```
 
