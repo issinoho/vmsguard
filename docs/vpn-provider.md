@@ -345,9 +345,15 @@ is convenience rather than capability, but it is what anyone will expect,
 and it avoids transcribing keys by hand onto a DCL command line where
 quoting matters.
 
-`DNS` and `Address` would be recorded for the operator's use rather than
-acted on — vmsguard has no interface to assign an address to, and no
-resolver configuration to change.
+**Done.** `--config` on the gateway reads the file directly; see
+"Using the provider's config file directly" in `docs/gateway.md`.
+
+`Address` turned out to be worth acting on after all rather than merely
+recording: it is the address the provider assigned us, which is exactly
+what source NAT rewrites to, so it supplies `--tunnel-address`. `DNS` is
+recorded and reported as ignored — vmsguard has no resolver
+configuration to change, and the machines behind the gateway set their
+own.
 
 ## What works already
 

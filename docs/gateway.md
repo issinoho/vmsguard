@@ -284,6 +284,48 @@ assert the specific one — that a fragment is refused *as a fragment*
 rather than incidentally as a malformed header, which a return of plain
 `-1` could never distinguish.
 
+### Using the provider's config file directly
+
+Every value above except the three that describe the local network is
+already in the `.conf` a provider sends, so `--config` reads it rather
+than having it transcribed:
+
+```
+$ GW := $SYS$DISK:[.build]VMSGUARD_GATEWAY.EXE
+$ GW --config DKA0:[WIREGUARD]68.CONF -
+     --interface IE0 -
+     --client 192.168.0.218/32 -
+     --exclude 192.168.0.0/24 -
+     --verbose
+```
+
+`PrivateKey`, `PublicKey`, `PresharedKey`, `Endpoint`, `Address`,
+`AllowedIPs`, `MTU`, `PersistentKeepalive` and `ListenPort` all come
+from the file.
+
+`Address` loses its prefix length while `AllowedIPs` keeps its, which
+looks inconsistent and is not: the first describes an interface, the
+second a subnet, and it is the subnet the tunnel is selected by. `MTU`
+is the inner MTU, which is exactly what `--tunnel-mtu` wants.
+
+Any flag given as well overrides the file, wherever it appears on the
+command line — a flag the operator typed beats a file they may not have
+written.
+
+Three things are not in a config file and must still be given:
+`--interface`, and for a full tunnel `--client` and `--exclude`. The
+gateway says so when it reads a file, along with anything in it that was
+*not* acted on. `DNS` is the one that matters: it is for the machines
+behind the gateway to set for themselves, and appearing to have honoured
+a line we ignored is how someone ends up debugging the wrong thing.
+
+Nothing is dropped in silence. An unknown section, a second `[Peer]`, a
+key that is not base64, a number that is not a number, more `AllowedIPs`
+entries than fit — each is refused, with the line number, because a
+provider config is a wall of base64 and "bad key" on its own locates
+nothing. wg-quick's own directives (`PostUp`, `Table`, `SaveConfig`) are
+ignored rather than refused, since a real file contains them.
+
 ### Stopping it, and the counters
 
 Both interrupt keys end the run with a summary:
