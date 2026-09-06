@@ -202,6 +202,8 @@ $!
 $ say "building slip_spike"
 $ cc 'cc_flags'/OBJECT=[.build]slip.obj [.src.tun]slip.c
 $ cc 'cc_flags'/OBJECT=[.build]hdlc.obj [.src.tun]hdlc.c
+$ cc 'cc_flags'/OBJECT=[.build]ethip.obj [.src.tun]ethip.c
+$ cc 'cc_flags'/OBJECT=[.build]rawinject.obj [.src.tun]rawinject.c
 $ cc 'cc_flags'/OBJECT=[.build]slip_spike.obj [.tools.spike]slip_spike.c
 $ link/executable=[.build]slip_spike.exe -
       [.build]slip_spike.obj,[.build]slip.obj,[.build]hdlc.obj
@@ -210,6 +212,11 @@ $ say "building test_slip"
 $ cc 'cc_flags'/OBJECT=[.build]test_slip.obj [.tests]test_slip.c
 $ link/executable=[.build]test_slip.exe -
       [.build]test_slip.obj,[.build]slip.obj
+$!
+$ say "building test_ethip"
+$ cc 'cc_flags'/OBJECT=[.build]test_ethip.obj [.tests]test_ethip.c
+$ link/executable=[.build]test_ethip.exe -
+      [.build]test_ethip.obj,[.build]ethip.obj
 $!
 $ say "building test_hdlc"
 $ cc 'cc_flags'/OBJECT=[.build]test_hdlc.obj [.tests]test_hdlc.c
@@ -243,6 +250,13 @@ $     close popt
 $     cc 'cc_flags'/OBJECT=[.build]probe_pcap.obj [.tools.probes]probe_pcap.c
 $     link/executable=[.build]probe_pcap.exe -
           [.build]probe_pcap.obj,[.build]pcap.opt/OPTIONS
+$!
+$     say "building vmsguard_gateway"
+$     cc 'cc_flags'/OBJECT=[.build]gateway.obj [.tools.gateway]gateway.c
+$     link/executable=[.build]vmsguard_gateway.exe -
+          [.build]gateway.obj,'proto_objs','plat_objs','client_objs',-
+          [.build]ethip.obj,[.build]rawinject.obj,-
+          [.build]vmsguard.opt/OPTIONS,[.build]pcap.opt/OPTIONS
 $ endif
 $!
 $ say "building test_proto"
@@ -255,6 +269,9 @@ $ say "build complete, executables in [.build]"
 $ say ""
 $ say "  $ run [.build]test_proto          protocol self-tests"
 $ say "  $ run [.build]test_slip           SLIP framing self-tests"
+$ say "  $ gw := $sys$disk:[.build]vmsguard_gateway.exe"
+$ say "  $ gw --help                       WireGuard gateway"
+$ say ""
 $ say "  $ run [.build]probe_openssl      OpenSSL primitives"
 $ say "  $ run [.build]probe_sockets       sockets, poll, SOCK_RAW"
 $ say "  $ run [.build]probe_pcap          libpcap capture and injection"
@@ -278,6 +295,8 @@ $     say ""
 $     run [.build]test_slip
 $     say ""
 $     run [.build]test_hdlc
+$     say ""
+$     run [.build]test_ethip
 $ endif
 $!
 $ exit 1

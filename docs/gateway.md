@@ -51,17 +51,16 @@ round.
 
 ## Mechanisms this depends on
 
-All three are documented as present; none has been exercised on the
-target. Given how the SLIP investigation went — framing written before
-discovering there was no driver — these get verified first.
+Verified on the target before any gateway code was written — the SLIP
+investigation, where framing was built before anyone checked for a
+driver, is the reason for that order.
 
-| Mechanism | Evidence | Verified |
-| --- | --- | --- |
-| libpcap capture | works on the target | **yes** |
-| pcap injection | `pcap_sendpacket` present but non-functional | **fails** |
-| `SOCK_RAW` | Sockets manual: available with SYSPRV | no |
-| `IP_HDRINCL` | Sockets manual: build your own IP header | no |
-| `SIOCADDRT` | Sockets manual, via `$QIO IO$_SETMODE` | no |
+| Mechanism | Status |
+| --- | --- |
+| libpcap capture | **works** — real LAN frames at EN10MB |
+| `SOCK_RAW` | **works** — opens on the target |
+| pcap injection | **broken** — not used; see below |
+| `IP_HDRINCL` | set at open; not yet exercised end to end |
 
 ### Capture: confirmed working (2026-09-06)
 
@@ -99,16 +98,36 @@ capture is layer 2 because pcap is what exists, injection is layer 3
 because raw sockets are cleaner. The remaining question is whether
 `SOCK_RAW` and `IP_HDRINCL` work, which `probe_sockets` answers.
 
-`tools/probes/` tests the first three directly. Run those before any
-gateway code is written:
+### SOCK_RAW: confirmed working
 
 ```
-$ RUN [.build]PROBE_SOCKETS      ! sockets, poll, SOCK_RAW
-$ RUN [.build]PROBE_PCAP         ! capture and injection
+  --- raw sockets (Phase 2 only, not required for MVP) ---
+  note  SOCK_RAW opened successfully
 ```
 
-Both will likely need privilege — `SOCK_RAW` needs SYSPRV per the
-manual, and packet capture almost certainly needs something similar.
+Both halves of the design are therefore available: capture through
+pcap, injection through a raw socket. What has not been exercised is
+`IP_HDRINCL` actually transmitting a packet, which only a live run will
+show.
+
+## Running it
+
+```
+$ GW := $SYS$DISK:[.build]VMSGUARD_GATEWAY.EXE
+$ GW --key "<private>" --peer-key "<peer public>" -
+     --endpoint 192.168.0.131:51820 -
+     --interface IE0 -
+     --tunnel-subnet 10.9.0.0/24 -
+     --verbose
+```
+
+Needs privilege for both capture and raw sockets. LAN hosts must route
+the tunnel subnet via the OpenVMS box, and the WireGuard peer must list
+the LAN hosts' addresses in its `allowed-ips`, or it will decrypt the
+packets and discard them.
+
+`--verbose` prints a line per packet in each direction, which is the
+quickest way to see which half of the path is working.
 
 ## Known problems to design around
 
