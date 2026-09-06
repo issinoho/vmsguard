@@ -1,11 +1,41 @@
 # Interop testing
 
-## Result so far
+## Result: wire compatibility confirmed
 
-**OpenVMS x86-64 to Linux, over a real network, 2026-09-06.** The
-OpenVMS interop client completed a handshake with `vmsguard-responder`
-on Linux, sent a keepalive, and received an ICMP echo reply back through
-the tunnel:
+**OpenVMS x86-64 against the Linux kernel WireGuard module, over a real
+network, 2026-09-06.**
+
+```
+  handshake complete
+  our index      : 0xefdfdd7f
+  peer index     : 0x982476b7
+
+sending ICMP echo request through the tunnel
+  10.9.0.2 -> 10.9.0.1
+  echo reply received — data path works both ways
+
+PASS — handshake completed and data path verified
+```
+
+Two pieces of evidence that the far end really was upstream WireGuard
+rather than `vmsguard-responder`:
+
+- **The peer index is random.** `vmsguard-responder` always allocates
+  indices from `0xC0DE0000`. `0x982476b7` came from the kernel module.
+- **The `wg` interface counted decrypted inbound packets** — the kernel
+  decrypted vmsguard's traffic and handed it to the Linux IP stack,
+  which generated the echo reply.
+
+This closes the MVP: the protocol implementation is wire-compatible with
+upstream WireGuard, written clean-room from the whitepaper and the Noise
+specification.
+
+### Earlier: OpenVMS to vmsguard-responder
+
+The same client first completed a handshake against `vmsguard-responder`
+on Linux, which established that the OpenVMS socket layer worked —
+`poll()`, non-blocking I/O, `sendto`/`recvfrom`, `getaddrinfo` — before
+a real peer was involved:
 
 ```
 handshake: sending initiation (3 attempts, 5000 ms each)

@@ -13,26 +13,44 @@ separate, later track — see `docs/research/driver-feasibility.md`.
 
 ## Status
 
-**Running on OpenVMS x86-64.** As of 2026-09-06, on OpenVMS V9.2-3 with
-VSI C V7.7-003 and OpenSSL 3.0.21:
+**vmsguard interoperates with upstream WireGuard, from OpenVMS x86-64.**
 
-- The protocol core passes all 92 self-tests natively.
-- The interop client completes a WireGuard handshake over a real
-  network to a peer on Linux, exchanges encrypted transport data, and
-  gets an ICMP echo reply back through the tunnel.
+On 2026-09-06, running on OpenVMS V9.2-3 (VSI C V7.7-003, OpenSSL
+3.0.21), vmsguard completed a Noise_IKpsk2 handshake with the Linux
+kernel WireGuard module over a real network, sent encrypted transport
+data, and received an ICMP echo reply back through the tunnel.
 
-**Not yet proven: wire compatibility with upstream WireGuard.** Both
-ends of that test are vmsguard's own code, so a shared misreading of the
-specification would pass it. The next milestone is `vmsguard-interop`
-against a real `wg` peer — see `docs/interop.md`.
+```
+handshake: sending initiation (3 attempts, 5000 ms each)
+  handshake complete
+  our index      : 0xefdfdd7f
+  peer index     : 0x982476b7
 
-Also still open is the transparent-tunnel question: how vmsguard would
-present itself as a network interface OpenVMS can route to, without
-writing a kernel driver. SLIP over a pseudo-terminal looks like the most
-promising route; see `docs/research/slip-tunnel.md`.
+sending ICMP echo request through the tunnel
+  10.9.0.2 -> 10.9.0.1
+  echo reply received — data path works both ways
 
-`docs/building-vms.md` covers building on OpenVMS, including the five
-platform differences found so far.
+PASS — handshake completed and data path verified
+```
+
+Confirmed from the peer's side: the `wg` interface counted decrypted
+inbound packets, and the peer index above is a random value chosen by
+the kernel module, not by any part of vmsguard.
+
+The protocol core also passes all 92 self-tests natively on OpenVMS.
+
+### What this does not yet do
+
+vmsguard is a working WireGuard endpoint, but **not yet a network
+interface OpenVMS can route through** — there is no TUN device on VMS to
+attach it to. Traffic has to be handed to it explicitly. Closing that
+gap is the next phase; SLIP over a pseudo-terminal looks like the most
+promising route and would need no kernel driver. See
+`docs/research/slip-tunnel.md`.
+
+It is also an MVP in the protocol sense: no rekeying, no replay sliding
+window, no cookie support, no roaming. Each is noted in the code where
+it matters, and listed in `docs/interop.md`.
 
 ## Layout
 
