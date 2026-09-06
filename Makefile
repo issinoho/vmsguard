@@ -1,8 +1,11 @@
 # vmsguard — POSIX reference build
 #
-# This builds the platform-agnostic protocol core and its tests on
-# Linux/POSIX, where iteration is fast and diagnostics are good. The
-# OpenVMS build uses descrip.mms against the same sources in src/proto.
+# This builds the protocol core, tools and tests on Linux/POSIX, where
+# iteration is fast and diagnostics are good.
+#
+# The OpenVMS build uses build_vms.com (or descrip.mms) against these
+# same sources — see docs/building-vms.md. Neither has been run on a
+# real system yet.
 #
 # -std=c99 -pedantic is deliberate: the OpenVMS C compiler is VSI C
 # V7.7-3 (GEM-based, not Clang), so C11 constructs must not creep in.
