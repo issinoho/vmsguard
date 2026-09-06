@@ -59,8 +59,10 @@ driver, is the reason for that order.
 | --- | --- |
 | libpcap capture | **works** — real LAN frames at EN10MB |
 | `SOCK_RAW` | **works** — opens on the target |
+| `IP_HDRINCL` | **works** — injected packets reach the wire and are answered |
 | pcap injection | **broken** — not used; see below |
-| `IP_HDRINCL` | set at open; not yet exercised end to end |
+
+Every mechanism the design needs is now confirmed on the target.
 
 ### Capture: confirmed working (2026-09-06)
 
@@ -153,6 +155,48 @@ sudo tcpdump -ni any icmp and host 192.168.0.80
 
 `sendto` succeeding only means the stack accepted the packet. Seeing it
 arrive is what proves injection works.
+
+### Injection: confirmed working, and a byte-order trap
+
+The first attempt failed on every packet:
+
+```
+  FAIL  sendto: no buffer space available
+```
+
+`ENOBUFS` for a 49-byte packet is not a buffer problem. **4.4BSD-derived
+stacks expect `ip_len` and `ip_off` in host byte order when
+`IP_HDRINCL` is set**, while Linux expects network order. Read the wrong
+way round, `0x0031` becomes `0x3100` — the stack tried to allocate 12KB
+for a 49-byte packet and gave up.
+
+The probe sends both orders and reports which is accepted:
+
+```
+  --- IP total length in network byte order ---
+  FAIL  sendto: no buffer space available   (x3)
+
+  --- IP total length in host byte order ---
+  ok    injected 49 bytes, seq 1            (x3)
+  ==>   host byte order is accepted
+```
+
+And on the destination, all three arrived and were answered:
+
+```
+In  IP 192.168.0.80 > 192.168.0.131: ICMP echo request, id 30210, seq 1
+Out IP 192.168.0.131 > 192.168.0.80: ICMP echo reply,   id 30210, seq 1
+```
+
+`id 30210` is `0x7602`, the host-order variant; `0x7601` never appeared
+on the wire at all. The replies matter as much as the arrivals — they
+mean the receiver parsed the packet and validated both checksums.
+
+Note what that implies about the IP header checksum: the probe computed
+it over a *host-order* header, which is wrong for the wire, and the
+packet was still accepted. The stack therefore recomputes it. So
+`rawinject.c` zeroes the checksum and leaves it to the stack, which both
+Linux and the BSD-derived stacks fill in under `IP_HDRINCL`.
 
 ## Running it
 

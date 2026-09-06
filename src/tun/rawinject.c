@@ -15,9 +15,33 @@
 #include "ethip.h"
 #include "rawinject.h"
 
+/*
+ * How the IP total length and fragment offset must be presented to
+ * sendto when IP_HDRINCL is set.
+ *
+ * 4.4BSD-derived stacks want ip_len and ip_off in *host* byte order and
+ * convert them on the way out; Linux wants them in network order, as
+ * they appear on the wire.
+ *
+ * Confirmed on OpenVMS by tools/probes/probe_inject.c, which sends both
+ * and reports which the stack accepts. Network order there fails every
+ * time with ENOBUFS — not a buffer problem at all, but the stack
+ * reading 0x0031 as 0x3100 and trying to allocate 12KB for a 49-byte
+ * packet.
+ */
+#ifdef __VMS
+#  define RAWINJECT_HOST_ORDER_LEN 1
+#else
+#  define RAWINJECT_HOST_ORDER_LEN 0
+#endif
+
+/* Large enough for any packet the tunnel can carry. */
+#define RAWINJECT_MAX 2048
+
 struct raw_injector {
-    int  fd;
-    char error[160];
+    int     fd;
+    uint8_t scratch[RAWINJECT_MAX];
+    char    error[160];
 };
 
 static void set_error(struct raw_injector *inj, const char *what)
@@ -89,18 +113,51 @@ int raw_injector_send(struct raw_injector *inj,
         snprintf(inj->error, sizeof inj->error, "packet too short");
         return -1;
     }
+    if (len > sizeof inj->scratch) {
+        snprintf(inj->error, sizeof inj->error, "packet too large");
+        return -1;
+    }
 
     /* sendto still wants a destination even with IP_HDRINCL; it must
        agree with the header or the stack may route it oddly. Taking it
        from the packet keeps the two consistent by construction. */
     addr = ipv4_dst(packet);
 
+    /*
+     * Work on a copy: the caller's packet arrived off the wire with
+     * network byte order throughout, and must not be modified.
+     */
+    memcpy(inj->scratch, packet, len);
+
+    if (RAWINJECT_HOST_ORDER_LEN) {
+        uint16_t v;
+
+        /* Read the field as network order, store it as host order.
+           Going through a uint16_t rather than swapping bytes keeps
+           this correct on a big-endian host, where the two orders
+           coincide and nothing should change. */
+        v = (uint16_t) (((uint16_t) inj->scratch[2] << 8) | inj->scratch[3]);
+        memcpy(inj->scratch + 2, &v, sizeof v);
+
+        v = (uint16_t) (((uint16_t) inj->scratch[6] << 8) | inj->scratch[7]);
+        memcpy(inj->scratch + 6, &v, sizeof v);
+    }
+
+    /*
+     * Leave the header checksum to the stack. It has to recompute it
+     * anyway once it has put the length back into network order, and
+     * both Linux and the BSD-derived stacks fill this in themselves
+     * under IP_HDRINCL.
+     */
+    inj->scratch[10] = 0;
+    inj->scratch[11] = 0;
+
     memset(&dst, 0, sizeof dst);
     dst.sin_family = AF_INET;
     dst.sin_port = 0;
     dst.sin_addr.s_addr = htonl(addr);
 
-    n = sendto(inj->fd, packet, len, 0,
+    n = sendto(inj->fd, inj->scratch, len, 0,
                (struct sockaddr *) &dst, sizeof dst);
     if (n < 0) {
         set_error(inj, "sendto");
