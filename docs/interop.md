@@ -71,8 +71,23 @@ wg genkey | tee server.key | wg pubkey > server.pub
 
 ### 2. Configure the Linux peer
 
-Needs root. `10.9.0.0/24` is used here as the tunnel subnet; the peer
-takes `.1` and vmsguard takes `.2`.
+`tools/interop/setup_wg_peer.sh` does this. It needs root, because it
+creates a network interface:
+
+```sh
+sudo sh tools/interop/setup_wg_peer.sh up '<vmsguard-public-key>'
+```
+
+It creates `wg-vmsguard` on UDP 51820 with the given key as its only
+peer, prints the peer's public key, and prints the exact OpenVMS command
+to run against it. To remove everything afterwards:
+
+```sh
+sudo sh tools/interop/setup_wg_peer.sh down
+```
+
+Doing it by hand is four commands; `10.9.0.0/24` is the tunnel subnet,
+the peer takes `.1` and vmsguard `.2`:
 
 ```sh
 ip link add dev wg0 type wireguard
