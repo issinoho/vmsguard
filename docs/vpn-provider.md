@@ -51,6 +51,35 @@ this provider — it drops off the critical path.
 
 **Everything remaining is gateway plumbing, not protocol work.**
 
+## Confirmed: a working gateway to a commercial provider (2026-09-06)
+
+With source NAT, source filtering and destination exclusions in place,
+OpenVMS forwards a LAN client's traffic through TorGuard and back:
+
+```
+out 10.13.127.177 -> 8.8.8.8  proto 1   84 bytes     ICMP echo
+in  8.8.8.8 -> 192.168.0.218  proto 1   84 bytes
+
+out 10.13.127.177 -> 1.1.1.1  proto 17  76 bytes     DNS
+in  1.1.1.1 -> 192.168.0.218  proto 17  122 bytes
+
+out 10.13.127.177 -> 1.1.1.1  proto 6   569 bytes    TLS
+in  1.1.1.1 -> 192.168.0.218  proto 6   1420 bytes
+in  1.1.1.1 -> 192.168.0.218  proto 6   1310 bytes
+```
+
+All three translated protocols working live: ICMP identifier
+translation, UDP port translation, and TCP with its pseudo-header
+checksum. The outbound source is the provider's assigned address and the
+inbound destination is the client's own, which is source NAT doing
+exactly what it exists for.
+
+The client is an ordinary LAN machine with one route pointed at the
+OpenVMS box. It needs no VPN software of its own.
+
+Still untested: a large outbound transfer, which is where the MTU gap
+below will bite. Nothing sent here exceeded 569 bytes outbound.
+
 ## The short answer
 
 **As written, this config cannot work on OpenVMS**, and not because of

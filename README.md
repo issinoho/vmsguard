@@ -68,6 +68,12 @@ in  10.9.0.1 -> 10.50.0.50  proto 1  84 bytes
 Capture is libpcap; injection is a raw socket with `IP_HDRINCL`. See
 [`docs/gateway.md`](docs/gateway.md).
 
+With source NAT it also works against a **commercial VPN provider**: a
+LAN client with one route pointed at the OpenVMS box, and no VPN
+software of its own, reaching the internet through TorGuard. ICMP, DNS
+and a TLS session all confirmed. See
+[`docs/vpn-provider.md`](docs/vpn-provider.md).
+
 ### What it deliberately does not do
 
 There is **no transparent tunnel for traffic originating on the OpenVMS
