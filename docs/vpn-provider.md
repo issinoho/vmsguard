@@ -21,6 +21,36 @@ Endpoint            = 64.20.211.133:1443
 PersistentKeepalive = 25
 ```
 
+## Confirmed: the protocol side works against a provider (2026-09-06)
+
+`vmsguard-interop` on OpenVMS, pointed at the TorGuard endpoint over the
+public internet:
+
+```
+  peer endpoint  : 64.20.211.133:1443
+  local port     : 59612
+
+handshake: sending initiation (3 attempts, 5000 ms each)
+  handshake complete
+  our index      : 0xf0eda799
+  peer index     : 0xec3359c0
+
+sending ICMP echo request through the tunnel
+  10.13.127.177 -> 10.8.0.1
+  echo reply received — data path works both ways
+```
+
+A handshake with a commercial provider, and an ICMP echo answered by
+their DNS server through the tunnel. That is a third independent
+WireGuard implementation, after the Linux kernel module and
+`vmsguard-responder`, and the first over a real internet path rather
+than a LAN.
+
+No cookie reply was issued, so cookie support is not needed to reach
+this provider — it drops off the critical path.
+
+**Everything remaining is gateway plumbing, not protocol work.**
+
 ## The short answer
 
 **As written, this config cannot work on OpenVMS**, and not because of
@@ -161,9 +191,7 @@ handshake today, which would be a worthwhile first test — it isolates
 
 ## Suggested order
 
-1. **Handshake against the provider** with `vmsguard-interop`. Cheap,
-   and it either works or reveals something unexpected about a
-   commercial endpoint.
+1. ~~Handshake against the provider.~~ **Done** — see above.
 2. **Source filtering** in the gateway. Small, and required before
    `0.0.0.0/0` is safe to point at anything.
 3. **PersistentKeepalive.** Small, and needed for any long-lived session
@@ -173,5 +201,18 @@ handshake today, which would be a worthwhile first test — it isolates
 6. **ICMP fragmentation-needed.** Enough to make large transfers work.
 7. **Config parsing.** Last, because it is ergonomics.
 
-Cookie support sits outside this order: it is only needed if a provider
-actually challenges us, which the first step would reveal.
+Cookie support is off the critical path: this provider did not challenge
+us. Worth revisiting only if one does.
+
+### One gap the config found before it was even run
+
+TorGuard writes base64 keys **without** the trailing `=`, 43 characters
+rather than 44, and `wg_key_from_base64` rejected them outright. It
+would have failed with "not a valid base64 key" and looked like a
+transcription error.
+
+`wg(8)` accepts both forms, so the strictness was wrong rather than
+defensive. Fixed, and cross-checked against `wg(8)` on 50 keypairs.
+
+A reminder that generated test data is not the same as real-world
+input.

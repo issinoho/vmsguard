@@ -41,6 +41,13 @@ The peer index is a random value chosen by the kernel module, and the
 peer's own interface counters recorded the decrypted packets — evidence
 from the far side, not from our own tool.
 
+It also connects to a **commercial VPN provider** over the public
+internet. Pointed at a TorGuard endpoint, it completes a handshake and
+gets an ICMP echo answered by their DNS server through the tunnel — a
+third independent WireGuard implementation, and the first test over a
+real internet path. See [`docs/vpn-provider.md`](docs/vpn-provider.md)
+for what would still be needed to use a provider config in earnest.
+
 ### Gateway
 
 vmsguard also forwards traffic for *other* hosts through the tunnel. A
