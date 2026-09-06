@@ -84,6 +84,30 @@ What we do not get, and this is the crux:
   goes out in the clear alongside the encrypted copy. pcap alone cannot
   suppress.
 
+### Better injection path: raw sockets with IP_HDRINCL
+
+The Sockets API manual (see `tcpip-stack.md`) shows `SOCK_RAW` is supported
+with SYSPRV privilege, and `IP_HDRINCL` lets the application build the
+entire IP header for datagrams sent on a raw socket.
+
+This is a **better write path than pcap** for our purposes:
+
+| | pcap | raw socket + IP_HDRINCL |
+| --- | --- | --- |
+| Layer | 2 (Ethernet frames) | 3 (IP packets) |
+| Must handle MAC/ARP | yes | no |
+| Must handle framing | yes | no |
+| Privilege | likely equivalent | SYSPRV |
+
+WireGuard's payload is IP packets, so injecting at layer 3 skips a whole
+class of Ethernet bookkeeping. pcap remains interesting for the *capture*
+side; raw sockets look like the right answer for *inject*.
+
+Also confirmed available and relevant: `SIOCADDRT`/`SIOCDELRT` for
+programmatic route manipulation, and the full set of interface ioctls
+including point-to-point destination address (`SIOCSIFDSTADDR`) and MTU
+(`SIOCSIPMTU`).
+
 ### The architecture this suggests, and its open question
 
 Capture + suppress + inject:
@@ -104,6 +128,21 @@ frames rather than IP packets as a TUN device would give us.
 filtering facility that can drop outbound packets by rule? If yes, the
 driverless transparent tunnel becomes genuinely plausible. If no, step 2 has
 no mechanism and we're back to either a driver or the proxy fallback.
+
+The Sockets API manual contains **no packet filtering facility** — its only
+"filter" is ICMPv6 type filtering on raw sockets, which selects what your
+own socket receives and cannot drop traffic system-wide. This does not rule
+filtering out: it is a *programming* manual, and VSI TCP/IP Services is
+known to have packet filtering configured through management commands. The
+place to look next is the **Management guide**, not the programming one.
+
+Summary of where the three steps stand:
+
+| Step | Status |
+| --- | --- |
+| Capture | Available (pcap), untested |
+| **Suppress** | **Unsolved — the blocker** |
+| Inject | Available (raw socket + `IP_HDRINCL`), untested |
 
 ### A case where suppression isn't needed
 

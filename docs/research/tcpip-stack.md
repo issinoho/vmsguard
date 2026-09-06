@@ -64,9 +64,88 @@ lead found so far for the packet-interception problem, though whether it can
   bundled header defining filter-program structures. This does *not* by
   itself prove a writable `/dev/bpf`-equivalent exists.
 - **No `ROUTE` module** (no `net/route.h` equivalent) — so no BSD routing
-  sockets. Programmatic route manipulation will have to go through the
-  TCP/IP management interface or `TCPIP SET ROUTE` DCL rather than a
-  routing socket.
+  *sockets*. Note this does **not** mean routes can't be manipulated
+  programmatically: see the ioctl section below, which corrects an earlier
+  conclusion in this document.
+
+## From the Sockets API manual (2026-09-06)
+
+Source: "VSI TCP/IP Services for OpenVMS Sockets API and System Services
+Programming" (VSI, 2025), 352pp. **Version caveat**: the manual documents
+TCP/IP Services **5.7** on IA-64/Alpha; the target runs **V6.0-30 on
+x86-64**. Close enough to be authoritative on API shape, but version-
+specific details should be spot-checked against the running system.
+
+### Correction: routes *can* be manipulated programmatically
+
+An earlier revision of this document concluded that the absence of
+`net/route.h` meant route changes had to go through DCL or the management
+interface. That was wrong. BSD 4.3-style route ioctls are supported through
+`$QIO`:
+
+| Operation | Data type | `$QIO` function |
+| --- | --- | --- |
+| `SIOCADDRT` | `struct ortentry` | `IO$_SETMODE` |
+| `SIOCDELRT` | `struct ortentry` | `IO$_SETMODE` |
+
+No routing socket, but a working programmatic route API all the same.
+
+### Interface configuration ioctls
+
+A full complement, including the ones a tunnel would need:
+
+`SIOCSIFADDR`, `SIOCGIFADDR`, `SIOCSIFDSTADDR`/`SIOCGIFDSTADDR`
+(**point-to-point** destination address), `SIOCSIFFLAGS`/`SIOCGIFFLAGS`,
+`SIOCSIFNETMASK`/`SIOCGIFNETMASK`, `SIOCSIFBRDADDR`/`SIOCGIFBRDADDR`,
+`SIOCAIFADDR`/`SIOCDIFADDR`/`SIOCPIFADDR`, `SIOCSIPMTU`/`SIOCRIPMTU`,
+`SIOCGIFINDEX`, `SIOCGIFTYPE`, `SIOCGMEDIAMTU`, `SIOCGIFCONF`,
+`SIOCADDMULTI`/`SIOCDELMULTI`, `SIOCENABLBACK`/`SIOCDISABLBACK`.
+
+ARP is manipulable too: `SIOCSARP`, `SIOCDARP`, `SIOCGARP` (the last needs
+OPER privilege).
+
+That the stack models point-to-point interfaces and exposes MTU control is
+encouraging — those are exactly the knobs a TUN-style interface needs. What
+remains missing is any way to *create* such an interface.
+
+### Raw sockets are supported
+
+> `SOCK_RAW` — Provides access to internal network interfaces. Available
+> only to users with the SYSPRV privilege.
+
+And critically, **`IP_HDRINCL` is supported**:
+
+> If specified for a raw IP socket, you must build the IP header for all
+> datagrams sent on the raw socket.
+
+So arbitrary IP packets can be constructed and injected at layer 3 with
+SYSPRV. See `driver-feasibility.md` — this is a cleaner injection path than
+pcap.
+
+### Socket options available
+
+`SO_REUSEADDR`, `SO_REUSEPORT`, `SO_BROADCAST`, `SO_DONTROUTE`,
+`SO_KEEPALIVE`, `SO_LINGER`, `SO_OOBINLINE`, `SO_RCVBUF`, `SO_SNDBUF`,
+`SO_RCVTIMEO`, `SO_SNDTIMEO`, `SO_SNDLOWAT`, `SO_ERROR`, `SO_TYPE`,
+`SO_USELOOPBACK`, `SO_SHARE`, `SO_FULL_DUPLEX_CLOSE`.
+
+`SO_REUSEADDR` is confirmed, which is all the MVP needs.
+
+**Gap worth noting**: there is no per-socket don't-fragment or path-MTU
+control (`IP_MTU_DISCOVER`/`IP_DONTFRAG` are absent). WireGuard normally
+sets DF on its outer UDP packets. MTU is settable per *interface* via
+`SIOCSIPMTU`, but not per socket. Not an MVP blocker; note it for later.
+
+### The `$QIO` path
+
+The "network pseudodevice" (the BG driver) exposes sockets through `$QIO`
+with AST completion: `IO$_ACCESS` (open a connection), `IO$_DEACCESS`
+(close), `IO$_READVBLK`/`IO$_WRITEVBLK` (transfer),
+`IO$_SETMODE`/`IO$_SENSEMODE` (socket options and the ioctls above).
+
+This is the socket API in `$QIO` form — an alternative I/O model, not a raw
+packet interface. Useful as an event-loop fallback if `poll()` disappoints,
+since AST-driven completion is the native VMS idiom.
 
 ## Still open
 
