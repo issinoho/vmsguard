@@ -267,6 +267,36 @@ packets and discard them.
 `--verbose` prints a line per packet in each direction, which is the
 quickest way to see which half of the path is working.
 
+## Full tunnels need exclusions
+
+`--tunnel-subnet 0.0.0.0/0` matches local destinations exactly as
+readily as remote ones. Without exclusions the gateway forwards a
+client's LAN traffic — its conversations with other hosts on the
+segment, and with the OpenVMS box itself — out to the far end, where it
+is useless and where it should not be going.
+
+A real VPN client does not have this problem because its routing table
+holds a more specific route for the local subnet. There is no equivalent
+here: capture sees the frame regardless of what any routing table thinks.
+
+So `--exclude` is **required** whenever the tunnel subnet is wider than
+/8, alongside `--client`:
+
+```
+--tunnel-subnet 0.0.0.0/0 --exclude 192.168.0.0/24 --client 192.168.0.218/32
+```
+
+Multicast, the limited broadcast address and `0.0.0.0` are always
+excluded, since none of them means anything at the far end of a
+point-to-point tunnel. Directed broadcasts such as `192.168.0.255` fall
+inside the local subnet exclusion.
+
+This was found by running a full tunnel to a commercial provider and
+watching the gateway forward the test client's SSH session to the
+OpenVMS box out through the VPN. The traffic still worked — capture
+takes copies — and the provider discarded it, but it had no business
+leaving the network.
+
 ## Known problems to design around
 
 **ICMP unreachables.** When a packet arrives for a subnet OpenVMS has no

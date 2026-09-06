@@ -102,6 +102,11 @@ static void usage(const char *argv0)
 "                   translated back. Required by commercial providers,\n"
 "                   which accept only their assigned address as a\n"
 "                   source\n"
+"  --exclude        never tunnel traffic to this destination subnet.\n"
+"                   Repeatable. Required when the tunnel subnet is\n"
+"                   wider than /8: a full tunnel otherwise matches\n"
+"                   local destinations too, sending LAN traffic to the\n"
+"                   far end. Give it your local network\n"
 "  --client         only forward for this source address or subnet.\n"
 "                   Repeatable. Required when the tunnel subnet is\n"
 "                   wider than /8, because packet capture is\n"
@@ -195,6 +200,8 @@ int main(int argc, char **argv)
     uint32_t tun_net = 0, tun_mask = 0;
     struct client_filter clients[MAX_CLIENTS];
     int nclients = 0;
+    struct client_filter excludes[MAX_CLIENTS];
+    int nexcludes = 0;
     struct nat_table nat;
     uint32_t tunnel_addr = 0, tunnel_addr_mask = 0;
     int use_nat = 0;
@@ -237,6 +244,19 @@ int main(int argc, char **argv)
                 return 2;
             }
             use_nat = 1;
+        } else if (strcmp(argv[i], "--exclude") == 0 && i + 1 < argc) {
+            if (nexcludes >= MAX_CLIENTS) {
+                fprintf(stderr, "error: at most %d --exclude entries\n",
+                        MAX_CLIENTS);
+                return 2;
+            }
+            if (ethip_parse_cidr(argv[++i], &excludes[nexcludes].net,
+                                 &excludes[nexcludes].mask) != 0) {
+                fprintf(stderr, "error: --exclude '%s' is not valid CIDR\n",
+                        argv[i]);
+                return 2;
+            }
+            nexcludes++;
         } else if (strcmp(argv[i], "--client") == 0 && i + 1 < argc) {
             if (nclients >= MAX_CLIENTS) {
                 fprintf(stderr, "error: at most %d --client entries\n",
@@ -294,6 +314,26 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    /*
+     * A full tunnel matches local destinations as readily as remote
+     * ones, so without exclusions it forwards a client's LAN traffic —
+     * its own conversations with hosts on this segment, this machine
+     * included — out to the far end. A real VPN client avoids this
+     * because its routing table holds a more specific route for the
+     * local subnet; there is no equivalent here, so it has to be said
+     * explicitly.
+     */
+    if (tun_mask < 0xFF000000UL && nexcludes == 0) {
+        fprintf(stderr,
+            "error: --tunnel-subnet %s is wider than /8, so --exclude is\n"
+            "       required. Without it, traffic to local destinations is\n"
+            "       tunnelled too — including conversations with this\n"
+            "       machine. Pass your local network, e.g.\n"
+            "         --exclude 192.168.0.0/24\n",
+            subnet_arg);
+        return 2;
+    }
+
     colon = strrchr(endpoint_arg, ':');
     if (colon == NULL || (size_t) (colon - endpoint_arg) >= sizeof host) {
         fprintf(stderr, "error: --endpoint must be host:port\n");
@@ -340,6 +380,11 @@ int main(int argc, char **argv)
             ipv4_format(bbuf, sizeof bbuf, clients[i].mask);
             printf("  forwarding for : %s mask %s\n", abuf, bbuf);
         }
+    }
+    for (i = 0; i < nexcludes; i++) {
+        ipv4_format(abuf, sizeof abuf, excludes[i].net);
+        ipv4_format(bbuf, sizeof bbuf, excludes[i].mask);
+        printf("  excluding      : %s mask %s\n", abuf, bbuf);
     }
 
     /* ---- capture ---- */
@@ -424,6 +469,26 @@ int main(int argc, char **argv)
             if (ip != NULL && endpoint.family == WG_AF_INET &&
                 memcmp(ip + 16, endpoint.addr, 4) == 0)
                 ip = NULL;
+
+            /*
+             * Never tunnel to a destination that was excluded, nor to
+             * multicast or broadcast — neither has any meaning at the
+             * far end of a point-to-point tunnel.
+             */
+            if (ip != NULL) {
+                uint32_t d = ipv4_dst(ip);
+                int j;
+
+                if ((d & 0xF0000000UL) == 0xE0000000UL ||   /* 224/4     */
+                    d == 0xFFFFFFFFUL ||                    /* broadcast */
+                    d == 0) {
+                    ip = NULL;
+                }
+                for (j = 0; ip != NULL && j < nexcludes; j++) {
+                    if (ipv4_in_subnet(d, excludes[j].net, excludes[j].mask))
+                        ip = NULL;
+                }
+            }
 
             /* Only forward for hosts we were told to serve. */
             if (ip != NULL && nclients > 0) {
