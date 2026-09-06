@@ -11,13 +11,48 @@ network interface, the way WireGuard does via TUN on Linux.
 
 ## Why this is hard on OpenVMS
 
-- No publicly documented TUN/TAP-equivalent pseudo-device facility exists on
-  OpenVMS for third-party use.
+- **Confirmed 2026-09-06**: there is no TUN/TAP device. The C RTL header
+  library on the target system contains no `TUN`, `TAP`, or `IF_TUN` module
+  (see `data/decc_headers.txt`). This was previously inferred from absent
+  documentation; it is now established from the system itself.
 - OpenVMS's own **PEDRIVER** proves a kernel-mode virtual LAN adapter is
   architecturally possible (it's used for Cluster-over-IP communication),
   but it's a VSI-internal driver, not a public API or template.
 - Public documentation for writing OpenVMS device drivers is sparse even for
   Itanium and essentially absent for x86-64 in public sources.
+- There are also **no BSD routing sockets** (no `net/route.h` equivalent), so
+  even with a way to move packets, installing routes has to go through the
+  TCP/IP management interface or DCL rather than a routing socket.
+
+## Lead: libpcap is present
+
+The target system's C RTL header library ships **`PCAP` and `PCAP-BPF`**.
+libpcap being available means OpenVMS x86-64 has some BPF-style packet
+capture facility, which is the most promising lead found so far for the
+packet-interception half of the problem.
+
+What this could mean, in descending order of usefulness:
+
+1. **If libpcap here supports injection** (`pcap_inject` /
+   `pcap_sendpacket`), then capture + inject together might approximate a
+   TUN device closely enough for a transparent tunnel entirely in
+   userspace — no kernel driver. This would be the single best outcome for
+   the project and is the first thing to test.
+2. **If it captures but cannot inject**, it still gives a read path, and the
+   write path would need another mechanism (raw sockets, or a driver).
+3. **If it's a stub or a thin shim over something VMS-specific**, it may not
+   help at all.
+
+Note the caveat: `PCAP-BPF` is libpcap's *own bundled* header defining filter
+program structures. Its presence does not prove a writable
+`/dev/bpf`-equivalent exists underneath, nor that capture works on this
+platform's interfaces. This needs testing, not inference.
+
+**Next action on this lead**: extract the `PCAP` header from
+`SYS$LIBRARY:DECC$RTLDEF.TLB` and check which functions are actually
+declared — specifically `pcap_inject`, `pcap_sendpacket`, `pcap_open_live`,
+and `pcap_set_immediate_mode`. Then check `SYS$SHARE:` for the corresponding
+shareable image to confirm there's an implementation behind the header.
 
 ## What would need to be answered
 

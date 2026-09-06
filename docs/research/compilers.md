@@ -38,6 +38,15 @@ plan's Phase 1 approach (clean-room C protocol core against OpenSSL 3).
   before committing to a pthreads-based event loop. VMS-native `$QIO`/AST
   asynchronous I/O is the fallback/likely-more-idiomatic model and is
   well-proven on VMS generally.
+- **Confirmed present 2026-09-06**: `SYS$LIBRARY:SYS$STARLET_C.TLB` on the
+  target system contains `PTHREAD`, `PTHREAD_D4`, `PTHREAD_DEBUG`,
+  `PTHREAD_EXC`, `PTHREAD_EXCEPTION`, `PTHREAD_TRACE`, plus `CMA` and `TIS`
+  (see `data/starlet_headers.txt`). Headers shipping is not evidence of
+  stability, so the action item above stands.
+- **Design consequence**: `poll()` is confirmed present in the C RTL (see
+  `tcpip-stack.md`), so the intended design is a single-threaded
+  `poll()`-driven event loop with no pthreads dependency at all. That
+  sidesteps the pthreads stability question entirely for the MVP.
 
 ## To verify on the target system
 
