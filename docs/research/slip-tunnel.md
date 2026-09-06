@@ -1,9 +1,24 @@
 # Candidate architecture: SLIP over a pseudo-terminal as a TUN substitute
 
-**Status: promising but unverified.** This is the strongest lead for solving
-the Phase 2 problem — giving vmsguard a real network interface without
-writing a kernel driver. It rests on one assumption that has not been tested
-(see "The assumption that decides this"). Nothing here is committed work.
+**Status: SLIP confirmed present; the pseudo-terminal question is still
+open.** This is the strongest lead for giving vmsguard a real network
+interface without writing a kernel driver.
+
+**Confirmed 2026-09-06**: SLIP still exists in VSI TCP/IP Services
+V6.0-30 on OpenVMS x86-64. `TCPIP SET INTERFACE SL0` was accepted as a
+command and rejected only on the device argument:
+
+```
+$ TCPIP SET INTERFACE SL0 /HOST=10.9.0.2 /NETWORK_MASK=255.255.255.0 -
+        /SERIAL_DEVICE=TTA0
+%TCPIP-E-INTEERROR, error processing interface request
+-TCPIP-E-INVQUAL, invalid qualifier value for /SERIAL_DEVICE
+-SYSTEM-W-NOSUCHDEV, no such device available
+```
+
+`NOSUCHDEV` refers to `TTA0`, which does not exist on that system — the
+interface type and the qualifier itself were both accepted. That removes
+the first risk: SLIP had not been dropped from the current release.
 
 ## The problem it solves
 
@@ -63,6 +78,19 @@ entirely from parts OpenVMS already ships.
 The decisive difference is step 5: packets routed to `SL0` go to the
 pseudo-terminal *instead of* out a physical NIC. There is no plaintext
 original left to suppress.
+
+## Framing: implemented and tested
+
+`src/tun/slip.c` implements RFC 1055 framing, independent of OpenVMS so
+it can be tested on Linux. 15 checks cover escaping, one-byte-at-a-time
+streaming, back-to-back datagrams, oversized frames and buffer limits.
+
+Doing this before the spike was worthwhile: the tests caught a decoder
+bug where a delivered packet was left in the buffer, so the next frame's
+leading `END` reported it a second time and the following datagram was
+appended to the stale bytes. Only the back-to-back test exposed it. Had
+that gone undetected, it would have surfaced on OpenVMS as SLIP
+"nearly working", which is a far worse place to debug it.
 
 ## The assumption that decides this
 
