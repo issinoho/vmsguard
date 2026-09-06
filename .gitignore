@@ -1,0 +1,10 @@
+# build output
+*.o
+*.obj
+*.exe
+*.EXE
+*.olb
+*.OLB
+probe_openssl
+probe_sockets
+probe_pcap
