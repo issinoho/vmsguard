@@ -114,6 +114,7 @@ struct stats {
 static struct stats     st;
 static struct nat_table nat;
 static int              use_nat;
+static uint64_t         started_ms;
 
 static volatile sig_atomic_t stop_requested;
 
@@ -154,9 +155,43 @@ static void log_drop(const char *dir, const uint8_t *ip, size_t iplen,
     fflush(stdout);
 }
 
+/*
+ * A duration a person can read at a glance. Seconds with one decimal
+ * below a minute, minutes and seconds above it — "ran for 3600.0 s" is
+ * technically correct and useless.
+ *
+ * Integer arithmetic throughout, like the rest of the project; there is
+ * no reason to pull floating point in for one decimal place.
+ */
+static void format_duration(char *out, size_t cap, uint64_t ms)
+{
+    unsigned long secs = (unsigned long) (ms / 1000);
+
+    if (secs < 60)
+        snprintf(out, cap, "%lu.%lu s", secs,
+                 (unsigned long) ((ms % 1000) / 100));
+    else
+        snprintf(out, cap, "%lum %lus", secs / 60, secs % 60);
+}
+
 static void print_summary(void)
 {
-    printf("\ncaptured %lu, tunnelled %lu, received %lu, injected %lu,"
+    uint64_t elapsed = 0;
+    char dur[32];
+
+    /*
+     * How long the run lasted, because without it none of the rest can
+     * be read. "296 of 512 mappings live" means the timeouts are doing
+     * their job if the run was twenty seconds and that they are not if
+     * it was ten minutes, and the summary gave no way to tell which.
+     */
+    if (started_ms != 0)
+        elapsed = wg_time_ms() - started_ms;
+
+    format_duration(dur, sizeof dur, elapsed);
+    printf("\nran for %s\n", dur);
+
+    printf("captured %lu, tunnelled %lu, received %lu, injected %lu,"
            " dropped %lu\n",
            st.captured, st.tunnelled, st.received, st.injected, st.dropped);
     if (st.too_big > 0)
@@ -168,6 +203,16 @@ static void print_summary(void)
                nat.translated, nat.restored, nat_active(&nat, wg_time_ms()),
                NAT_ENTRIES, nat.dropped_unsupported, nat.dropped_no_mapping,
                nat.dropped_table_full);
+        /*
+         * A rate turns the live count into something judgeable: with a
+         * 30-second UDP timeout, a table holding roughly half a minute
+         * of flows is behaving, and one holding far more is not.
+         */
+        if (elapsed > 0)
+            printf("     %lu new flow%s over the run, %lu per minute\n",
+                   nat.translated, nat.translated == 1 ? "" : "s",
+                   (unsigned long) ((uint64_t) nat.translated * 60000ULL
+                                    / elapsed));
         /*
          * Only mentioned when it happened, because when it has, some
          * flow was broken without any other trace of it.
@@ -581,6 +626,8 @@ int main(int argc, char **argv)
     (void) signal(SIGTERM, on_interrupt);
 #endif
     (void) atexit(print_summary);
+
+    started_ms = wg_time_ms();
 
     /* ---- the loop ---- */
 

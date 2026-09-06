@@ -286,10 +286,24 @@ rather than incidentally as a malformed header, which a return of plain
 
 ### Stopping it, and the counters
 
-Both interrupt keys end the run with a summary — packets captured,
-tunnelled, received and injected, plus the oversized and NAT counters
-when those apply. They get there by different routes, because they are
-different kinds of event:
+Both interrupt keys end the run with a summary:
+
+```
+ran for 1m 25s
+captured 860, tunnelled 856, received 852, injected 852, dropped 4
+NAT: 856 translated, 852 restored, 296 of 512 mappings live, dropped ...
+     856 new flows over the run, 604 per minute
+```
+
+The duration is there because without it the rest cannot be read.
+"296 of 512 mappings live" means the timeouts are doing their job if the
+run was twenty seconds and that they are not if it was ten minutes, and
+an earlier summary gave no way to tell which. The flow rate makes the
+same point directly: with a 30-second UDP timeout, a table holding
+roughly half a minute's worth of flows is behaving.
+
+They get there by different routes, because the two keys are different
+kinds of event:
 
 - **Ctrl-C** raises `SIGINT`. A handler sets a flag, the forwarding loop
   leaves by its own front door, and the capture and tunnel socket are
