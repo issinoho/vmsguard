@@ -158,6 +158,16 @@ reason:
   the worst property for something that silently breaks a connection.
   The summary now says so when it happens.
 
+Confirmed on the target (2026-09-06). A 37.4-second run translated 49
+flows and ended with 26 live: the 23 created in the first seven seconds
+had aged out, which is what a 30-second timeout should do to them. The
+earlier runs could not show this, because both ended before the timeout
+could fire — 296 flows all still live said nothing about whether expiry
+worked, which is why the summary now prints the elapsed time.
+
+A later run at 604 flows per minute is the one that had filled all 512
+entries; this one, at 78 per minute, is nowhere near.
+
 ### 2. Promiscuous capture with `AllowedIPs = 0.0.0.0/0`
 
 The gateway currently filters captured frames on **destination** only.
