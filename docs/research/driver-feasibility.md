@@ -480,6 +480,42 @@ demonstrated, and it is the half that was thought impossible. What
 remains is a question about capture and leakage, not about whether the
 stack will accept what we give it.
 
+### The client shape: narrowed, not solved (2026-09-07)
+
+Its inbound half is exactly what was demonstrated above. Its outbound
+half needs the encapsulated frame captured, and pcap cannot see the
+tunnel interface:
+
+```
+$ ppcap
+  devices:
+    IE0
+    LO0
+  FAIL  pcap_sendpacket: send: socket is not connected
+```
+
+`IT0` is absent, though it was up and carrying traffic at the time. So
+capture would have to happen on `IE0`, where the encapsulated frame goes
+— and `gate 192.168.0.1` means that frame is a real Ethernet frame on
+the segment, carrying the inner packet **unencrypted**. Capturing it
+works; the plaintext copy travelling to the router alongside is the
+problem.
+
+That is a genuinely different obstacle from the one that stopped this
+before. The old one was that the stack could not be handed a packet, and
+it is gone. The new one is that the stack's *output* cannot be observed
+without also being transmitted.
+
+**Untested idea.** `iptunnel create 127.0.0.1` would send the
+encapsulated packets over loopback, which pcap *can* see, and nothing
+would reach the LAN. Whether the tunnel can be created that way, whether
+the frames appear on `LO0`, and whether the stack then tries to
+decapsulate its own output are all unknown. It is one command to find
+out and worth doing before concluding anything.
+
+(`pcap_sendpacket` still fails, unchanged, which confirms the earlier
+finding rather than revisiting it.)
+
 ### What is still unknown
 
 Creation is not operation. Two questions remain, and they are

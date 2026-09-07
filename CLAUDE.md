@@ -176,10 +176,13 @@ ICMPv6 echo request to the tunnel's own address moved both `Ipkts` and
 re-encapsulated on the way out. Every element of an IPv6 gateway's
 inbound path is therefore demonstrated, with nothing forged.
 
-Still unshown: whether the client shape's outbound half can capture the
-encapsulated frame without leaking the inner packet to the segment —
-`gate 192.168.0.1` says that frame goes to the router. See
-`docs/research/driver-feasibility.md`.
+The client shape is **narrowed, not solved**. Its inbound half is the
+above. Its outbound half needs the encapsulated frame captured, and
+pcap does not list `IT0` — only `IE0` and `LO0` — so capture would have
+to happen on `IE0`, where the frame carries the inner packet
+unencrypted to the router. Untested: pointing the tunnel at `127.0.0.1`
+so the encapsulated frames go over loopback, which pcap can see and the
+LAN cannot. See `docs/research/driver-feasibility.md`.
 
 ## Known gaps, in priority order
 
