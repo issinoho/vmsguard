@@ -30,6 +30,36 @@ This closes the MVP: the protocol implementation is wire-compatible with
 upstream WireGuard, written clean-room from the whitepaper and the Noise
 specification.
 
+### IPv6 through the same tunnel (2026-09-07)
+
+The inner packet does not have to be IPv4. `--ping6` carries an ICMPv6
+echo request instead, which is the only way to exercise the inner-IPv6
+path against upstream WireGuard rather than against our own responder:
+
+```
+sending ICMPv6 echo request through the tunnel
+  fd00:1234::2 -> fd00:1234::1
+  echo reply received — data path works both ways
+
+PASS — handshake completed and data path verified
+```
+
+The peer index was `0x10d0ac0a` — random, so the far end was the kernel
+module and not `vmsguard-responder`, which allocates from `0xC0DE0000`.
+
+The reply is the evidence, and it is not something this code could
+produce on its own. For it to arrive, the kernel module had to decrypt
+our packet, hand a well-formed IPv6 datagram to the Linux stack, have
+that stack recognise an ICMPv6 echo to `fd00:1234::1` and answer it,
+then re-encrypt the answer. `icmp6_is_echo_reply` verifies the checksum
+before accepting, so a pseudo-header computed wrongly at either end
+would have been refused rather than counted as a pass.
+
+What this does **not** cover is the gateway's IPv6 return path, where a
+decrypted IPv6 packet is wrapped in protocol 41 and injected for the
+stack to decapsulate. `interop` reaches the socket directly and never
+injects. That half is exercised only by the gateway.
+
 ### Earlier: OpenVMS to vmsguard-responder
 
 The same client first completed a handshake against `vmsguard-responder`
@@ -223,13 +253,14 @@ pings. Try `--verbose` to see the decrypted packets that did arrive.
 
 ## Known gaps
 
-The client is an MVP and does not yet implement:
+None outstanding for interop testing. The replay sliding window this
+section used to list as missing has been implemented, and the loopback
+test covers a cookie challenge, roaming, a peer-initiated handshake and
+its replay, a lost handshake response, a peer that will not rekey, a
+peer sourcing outside its `AllowedIPs`, and an IPv6 round trip.
 
-- **a replay sliding window** — only counters above the highest seen are
-  accepted, so legitimately reordered packets are dropped
-
-None of these affect a short interop test, and all are noted in the code
-where they bite.
+What no test here settles is the gateway's IPv6 return path — see the
+IPv6 section above.
 
 ## Rekeying
 

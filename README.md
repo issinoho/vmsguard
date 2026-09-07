@@ -30,6 +30,7 @@ module and against a commercial VPN provider over the public internet.
 | Several peers | Routed by longest-prefix `AllowedIPs` |
 | Cryptokey routing | Enforced in both directions |
 | IPv6 forwarding | Returned through a configured tunnel, protocol 41 |
+| IPv6 interop | ICMPv6 through the tunnel, against the kernel module |
 | ICMPv6 | Packet Too Big, RFC 4443, from `--gateway-ip6` |
 | Unattended operation | Batch job, live-readable log, graceful stop |
 | Key tooling | `genkey`/`pubkey` agree with `wg(8)` on 100/100 keys |
