@@ -27,8 +27,26 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Enough for a small site; the table is scanned linearly. */
-#define NAT_ENTRIES 512
+/*
+ * How many flows can be tracked at once.
+ *
+ * The table needs to hold one timeout window's worth of flows at the
+ * peak rate. A measured run against a provider reached 749 new flows a
+ * minute, which at the 30-second UDP timeout is around 375 live — three
+ * quarters of the 512 this used to be. That is not a failure, since a
+ * full table recycles its least recently used entry rather than
+ * refusing anything, but the entry it recycles is by definition the
+ * quietest, and the quietest flow is the idle TCP connection someone
+ * cares about.
+ *
+ * 2048 is four times the measured peak requirement.
+ *
+ * The table is scanned linearly and every outbound packet scans it, so
+ * this is not free. It is, though, nowhere near the cost of the
+ * ChaCha20-Poly1305 already being run over the same packet: a few
+ * thousand integer comparisons against encryption of up to 1400 bytes.
+ */
+#define NAT_ENTRIES 2048
 
 /*
  * Ports handed out for translated flows. Above the ephemeral range most
@@ -79,6 +97,32 @@
 #define NAT_FRAGS            64
 #define NAT_FRAG_TIMEOUT_MS  30000UL
 
+/*
+ * Fragments that arrive before the first fragment of their datagram.
+ *
+ * Outbound this cannot happen: one sender emits its fragments in order
+ * and pcap hands them over in capture order. Inbound it can, because
+ * those fragments crossed the internet inside the tunnel, and UDP
+ * datagrams are reordered by real networks routinely.
+ *
+ * Such a fragment cannot be translated when it arrives — there is no
+ * mapping yet — but its first fragment is almost certainly microseconds
+ * behind it, so it is held rather than dropped and released once the
+ * mapping exists. Four is generous: it is per datagram in flight, not
+ * per fragment, and a datagram fragmented into more pieces than that
+ * while also arriving out of order is not a case worth carrying memory
+ * for.
+ */
+#define NAT_HELD_MAX 4
+#define NAT_HELD_MTU 1600
+
+struct nat_held {
+    uint8_t  pkt[NAT_HELD_MTU];
+    size_t   len;
+    uint64_t held_ms;
+    int      used;
+};
+
 /* Which address field a later fragment inherits a rewrite of. */
 #define NAT_FRAG_SRC 0   /* outbound: source becomes the tunnel address */
 #define NAT_FRAG_DST 1   /* inbound: destination becomes the client     */
@@ -108,6 +152,7 @@ struct nat_entry {
 struct nat_table {
     struct nat_entry entries[NAT_ENTRIES];
     struct nat_frag  frags[NAT_FRAGS];
+    struct nat_held  held[NAT_HELD_MAX];
     uint32_t tunnel_addr;   /* the address the provider assigned us */
     uint16_t next_port;
     /* Counters, for reporting. */
@@ -120,6 +165,8 @@ struct nat_table {
     unsigned long dropped_no_mapping;
     unsigned long dropped_table_full;
     unsigned long dropped_frag_orphan;
+    unsigned long frags_held;      /* set aside to wait for a first */
+    unsigned long frags_released;  /* and translated once it arrived */
     /*
      * Mappings recycled while still live, because every entry was in
      * use. Not a drop — the new flow works — but the evicted one is
@@ -152,6 +199,7 @@ unsigned long nat_timeout_for(uint8_t proto);
 #define NAT_DROP_TABLE_FULL (-5)   /* no free entry, or no free port  */
 #define NAT_DROP_NO_MAPPING (-6)   /* inbound, matching nothing       */
 #define NAT_DROP_FRAG_ORPHAN (-7)  /* later fragment, first never seen */
+#define NAT_HELD             (-8)  /* set aside; not sent, not lost     */
 
 /* A short phrase for a reason code, suitable for a log line. Never
    returns NULL, so it can be used directly in a format string. */
@@ -181,6 +229,19 @@ int nat_outbound(struct nat_table *t, uint8_t *pkt, size_t len,
  */
 int nat_inbound(struct nat_table *t, uint8_t *pkt, size_t len,
                 uint64_t now_ms);
+
+/*
+ * Take one held fragment that can now be translated, writing it to
+ * `out` and returning its length; 0 when there are none.
+ *
+ * Call it in a loop after any successful nat_inbound, and send whatever
+ * it hands back the same way an ordinary translated packet is sent. A
+ * caller that never calls it does not lose correctness, only the held
+ * fragments, which expire on their own — but the datagram they belong
+ * to is then unreassemblable at the far end, so it is worth calling.
+ */
+size_t nat_take_held(struct nat_table *t, uint8_t *out, size_t cap,
+                     uint64_t now_ms);
 
 /* Number of live mappings, for reporting. */
 int nat_active(const struct nat_table *t, uint64_t now_ms);

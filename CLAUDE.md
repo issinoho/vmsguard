@@ -8,7 +8,7 @@ things.
 
 ```sh
 make            # everything, and syntax-checks the gateway
-make test       # 349 checks across eight binaries
+make test       # 367 checks across eight binaries
 make loopback   # end-to-end over real UDP, needs no privilege
 ```
 
@@ -140,15 +140,23 @@ information justifies it.
 
 ## Known gaps, in priority order
 
-1. **Fragment reassembly is not done.** Later fragments inherit their
-   first fragment's mapping, which is enough to pass them through, but a
-   first fragment that never arrives leaves the rest orphaned.
+Nothing outstanding is known to block ordinary use. The nearest things
+to gaps:
+
+1. **The NAT table is scanned linearly**, for every outbound packet, and
+   is now 2048 entries. Cheap next to encrypting the same packet, but it
+   is the first thing to index if the gateway is ever pushed hard.
+2. **Datagrams are not reassembled**, only passed through. Later
+   fragments inherit their first fragment's mapping, and inbound ones
+   arriving early are held until it does; nothing puts the pieces back
+   together, and nothing needs to.
 
 Done: rekeying, the replay sliding window, PersistentKeepalive, the
 gateway's source filter, source NAT, ICMP fragmentation-needed, NAT of
 fragmented datagrams, the cookie mechanism (`mac2`), and reading a
-provider's `.conf` directly, roaming, endpoint re-resolution, and
-detection of the stack's own contradictory ICMP unreachables.
+provider's `.conf` directly, roaming, endpoint re-resolution, holding
+out-of-order inbound fragments, and detection of the stack's own
+contradictory ICMP unreachables.
 
 ## Commits
 

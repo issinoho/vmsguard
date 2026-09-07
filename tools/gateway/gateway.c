@@ -247,12 +247,17 @@ static void print_summary(void)
                nat.translated, nat.restored, nat_active(&nat, wg_time_ms()),
                NAT_ENTRIES, nat.dropped_unsupported, nat.dropped_no_mapping,
                nat.dropped_table_full, nat.dropped_frag_orphan);
-        if (nat.frags_tracked > 0)
+        if (nat.frags_tracked > 0) {
             printf("     %lu fragmented datagram%s, %lu later fragment%s"
                    " carried on the first one's mapping\n",
                    nat.frags_tracked, nat.frags_tracked == 1 ? "" : "s",
                    nat.frags_inherited,
                    nat.frags_inherited == 1 ? "" : "s");
+            if (nat.frags_held > 0)
+                printf("     %lu arrived before their first fragment and"
+                       " were held; %lu released\n",
+                       nat.frags_held, nat.frags_released);
+        }
         /*
          * A rate turns the live count into something judgeable: with a
          * 30-second UDP timeout, a table holding roughly half a minute
@@ -1072,7 +1077,16 @@ after_out:
                 if (use_nat)
                     nrc = nat_inbound(&nat, plain, iplen, wg_time_ms());
 
-                if (nrc != NAT_OK) {
+                if (nrc == NAT_HELD) {
+                    /*
+                     * A fragment that overtook the first of its
+                     * datagram inside the tunnel. Not sent and not
+                     * lost: it comes back out of nat_take_held once the
+                     * first arrives, a moment later.
+                     */
+                    if (verbose)
+                        log_drop("in ", plain, iplen, nat_reason(nrc));
+                } else if (nrc != NAT_OK) {
                     /* No mapping: unsolicited, or the flow expired. */
                     st.dropped++;
                     if (verbose)
@@ -1093,6 +1107,37 @@ after_out:
                         printf("inject failed: %s\n",
                                raw_injector_error(inj));
                         fflush(stdout);
+                    }
+                }
+                /*
+                 * A first fragment has just created a mapping, so any
+                 * fragment held waiting for one can go now. Drained
+                 * here rather than at the top of the loop so it happens
+                 * immediately, while the datagram is still worth
+                 * reassembling at the far end.
+                 */
+                if (use_nat) {
+                    uint8_t held[WG_MAX_PACKET];
+                    size_t heldlen;
+
+                    while ((heldlen = nat_take_held(&nat, held, sizeof held,
+                                                    wg_time_ms())) > 0) {
+                        if (raw_injector_send(inj, held, heldlen) == 0) {
+                            st.injected++;
+                            if (verbose) {
+                                ipv4_format(abuf, sizeof abuf,
+                                            ipv4_src(held));
+                                ipv4_format(bbuf, sizeof bbuf,
+                                            ipv4_dst(held));
+                                printf("in  %s -> %s  proto %u  %lu bytes"
+                                       "  (was held)\n", abuf, bbuf,
+                                       (unsigned) ipv4_proto(held),
+                                       (unsigned long) heldlen);
+                                fflush(stdout);
+                            }
+                        } else {
+                            st.dropped++;
+                        }
                     }
                 }
             } else {

@@ -210,6 +210,7 @@ const char *nat_reason(int code)
     case NAT_DROP_TABLE_FULL:   return "NAT table full";
     case NAT_DROP_NO_MAPPING:   return "no matching mapping";
     case NAT_DROP_FRAG_ORPHAN:  return "later fragment, first one never seen";
+    case NAT_HELD:              return "held, waiting for its first fragment";
     default:                    return "unknown";
     }
 }
@@ -337,6 +338,7 @@ static int allocate_id(struct nat_table *t, uint8_t proto, uint64_t now_ms,
 
 /* ---- fragment tracking ------------------------------------------------ */
 
+
 static int frag_expired(const struct nat_frag *f, uint64_t now_ms)
 {
     return now_ms - f->last_used_ms > NAT_FRAG_TIMEOUT_MS;
@@ -400,6 +402,42 @@ static int frag_remember(struct nat_table *t, uint32_t src, uint32_t dst,
 }
 
 /*
+ * Set a fragment aside until its first fragment turns up.
+ *
+ * Returns 0 if it was held. Failure means there is no room, and the
+ * caller should treat it as the drop it would otherwise have been:
+ * holding is an improvement on dropping, never a requirement.
+ */
+static int frag_hold(struct nat_table *t, const uint8_t *pkt, size_t len,
+                     uint64_t now_ms)
+{
+    int i;
+
+    if (len > NAT_HELD_MTU)
+        return -1;
+
+    for (i = 0; i < NAT_HELD_MAX; i++) {
+        struct nat_held *h = &t->held[i];
+
+        /* A slot whose fragment has waited longer than a receiver would
+           spend reassembling is free: that datagram is lost either way. */
+        if (h->used && now_ms - h->held_ms > NAT_FRAG_TIMEOUT_MS) {
+            h->used = 0;
+            t->dropped_frag_orphan++;
+        }
+        if (!h->used) {
+            memcpy(h->pkt, pkt, len);
+            h->len = len;
+            h->held_ms = now_ms;
+            h->used = 1;
+            t->frags_held++;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/*
  * Translate a later fragment: rewrite the one address its datagram's
  * first fragment established, and fix the IP header checksum. There is
  * no transport header here and so no transport checksum to touch — that
@@ -407,8 +445,8 @@ static int frag_remember(struct nat_table *t, uint32_t src, uint32_t dst,
  * fragment.
  */
 static int translate_later_fragment(struct nat_table *t, uint8_t *pkt,
-                                    const struct pkt_view *v,
-                                    uint64_t now_ms)
+                                    size_t len, const struct pkt_view *v,
+                                    uint64_t now_ms, int may_hold)
 {
     struct nat_frag *f;
 
@@ -416,12 +454,16 @@ static int translate_later_fragment(struct nat_table *t, uint8_t *pkt,
                   get16(pkt + 4), now_ms);
     if (f == NULL) {
         /*
-         * Either the first fragment was refused, or it has not arrived
-         * yet — fragments can overtake one another. Buffering until the
-         * first turns up would mean holding packets and reordering
-         * them; dropping is what the datagram's sender already has to
-         * cope with, and it retries.
+         * Either the first fragment was refused, in which case nothing
+         * will ever make this translatable, or it has not arrived yet.
+         * The two are indistinguishable here, so inbound the fragment
+         * is held for a moment on the chance that it is the second: a
+         * datagram reordered inside the tunnel is common enough, and
+         * dropping this would cost the whole datagram.
          */
+        if (may_hold && frag_hold(t, pkt, len, now_ms) == 0)
+            return NAT_HELD;
+
         t->dropped_frag_orphan++;
         return NAT_DROP_FRAG_ORPHAN;
     }
@@ -452,7 +494,13 @@ int nat_outbound(struct nat_table *t, uint8_t *pkt, size_t len,
     }
 
     if (v.is_later_frag) {
-        rc = translate_later_fragment(t, pkt, &v, now_ms);
+        /*
+         * Never held outbound. One sender emits its fragments in order
+         * and pcap delivers them in capture order, so a later fragment
+         * with no mapping means the first was refused — waiting for it
+         * would be waiting for something that is not coming.
+         */
+        rc = translate_later_fragment(t, pkt, len, &v, now_ms, 0);
         if (rc == NAT_OK)
             t->translated++;
         return rc;
@@ -553,7 +601,7 @@ int nat_inbound(struct nat_table *t, uint8_t *pkt, size_t len,
     }
 
     if (v.is_later_frag) {
-        rc = translate_later_fragment(t, pkt, &v, now_ms);
+        rc = translate_later_fragment(t, pkt, len, &v, now_ms, 1);
         if (rc == NAT_OK)
             t->restored++;
         return rc;
@@ -606,4 +654,50 @@ int nat_inbound(struct nat_table *t, uint8_t *pkt, size_t len,
 
     t->restored++;
     return NAT_OK;
+}
+
+size_t nat_take_held(struct nat_table *t, uint8_t *out, size_t cap,
+                     uint64_t now_ms)
+{
+    int i;
+
+    for (i = 0; i < NAT_HELD_MAX; i++) {
+        struct nat_held *h = &t->held[i];
+        struct pkt_view v;
+
+        if (!h->used)
+            continue;
+
+        if (now_ms - h->held_ms > NAT_FRAG_TIMEOUT_MS) {
+            h->used = 0;
+            t->dropped_frag_orphan++;
+            continue;
+        }
+        if (h->len > cap)
+            continue;
+
+        /*
+         * Re-inspected rather than trusted: it was a valid later
+         * fragment when it went in, but reading it back through the
+         * same check is cheaper than proving that stays true.
+         */
+        if (inspect(h->pkt, h->len, &v) != NAT_OK || !v.is_later_frag) {
+            h->used = 0;
+            t->dropped_frag_orphan++;
+            continue;
+        }
+
+        /* may_hold is 0: a held fragment must not be held again, or a
+           full buffer would shuffle rather than drain. */
+        if (translate_later_fragment(t, h->pkt, h->len, &v, now_ms, 0)
+            != NAT_OK)
+            continue;   /* still no mapping; leave it to wait or expire */
+
+        memcpy(out, h->pkt, h->len);
+        h->used = 0;
+        t->frags_released++;
+        t->restored++;
+        return h->len;
+    }
+    return 0;
 }

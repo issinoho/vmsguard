@@ -128,11 +128,21 @@ translated there, and the transport checksum covers the reassembled
 datagram, so adjusting it once on the first fragment is both necessary
 and sufficient.
 
-A later fragment arriving with no first fragment recorded — because the
-first was refused, or because fragments overtook one another — is
-dropped as an orphan and counted separately. Buffering it until the
-first turns up would mean holding and reordering packets for a case the
-sender already has to survive.
+A later fragment arriving with no first fragment recorded is treated
+differently in each direction, because they are not the same situation.
+
+Outbound it is refused. One sender emits its fragments in order and pcap
+delivers them in capture order, so a later fragment with no mapping
+means the first was *refused* — waiting for it would be waiting for
+something that is not coming.
+
+Inbound it is held, briefly. Those fragments crossed the internet inside
+the tunnel and real networks reorder UDP, so the first is very probably
+microseconds behind. Up to four are set aside and released the moment a
+first fragment creates their mapping; any still waiting when a receiver
+would have given up reassembling are counted as orphans then. Dropping
+one costs the whole datagram, which is what makes four buffers worth
+spending.
 
 This path exists because the gateway's own ICMP created it. Telling a
 client the tunnel MTU is 1390 makes it fragment to fit, and refusing
@@ -190,6 +200,12 @@ reason:
 - **Evictions are counted and reported.** They were invisible, which is
   the worst property for something that silently breaks a connection.
   The summary now says so when it happens.
+- **The table holds 2048 flows.** A later run reached 749 new flows a
+  minute, which at a 30-second timeout is around 375 live — three
+  quarters of the 512 it used to be. 2048 is four times the measured
+  peak. The scan is linear and runs for every outbound packet, which is
+  worth knowing but is a few thousand integer comparisons against
+  encrypting the same packet.
 
 Confirmed on the target (2026-09-06). A 37.4-second run translated 49
 flows and ended with 26 live: the 23 created in the first seven seconds

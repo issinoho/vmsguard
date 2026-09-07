@@ -761,6 +761,100 @@ static void test_packets_versus_flows(void)
     check(t.translated == 6, "and a sixth translation");
 }
 
+/*
+ * Fragments that arrive before the first of their datagram.
+ *
+ * Outbound this cannot happen — one sender, in-order capture — so it is
+ * refused there. Inbound it can, because those fragments crossed the
+ * internet inside the tunnel, and dropping one costs the whole
+ * datagram when its first fragment is a moment behind it.
+ */
+static void test_held_fragments(void)
+{
+    struct nat_table t;
+    uint8_t whole[600], a[600], b[600], out[600], req[128];
+    size_t wlen, alen, blen, rlen, outlen;
+    uint16_t port;
+
+    printf("\nfragments that arrive early\n");
+    nat_init(&t, TUNNEL_ADDR);
+
+    /* Open a mapping so the reply has something to come back to. */
+    rlen = build_l4(req, 17, LAN_ADDR, PEER_ADDR, 4444, 53, 10);
+    check(nat_outbound(&t, req, rlen, 1000) == NAT_OK, "a request goes out");
+    port = get16(req + 20);
+
+    wlen = build_l4(whole, 17, PEER_ADDR, TUNNEL_ADDR, 53, port, 400);
+    put16(whole + 4, 0x7777);
+    put16(whole + 10, ip_checksum(whole));
+    frag_split(whole, wlen, 0x7777, 200, a, &alen, b, &blen);
+
+    /* The second fragment first, which is the whole point. */
+    check(nat_inbound(&t, b, blen, 1100) == NAT_HELD,
+          "a later fragment with no mapping yet is held, not dropped");
+    check(t.frags_held == 1, "and counted as held");
+    check(t.dropped_frag_orphan == 0, "not as an orphan");
+    check(nat_take_held(&t, out, sizeof out, 1100) == 0,
+          "nothing can be released while there is still no mapping");
+
+    /* Now the first, which creates the mapping. */
+    check(nat_inbound(&t, a, alen, 1100) == NAT_OK,
+          "the first fragment then arrives and is translated");
+
+    outlen = nat_take_held(&t, out, sizeof out, 1100);
+    check(outlen == blen, "and the held one comes back, whole");
+    check(t.frags_released == 1, "counted as released");
+    check(ipv4_dst(out) == LAN_ADDR,
+          "with the client address written into it");
+    check(get16(out + 10) == ip_checksum(out), "and its checksum fixed");
+    check(nat_take_held(&t, out, sizeof out, 1100) == 0,
+          "and the buffer is then empty");
+
+    /*
+     * Reassembling the two must give the same datagram as if they had
+     * arrived in order — the holding must not have changed anything
+     * except when the packet was handed back.
+     */
+    {
+        uint8_t joined[600];
+        size_t jlen = frag_join(a, alen, out, outlen, joined);
+
+        check(get16(joined + 26) == l4_checksum(joined, 6),
+              "the reassembled reply still checksums");
+        check(jlen == wlen, "and is the length it started as");
+    }
+
+    /* Held fragments do not wait for ever. */
+    {
+        struct nat_table t2;
+
+        nat_init(&t2, TUNNEL_ADDR);
+        check(nat_inbound(&t2, b, blen, 1000) == NAT_HELD, "one is held");
+        check(nat_take_held(&t2, out, sizeof out,
+                            1000 + NAT_FRAG_TIMEOUT_MS + 1) == 0,
+              "and is gone once a receiver would have given up reassembling");
+        check(t2.dropped_frag_orphan == 1,
+              "counted as the orphan it turned out to be");
+    }
+
+    /* Outbound never holds: waiting would be waiting for nothing. */
+    {
+        struct nat_table t3;
+        uint8_t o[600], p[600];
+        size_t olen, plen;
+
+        nat_init(&t3, TUNNEL_ADDR);
+        wlen = build_l4(whole, 17, LAN_ADDR, PEER_ADDR, 4444, 53, 400);
+        put16(whole + 4, 0x8888);
+        put16(whole + 10, ip_checksum(whole));
+        frag_split(whole, wlen, 0x8888, 200, o, &olen, p, &plen);
+
+        check(nat_outbound(&t3, p, plen, 1000) == NAT_DROP_FRAG_ORPHAN,
+              "an early later fragment outbound is refused, not held");
+        check(t3.frags_held == 0, "and nothing is held");
+    }
+}
+
 int main(void)
 {
     printf("vmsguard source NAT tests\n");
@@ -775,6 +869,7 @@ int main(void)
     test_eviction();
     test_fragments();
     test_packets_versus_flows();
+    test_held_fragments();
 
     printf("\n%s — %d checks, %d failure%s\n",
            failures == 0 ? "PASS" : "FAIL",
