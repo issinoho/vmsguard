@@ -47,6 +47,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 #include "ethip.h"
 #include "rawinject.h"
 
@@ -101,30 +106,79 @@ static size_t build_inner_v4(unsigned char *p, uint32_t src, uint32_t dst)
     return 28;
 }
 
-/* A minimal IPv6 packet, for the case an IPv6 gateway needs. */
-static size_t build_inner_v6(unsigned char *p)
+/*
+ * ICMPv6's checksum covers a pseudo-header of the addresses, length and
+ * next-header value, and is not optional the way ICMPv4's payload
+ * checksum can be. Get it wrong and the receiver discards the packet
+ * without a word -- which is indistinguishable from the stack refusing
+ * to decapsulate, and so would waste the whole test.
+ *
+ * This is the same routine as probe_inject6, which was cross-checked
+ * byte for byte against an independent implementation.
+ */
+static unsigned short icmp6_checksum(const unsigned char *src,
+                                     const unsigned char *dst,
+                                     const unsigned char *body, size_t len)
 {
-    memset(p, 0, 48);
-    p[0] = 0x60;
-    p[5] = 8;                       /* payload length */
-    p[6] = 58;                      /* ICMPv6 */
-    p[7] = 64;
-    p[8] = 0xfd; p[9] = 0x00;       /* fd00::1 */
-    p[23] = 0x01;
-    p[24] = 0xfd; p[25] = 0x00;     /* fd00::2 */
-    p[39] = 0x02;
-    p[40] = 128;                    /* echo request; checksum left zero,
-                                       since what is under test is
-                                       whether the stack unwraps it at
-                                       all, not whether it answers */
-    return 48;
+    unsigned long sum = 0;
+    size_t i;
+
+    for (i = 0; i < 16; i += 2)
+        sum += (unsigned long) ((src[i] << 8) | src[i + 1]);
+    for (i = 0; i < 16; i += 2)
+        sum += (unsigned long) ((dst[i] << 8) | dst[i + 1]);
+    sum += (unsigned long) (len >> 16) & 0xFFFF;
+    sum += (unsigned long) len & 0xFFFF;
+    sum += 58;                                  /* next header: ICMPv6 */
+
+    for (i = 0; i + 1 < len; i += 2)
+        sum += (unsigned long) ((body[i] << 8) | body[i + 1]);
+    if (i < len)
+        sum += (unsigned long) body[i] << 8;
+
+    while (sum >> 16)
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    return (unsigned short) (~sum & 0xFFFF);
+}
+
+/*
+ * An IPv6 echo request, properly formed so that a reply is possible and
+ * its absence therefore means something.
+ */
+static size_t build_inner_v6(unsigned char *p, const unsigned char *src,
+                             const unsigned char *dst)
+{
+    unsigned char body[16];
+    unsigned short ck;
+
+    memset(body, 0, sizeof body);
+    body[0] = 128;                  /* echo request */
+    body[4] = 0x42; body[5] = 0x42; /* identifier, as the IPv4 case */
+    body[6] = 0x00; body[7] = 0x01; /* sequence */
+    memcpy(body + 8, "vmsguard", 8);
+
+    ck = icmp6_checksum(src, dst, body, sizeof body);
+    body[2] = (unsigned char) (ck >> 8);
+    body[3] = (unsigned char) (ck & 0xFF);
+
+    memset(p, 0, 40);
+    p[0] = 0x60;                    /* version 6 */
+    p[5] = (unsigned char) sizeof body;
+    p[6] = 58;                      /* next header: ICMPv6 */
+    p[7] = 64;                      /* hop limit */
+    memcpy(p + 8, src, 16);
+    memcpy(p + 24, dst, 16);
+    memcpy(p + 40, body, sizeof body);
+    return 40 + sizeof body;
 }
 
 int main(int argc, char **argv)
 {
     const char *remote_s = NULL, *local_s = NULL, *inner_s = NULL;
+    const char *src6_s = "fd00::1", *dst6_s = "fd00::2";
+    unsigned char src6[16], dst6[16];
     uint32_t remote = 0, local = 0, inner = 0, mask;
-    unsigned char inner_pkt[64], outer[128];
+    unsigned char inner_pkt[96], outer[160];
     struct raw_injector *inj = NULL;
     size_t inner_len, total;
     int proto = IPPROTO_IPIP_;
@@ -140,6 +194,10 @@ int main(int argc, char **argv)
             inner_s = argv[++i];
         else if (strcmp(argv[i], "--inner-proto") == 0 && i + 1 < argc)
             proto = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--inner-src6") == 0 && i + 1 < argc)
+            src6_s = argv[++i];
+        else if (strcmp(argv[i], "--inner-dst6") == 0 && i + 1 < argc)
+            dst6_s = argv[++i];
         else {
             fprintf(stderr,
 "usage: %s --tunnel-remote <ip> --tunnel-local <ip>\n"
@@ -149,7 +207,10 @@ int main(int argc, char **argv)
 "  --tunnel-local   this machine's tunnel endpoint\n"
 "  --inner-src      who the inner packet claims to be from; a reply\n"
 "                   goes here, so make it something you can watch\n"
-"  --inner-proto    4 for IPv4 in IPv4 (default), 41 for IPv6\n", argv[0]);
+"  --inner-proto    4 for IPv4 in IPv4 (default), 41 for IPv6\n"
+"  --inner-src6     for proto 41: who the inner IPv6 packet is from\n"
+"  --inner-dst6     and who it is to, which should be an address this\n"
+"                   machine holds if a reply is wanted\n", argv[0]);
             return 2;
         }
     }
@@ -169,15 +230,22 @@ int main(int argc, char **argv)
 
     printf("vmsguard encapsulation probe\n");
     printf("  outer : %s -> %s, protocol %d\n", remote_s, local_s, proto);
-    if (proto == IPPROTO_IPIP_)
+    if (proto == IPPROTO_IPIP_) {
         printf("  inner : %s -> %s, ICMP echo request\n", inner_s, local_s);
-    else
-        printf("  inner : fd00::1 -> fd00::2, ICMPv6\n");
+    } else {
+        if (inet_pton(AF_INET6, src6_s, src6) != 1 ||
+            inet_pton(AF_INET6, dst6_s, dst6) != 1) {
+            fprintf(stderr, "error: --inner-src6 and --inner-dst6 must be"
+                            " IPv6 addresses\n");
+            return 2;
+        }
+        printf("  inner : %s -> %s, ICMPv6 echo request\n", src6_s, dst6_s);
+    }
     printf("\n");
 
     inner_len = (proto == IPPROTO_IPIP_)
                 ? build_inner_v4(inner_pkt, inner, local)
-                : build_inner_v6(inner_pkt);
+                : build_inner_v6(inner_pkt, src6, dst6);
 
     /*
      * The outer header. Sourced from the tunnel's remote endpoint and
@@ -220,10 +288,13 @@ int main(int argc, char **argv)
         printf("A reply proves the whole chain: injection accepted, packet\n"
                "matched to the tunnel, decapsulated, and answered.\n");
     } else {
-        printf("Watch the tunnel interface counters, or capture on it.\n"
-               "Nothing will answer an IPv6 packet unless IPv6 is\n"
-               "configured; what is under test is whether the stack\n"
-               "unwraps it at all.\n");
+        printf("Check IT0's input count either way:\n");
+        printf("  netstat -i\n\n");
+        printf("A rising Ipkts means the tunnel accepted protocol 41,\n"
+               "whether or not IPv6 is configured to do anything with the\n"
+               "packet inside. If IPv6 is up and %s is an address this\n"
+               "machine holds, an echo reply should also go to %s.\n",
+               dst6_s, src6_s);
     }
     printf("\nNothing at all means the stack ignored it, which is the same\n"
            "answer SLIP gave and worth having just as quickly.\n");
