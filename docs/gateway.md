@@ -455,11 +455,18 @@ Watch it with `TYPE/CONTINUOUS`. The gateway flushes after every line it
 writes, which is why it opens the log itself rather than relying on the
 batch log — that one is buffered and would show nothing for minutes.
 
-It also opens the log **shared**, which on OpenVMS has to be asked for:
-the C RTL's default is exclusive access, and the first version of this
-held the log open so that `TYPE/CONTINUOUS` failed with `RMS-E-FLK, file
-currently locked by another user`. A log nobody can read while the
-process is running is not a log.
+It also never holds the log open. On OpenVMS the C RTL opens files for
+exclusive access, so the first version of this held the log and
+`TYPE/CONTINUOUS` failed with `RMS-E-FLK, file currently locked by
+another user` — a log nobody can read while the process is running is
+not a log.
+
+Sharing can be asked for, but only outside strict standard mode, and
+this is built with `/STANDARD=C99` deliberately. So the gateway appends
+and closes for every line instead. At a status line every five minutes
+that costs nothing; `--verbose` together with `--log` is an open and
+close per packet, which is a debugging combination rather than how this
+runs.
 
 ### Stopping it, and the counters
 

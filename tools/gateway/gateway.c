@@ -25,10 +25,8 @@
  */
 
 #include <signal.h>
+#include <stdarg.h>
 #include <stdio.h>
-/* dup2 and fileno, for the shared log open below. wg_platform_posix.c
-   already relies on this header building on OpenVMS. */
-#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -225,48 +223,65 @@ static int is_a_client(uint32_t a, const struct client_filter *clients,
 }
 
 /*
- * Reopen a stream onto the log file, shared.
+ * All output, to the terminal or to the log.
  *
- * The sharing is the whole point on OpenVMS. The C RTL opens files for
- * exclusive access by default, so the first version of this held the
- * log open and TYPE/CONTINUOUS could not read it:
+ * When a log file is named it is opened, appended to and closed for
+ * every line. That looks wasteful and is the only approach that works
+ * here.
+ *
+ * The obvious design -- redirect stdout once and leave it open -- fails
+ * on OpenVMS, where the C RTL opens files for exclusive access, so
+ * nothing can read the log while the gateway holds it:
  *
  *   %TYPE-W-OPENIN, error opening ...VMSGUARD.LOG;1 as input
  *   -RMS-E-FLK, file currently locked by another user
  *
  * A log nobody can read while the process is running is not a log, and
- * watching it is the whole reason a detached process writes one.
+ * watching it is the entire reason a detached process writes one.
  *
- * The "shr" argument is a C RTL extension taking the same values as the
- * FAB$B_SHR field. It is an extension to *fopen*, though, not to
- * freopen, which VSI C declares with exactly three arguments:
+ * Sharing can be asked for -- fopen takes optional RMS attributes -- but
+ * only outside strict standard mode, and this is built with
+ * /STANDARD=C99 on purpose. Under it, both the variadic fopen and
+ * fileno are hidden:
  *
- *   %CC-E-TOOMANYARGS, ... "freopen" expects 3 arguments, but 4 are
- *   supplied
+ *   %CC-E-TOOMANYARGS, ... "fopen" expects 2 arguments, but 3 supplied
+ *   %CC-I-IMPLICITFUNC, ... "fileno" is implicitly declared
  *
- * So the file is opened with fopen and its descriptor put in place of
- * the stream's. dup2 leaves the stream's own descriptor referring to
- * the same open file, so closing the temporary FILE afterwards is
- * safe and avoids holding two handles for the life of the process.
- *
- * Falls back to a plain freopen if any of that is refused: a log with
- * awkward sharing beats no log at all.
+ * Weakening the standard for one convenience is a bad trade -- the flag
+ * is what keeps C11 from creeping in -- so the file is simply not held
+ * open. At a status line every five minutes the cost is nothing.
+ * --verbose with --log is the exception, an open and close per packet,
+ * and it is a debugging combination rather than how this runs.
  */
-static FILE *open_log(const char *path, FILE *stream)
+/*
+ * Errors go here too, rather than to stderr. One destination is the
+ * point: a detached gateway's diagnostics belong in the same file, in
+ * order, as everything else it said. The cost is that redirecting
+ * stderr alone no longer captures them.
+ */
+static void emit(const char *fmt, ...)
 {
-#ifdef __VMS
-    FILE *f = fopen(path, "a", "shr=get,put,upd,del");
+    va_list ap;
 
-    if (f != NULL) {
-        fflush(stream);
-        if (dup2(fileno(f), fileno(stream)) >= 0) {
-            fclose(f);
-            return stream;
+    va_start(ap, fmt);
+    if (log_file != NULL) {
+        FILE *f = fopen(log_file, "a");
+
+        if (f != NULL) {
+            vfprintf(f, fmt, ap);
+            fclose(f);            /* closed at once: that is the point */
         }
-        fclose(f);
+    } else {
+        vprintf(fmt, ap);
+        /*
+         * Flushed every line. Without a log file this still ends up in
+         * a batch log when detached, and that is fully buffered — the
+         * output would appear in minute-long bursts, which is exactly
+         * wrong for something being watched.
+         */
+        fflush(stdout);
     }
-#endif
-    return freopen(path, "a", stream);
+    va_end(ap);
 }
 
 /*
@@ -293,19 +308,18 @@ static const char *stamp(void)
  */
 static void log_status(const struct wg_client *c, int nat_live)
 {
-    printf("%s  up, %lu captured / %lu tunnelled / %lu injected,"
+    emit("%s  up, %lu captured / %lu tunnelled / %lu injected,"
            " %lu dropped, %lu rekey%s",
            stamp(), st.captured, st.tunnelled, st.injected, st.dropped,
            c->rekeys, c->rekeys == 1 ? "" : "s");
     if (nat_live >= 0)
-        printf(", %d mappings", nat_live);
+        emit(", %d mappings", nat_live);
     if (c->rekeys_failed > 0)
-        printf(", %lu FAILED rekey%s", c->rekeys_failed,
+        emit(", %lu FAILED rekey%s", c->rekeys_failed,
                c->rekeys_failed == 1 ? "" : "s");
     if (c->roams > 0)
-        printf(", %lu roam%s", c->roams, c->roams == 1 ? "" : "s");
-    printf("\n");
-    fflush(stdout);
+        emit(", %lu roam%s", c->roams, c->roams == 1 ? "" : "s");
+    emit("\n");
 }
 
 /*
@@ -337,10 +351,9 @@ static void log_drop(const char *dir, const uint8_t *ip, size_t iplen,
 
     ipv4_format(abuf, sizeof abuf, ipv4_src(ip));
     ipv4_format(bbuf, sizeof bbuf, ipv4_dst(ip));
-    printf("%s %s -> %s  proto %u  %lu bytes  DROPPED: %s\n",
+    emit("%s %s -> %s  proto %u  %lu bytes  DROPPED: %s\n",
            dir, abuf, bbuf, (unsigned) ipv4_proto(ip),
            (unsigned long) iplen, why);
-    fflush(stdout);
 }
 
 /*
@@ -377,9 +390,9 @@ static void print_summary(void)
         elapsed = wg_time_ms() - started_ms;
 
     format_duration(dur, sizeof dur, elapsed);
-    printf("\nran for %s\n", dur);
+    emit("\nran for %s\n", dur);
 
-    printf("captured %lu, tunnelled %lu, received %lu, injected %lu,"
+    emit("captured %lu, tunnelled %lu, received %lu, injected %lu,"
            " dropped %lu\n",
            st.captured, st.tunnelled, st.received, st.injected, st.dropped);
     /*
@@ -388,7 +401,7 @@ static void print_summary(void)
      * OpenVMS box rather than anything in this program.
      */
     if (st.stack_unreach > 0)
-        printf("WARNING: the OpenVMS stack sent %lu ICMP unreachable%s to"
+        emit("WARNING: the OpenVMS stack sent %lu ICMP unreachable%s to"
                " clients about\n"
                "         destinations this gateway was tunnelling. Those"
                " senders were told\n"
@@ -399,7 +412,7 @@ static void print_summary(void)
                "         be disabled on this machine.\n",
                st.stack_unreach, st.stack_unreach == 1 ? "" : "s");
     if (st.too_big > 0)
-        printf("oversized: %lu, of which %lu answered with ICMP"
+        emit("oversized: %lu, of which %lu answered with ICMP"
                " fragmentation-needed\n", st.too_big, st.icmp_sent);
     /*
      * Only mentioned when it happened. A peer that never moved is the
@@ -410,7 +423,7 @@ static void print_summary(void)
         char epbuf[80];
 
         wg_endpoint_format(epbuf, sizeof epbuf, &client.endpoint);
-        printf("peer roamed %lu time%s; last seen at %s\n",
+        emit("peer roamed %lu time%s; last seen at %s\n",
                client.roams, client.roams == 1 ? "" : "s", epbuf);
     }
     /*
@@ -419,34 +432,34 @@ static void print_summary(void)
      * otherwise, and the difference is the whole question when a
      * session dies after a few minutes.
      */
-    printf("rekeys: %lu succeeded, %lu failed",
+    emit("rekeys: %lu succeeded, %lu failed",
            client.rekeys, client.rekeys_failed);
     if (client.peer_handshakes > 0)
-        printf("; the peer started %lu handshake%s of its own",
+        emit("; the peer started %lu handshake%s of its own",
                client.peer_handshakes,
                client.peer_handshakes == 1 ? "" : "s");
-    printf("\n");
+    emit("\n");
 
     if (client.cookies_received > 0)
-        printf("answered %lu cookie challenge%s from a loaded peer\n",
+        emit("answered %lu cookie challenge%s from a loaded peer\n",
                client.cookies_received,
                client.cookies_received == 1 ? "" : "s");
 
     if (use_nat) {
-        printf("NAT: %lu translated, %lu restored, %d of %d mappings live,"
+        emit("NAT: %lu translated, %lu restored, %d of %d mappings live,"
                " dropped %lu unsupported / %lu unmatched / %lu table-full"
                " / %lu orphan fragments\n",
                nat.translated, nat.restored, nat_active(&nat, wg_time_ms()),
                NAT_ENTRIES, nat.dropped_unsupported, nat.dropped_no_mapping,
                nat.dropped_table_full, nat.dropped_frag_orphan);
         if (nat.frags_tracked > 0) {
-            printf("     %lu fragmented datagram%s, %lu later fragment%s"
+            emit("     %lu fragmented datagram%s, %lu later fragment%s"
                    " carried on the first one's mapping\n",
                    nat.frags_tracked, nat.frags_tracked == 1 ? "" : "s",
                    nat.frags_inherited,
                    nat.frags_inherited == 1 ? "" : "s");
             if (nat.frags_held > 0)
-                printf("     %lu arrived before their first fragment and"
+                emit("     %lu arrived before their first fragment and"
                        " were held; %lu released\n",
                        nat.frags_held, nat.frags_released);
         }
@@ -463,7 +476,7 @@ static void print_summary(void)
          * the rate has to be about.
          */
         if (elapsed > 0)
-            printf("     %lu new flow%s over the run, %lu per minute\n",
+            emit("     %lu new flow%s over the run, %lu per minute\n",
                    nat.flows, nat.flows == 1 ? "" : "s",
                    (unsigned long) ((uint64_t) nat.flows * 60000ULL
                                     / elapsed));
@@ -472,17 +485,15 @@ static void print_summary(void)
          * flow was broken without any other trace of it.
          */
         if (nat.evicted > 0)
-            printf("     %lu live mapping%s recycled to make room; a flow"
+            emit("     %lu live mapping%s recycled to make room; a flow"
                    " that quiet may have stopped working\n",
                    nat.evicted, nat.evicted == 1 ? " was" : "s were");
     }
-    fflush(stdout);
 }
 
 static void usage(const char *argv0)
 {
-    fprintf(stderr,
-"usage: %s --key <base64> --peer-key <base64> --endpoint <host:port>\n"
+    emit("usage: %s --key <base64> --peer-key <base64> --endpoint <host:port>\n"
 "          --interface <name> --tunnel-subnet <cidr>\n"
 "          [--psk <base64>] [--listen-port <n>] [--verbose]\n"
 "\n"
@@ -561,7 +572,7 @@ static int resolve_interface(char *out, size_t cap, const char *want)
 
     errbuf[0] = '\0';
     if (pcap_findalldevs(&devs, errbuf) != 0 || devs == NULL) {
-        fprintf(stderr, "error: pcap_findalldevs: %s\n",
+        emit("error: pcap_findalldevs: %s\n",
                 errbuf[0] != '\0' ? errbuf : "no devices");
         return -1;
     }
@@ -585,10 +596,10 @@ static int resolve_interface(char *out, size_t cap, const char *want)
     }
 
     if (!found) {
-        fprintf(stderr, "error: no interface matching '%s'. Available:\n",
+        emit("error: no interface matching '%s'. Available:\n",
                 want);
         for (d = devs; d != NULL; d = d->next)
-            fprintf(stderr, "         %s\n", d->name);
+            emit("         %s\n", d->name);
     }
 
     pcap_freealldevs(devs);
@@ -608,12 +619,12 @@ static long read_file(const char *path, char *buf, size_t cap)
     size_t n;
 
     if (f == NULL) {
-        fprintf(stderr, "error: cannot open %s\n", path);
+        emit("error: cannot open %s\n", path);
         return -1;
     }
     n = fread(buf, 1, cap - 1, f);
     if (ferror(f)) {
-        fprintf(stderr, "error: cannot read %s\n", path);
+        emit("error: cannot read %s\n", path);
         fclose(f);
         return -1;
     }
@@ -622,7 +633,7 @@ static long read_file(const char *path, char *buf, size_t cap)
      * a config silently truncated mid-key is worse than one refused.
      */
     if (n == cap - 1 && fgetc(f) != EOF) {
-        fprintf(stderr, "error: %s is too large to be a WireGuard config\n",
+        emit("error: %s is too large to be a WireGuard config\n",
                 path);
         fclose(f);
         return -1;
@@ -637,7 +648,7 @@ static int read_key(uint8_t key[WG_KEY_LEN], const char *arg,
                     const char *what)
 {
     if (wg_key_from_base64(key, arg) != 0) {
-        fprintf(stderr, "error: %s is not a valid base64 key\n", what);
+        emit("error: %s is not a valid base64 key\n", what);
         return -1;
     }
     return 0;
@@ -688,13 +699,23 @@ int main(int argc, char **argv)
         if (strcmp(argv[i], "--log") != 0 || i + 1 >= argc)
             continue;
         log_file = argv[i + 1];
-        if (open_log(log_file, stdout) == NULL) {
-            fprintf(stderr, "error: cannot open log file %s\n", log_file);
-            return 1;
+
+        /*
+         * Opened once here purely to fail early: a log that cannot be
+         * written is worth refusing to start over, rather than
+         * discovering hours later that nothing was recorded.
+         */
+        {
+            FILE *f = fopen(log_file, "a");
+
+            if (f == NULL) {
+                log_file = NULL;
+                emit("error: cannot open log file %s\n", argv[i + 1]);
+                return 1;
+            }
+            fclose(f);
         }
-        (void) open_log(log_file, stderr);
-        printf("\n%s  ---- vmsguard gateway starting ----\n", stamp());
-        fflush(stdout);
+        emit("\n%s  ---- vmsguard gateway starting ----\n", stamp());
         break;
     }
 
@@ -727,7 +748,7 @@ int main(int argc, char **argv)
         if (n < 0)
             return 1;
         if (wg_conf_parse(&conf, text, (size_t) n) != 0) {
-            fprintf(stderr, "error: %s: %s\n", argv[i + 1], conf.error);
+            emit("error: %s: %s\n", argv[i + 1], conf.error);
             return 2;
         }
 
@@ -763,14 +784,14 @@ int main(int argc, char **argv)
             if (ethip_parse_cidr(conf.address, &tunnel_addr,
                                  &tunnel_addr_mask) != 0 ||
                 tunnel_addr_mask != 0xFFFFFFFFUL) {
-                fprintf(stderr, "error: %s: Address '%s' is not usable\n",
+                emit("error: %s: Address '%s' is not usable\n",
                         argv[i + 1], conf.address);
                 return 2;
             }
             use_nat = 1;
         }
 
-        printf("read %s\n", argv[i + 1]);
+        emit("read %s\n", argv[i + 1]);
 
         /*
          * Say what was not acted on. A config is written for wg-quick,
@@ -779,17 +800,17 @@ int main(int argc, char **argv)
          * wrong thing.
          */
         if (conf.saw_dns)
-            printf("  note: DNS is for the machines behind the gateway to\n"
+            emit("  note: DNS is for the machines behind the gateway to\n"
                    "        set for themselves; it is not applied here\n");
         if (conf.n_allowed > 1) {
             int k;
-            printf("  note: only the first AllowedIPs entry is used as the\n"
+            emit("  note: only the first AllowedIPs entry is used as the\n"
                    "        tunnel subnet; ignoring");
             for (k = 1; k < conf.n_allowed; k++)
-                printf(" %s", conf.allowed[k]);
-            printf("\n");
+                emit(" %s", conf.allowed[k]);
+            emit("\n");
         }
-        printf("  note: --interface is not in a config file and must still\n"
+        emit("  note: --interface is not in a config file and must still\n"
                "        be given, as must --client and --exclude for a\n"
                "        full tunnel\n\n");
 
@@ -832,33 +853,32 @@ int main(int argc, char **argv)
             if (ethip_parse_cidr(argv[++i], &tunnel_addr,
                                  &tunnel_addr_mask) != 0 ||
                 tunnel_addr_mask != 0xFFFFFFFFUL) {
-                fprintf(stderr,
-                        "error: --tunnel-address must be a plain address\n");
+                emit("error: --tunnel-address must be a plain address\n");
                 return 2;
             }
             use_nat = 1;
         } else if (strcmp(argv[i], "--exclude") == 0 && i + 1 < argc) {
             if (nexcludes >= MAX_CLIENTS) {
-                fprintf(stderr, "error: at most %d --exclude entries\n",
+                emit("error: at most %d --exclude entries\n",
                         MAX_CLIENTS);
                 return 2;
             }
             if (ethip_parse_cidr(argv[++i], &excludes[nexcludes].net,
                                  &excludes[nexcludes].mask) != 0) {
-                fprintf(stderr, "error: --exclude '%s' is not valid CIDR\n",
+                emit("error: --exclude '%s' is not valid CIDR\n",
                         argv[i]);
                 return 2;
             }
             nexcludes++;
         } else if (strcmp(argv[i], "--client") == 0 && i + 1 < argc) {
             if (nclients >= MAX_CLIENTS) {
-                fprintf(stderr, "error: at most %d --client entries\n",
+                emit("error: at most %d --client entries\n",
                         MAX_CLIENTS);
                 return 2;
             }
             if (ethip_parse_cidr(argv[++i], &clients[nclients].net,
                                  &clients[nclients].mask) != 0) {
-                fprintf(stderr, "error: --client '%s' is not valid CIDR\n",
+                emit("error: --client '%s' is not valid CIDR\n",
                         argv[i]);
                 return 2;
             }
@@ -868,8 +888,7 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--tunnel-mtu") == 0 && i + 1 < argc) {
             tunnel_mtu = atoi(argv[++i]);
             if (tunnel_mtu < 576 || tunnel_mtu > 1500) {
-                fprintf(stderr,
-                        "error: --tunnel-mtu must be between 576 and 1500\n");
+                emit("error: --tunnel-mtu must be between 576 and 1500\n");
                 return 2;
             }
         } else if (strcmp(argv[i], "--keepalive") == 0 && i + 1 < argc) {
@@ -903,7 +922,7 @@ int main(int argc, char **argv)
     }
 
     if (ethip_parse_cidr(subnet_arg, &tun_net, &tun_mask) != 0) {
-        fprintf(stderr, "error: --tunnel-subnet '%s' is not valid CIDR\n",
+        emit("error: --tunnel-subnet '%s' is not valid CIDR\n",
                 subnet_arg);
         return 2;
     }
@@ -920,8 +939,7 @@ int main(int argc, char **argv)
      * full tunnel, where this matters most.
      */
     if (tun_mask < 0xFF000000UL && nclients == 0) {
-        fprintf(stderr,
-            "error: --tunnel-subnet %s is wider than /8, so --client is\n"
+        emit("error: --tunnel-subnet %s is wider than /8, so --client is\n"
             "       required. Capture is promiscuous, and without a source\n"
             "       filter this would tunnel other machines' traffic.\n",
             subnet_arg);
@@ -938,8 +956,7 @@ int main(int argc, char **argv)
      * explicitly.
      */
     if (tun_mask < 0xFF000000UL && nexcludes == 0) {
-        fprintf(stderr,
-            "error: --tunnel-subnet %s is wider than /8, so --exclude is\n"
+        emit("error: --tunnel-subnet %s is wider than /8, so --exclude is\n"
             "       required. Without it, traffic to local destinations is\n"
             "       tunnelled too — including conversations with this\n"
             "       machine. Pass your local network, e.g.\n"
@@ -950,28 +967,28 @@ int main(int argc, char **argv)
 
     colon = strrchr(endpoint_arg, ':');
     if (colon == NULL || (size_t) (colon - endpoint_arg) >= sizeof host) {
-        fprintf(stderr, "error: --endpoint must be host:port\n");
+        emit("error: --endpoint must be host:port\n");
         return 2;
     }
     memcpy(host, endpoint_arg, (size_t) (colon - endpoint_arg));
     host[colon - endpoint_arg] = '\0';
     peer_port = (uint16_t) atoi(colon + 1);
     if (peer_port == 0) {
-        fprintf(stderr, "error: invalid port in --endpoint\n");
+        emit("error: invalid port in --endpoint\n");
         return 2;
     }
     if (wg_endpoint_resolve(&endpoint, host, peer_port) != 0) {
-        fprintf(stderr, "error: could not resolve '%s'\n", host);
+        emit("error: could not resolve '%s'\n", host);
         return 1;
     }
 
-    printf("vmsguard gateway\n");
+    emit("vmsguard gateway\n");
 
     /* ---- the tunnel ---- */
 
     if (wg_client_init(&client, privkey, peerkey, pskp, &endpoint,
                        listen_port) != 0) {
-        fprintf(stderr, "error: %s\n", client.error);
+        emit("error: %s\n", client.error);
         return 1;
     }
 
@@ -985,29 +1002,29 @@ int main(int argc, char **argv)
     wg_client_set_endpoint_name(&client, host, peer_port);
 
     wg_key_to_base64(b64, client.local.static_public);
-    printf("  our public key : %s\n", b64);
+    emit("  our public key : %s\n", b64);
     ipv4_format(abuf, sizeof abuf, tun_net);
     ipv4_format(bbuf, sizeof bbuf, tun_mask);
-    printf("  tunnel subnet  : %s mask %s\n", abuf, bbuf);
+    emit("  tunnel subnet  : %s mask %s\n", abuf, bbuf);
     if (use_nat) {
         ipv4_format(abuf, sizeof abuf, tunnel_addr);
-        printf("  source NAT to  : %s\n", abuf);
+        emit("  source NAT to  : %s\n", abuf);
     } else {
-        printf("  source NAT     : off\n");
+        emit("  source NAT     : off\n");
     }
     if (nclients == 0) {
-        printf("  forwarding for : any source\n");
+        emit("  forwarding for : any source\n");
     } else {
         for (i = 0; i < nclients; i++) {
             ipv4_format(abuf, sizeof abuf, clients[i].net);
             ipv4_format(bbuf, sizeof bbuf, clients[i].mask);
-            printf("  forwarding for : %s mask %s\n", abuf, bbuf);
+            emit("  forwarding for : %s mask %s\n", abuf, bbuf);
         }
     }
     for (i = 0; i < nexcludes; i++) {
         ipv4_format(abuf, sizeof abuf, excludes[i].net);
         ipv4_format(bbuf, sizeof bbuf, excludes[i].mask);
-        printf("  excluding      : %s mask %s\n", abuf, bbuf);
+        emit("  excluding      : %s mask %s\n", abuf, bbuf);
     }
 
     /* ---- capture ---- */
@@ -1016,19 +1033,19 @@ int main(int argc, char **argv)
         wg_client_close(&client);
         return 1;
     }
-    printf("  capturing on   : %s\n", realif);
-    printf("\n");
+    emit("  capturing on   : %s\n", realif);
+    emit("\n");
 
     errbuf[0] = '\0';
     pc = pcap_open_live(realif, 65535, 1, PCAP_TIMEOUT_MS, errbuf);
     if (pc == NULL) {
-        fprintf(stderr, "error: pcap_open_live(%s): %s\n", realif, errbuf);
-        fprintf(stderr, "       packet capture needs privilege\n");
+        emit("error: pcap_open_live(%s): %s\n", realif, errbuf);
+        emit("       packet capture needs privilege\n");
         wg_client_close(&client);
         return 1;
     }
     if (pcap_datalink(pc) != DLT_EN10MB) {
-        fprintf(stderr, "error: %s is link type %d, not Ethernet\n",
+        emit("error: %s is link type %d, not Ethernet\n",
                 realif, pcap_datalink(pc));
         pcap_close(pc);
         wg_client_close(&client);
@@ -1051,17 +1068,17 @@ int main(int argc, char **argv)
                   (uint32_t) local_ep.addr[3];
         have_gw_addr = 1;
         ipv4_format(abuf, sizeof abuf, gw_addr);
-        printf("  our address    : %s\n", abuf);
+        emit("  our address    : %s\n", abuf);
     } else {
-        printf("  our address    : unknown, so oversized packets will be\n"
+        emit("  our address    : unknown, so oversized packets will be\n"
                "                   dropped without an ICMP reply\n");
     }
-    printf("  tunnel MTU     : %d\n\n", tunnel_mtu);
+    emit("  tunnel MTU     : %d\n\n", tunnel_mtu);
 
     /* ---- injection ---- */
 
     if (raw_injector_open(&inj) != 0) {
-        fprintf(stderr, "error: %s\n", raw_injector_error(inj));
+        emit("error: %s\n", raw_injector_error(inj));
         raw_injector_close(inj);
         pcap_close(pc);
         wg_client_close(&client);
@@ -1070,9 +1087,9 @@ int main(int argc, char **argv)
 
     /* ---- handshake ---- */
 
-    printf("handshake with the peer\n");
+    emit("handshake with the peer\n");
     if (wg_client_handshake(&client, 3, 5000) != 0) {
-        fprintf(stderr, "error: %s\n", client.error);
+        emit("error: %s\n", client.error);
         raw_injector_close(inj);
         pcap_close(pc);
         wg_client_close(&client);
@@ -1080,12 +1097,11 @@ int main(int argc, char **argv)
     }
     if (keepalive_s > 0) {
         client.keepalive_interval_ms = (uint64_t) keepalive_s * 1000;
-        printf("  established, keepalive every %d s\n\n", keepalive_s);
+        emit("  established, keepalive every %d s\n\n", keepalive_s);
     } else {
-        printf("  established\n\n");
+        emit("  established\n\n");
     }
-    printf("forwarding. Ctrl-Y or Ctrl-C to stop.\n\n");
-    fflush(stdout);
+    emit("forwarding. Ctrl-Y or Ctrl-C to stop.\n\n");
 
     /* Armed only now, so that a failure before this point exits without
        printing a summary of a run that never started. */
@@ -1124,8 +1140,7 @@ int main(int argc, char **argv)
                 last_tick_ms = now;
 
                 if (stop_requested_by_file()) {
-                    printf("%s  stop file seen; shutting down\n", stamp());
-                    fflush(stdout);
+                    emit("%s  stop file seen; shutting down\n", stamp());
                     stopped_by_file = 1;
                     break;
                 }
@@ -1194,10 +1209,9 @@ int main(int argc, char **argv)
                     if (verbose) {
                         ipv4_format(abuf, sizeof abuf, ipv4_dst(ip));
                         ipv4_format(bbuf, sizeof bbuf, orig_dst);
-                        printf("STACK: told %s that %s is unreachable,"
+                        emit("STACK: told %s that %s is unreachable,"
                                " proto %u — we are tunnelling it\n",
                                abuf, bbuf, (unsigned) orig_proto);
-                        fflush(stdout);
                     }
                 }
             }
@@ -1270,10 +1284,9 @@ int main(int argc, char **argv)
                             told = 1;
                             if (verbose) {
                                 ipv4_format(abuf, sizeof abuf, ipv4_src(ip));
-                                printf("big %lu bytes from %s, told to use"
+                                emit("big %lu bytes from %s, told to use"
                                        " %d\n", (unsigned long) iplen,
                                        abuf, tunnel_mtu);
-                                fflush(stdout);
                             }
                         }
                     }
@@ -1326,10 +1339,9 @@ int main(int argc, char **argv)
                     if (verbose) {
                         ipv4_format(abuf, sizeof abuf, ipv4_src(ip));
                         ipv4_format(bbuf, sizeof bbuf, ipv4_dst(ip));
-                        printf("out %s -> %s  proto %u  %lu bytes\n",
+                        emit("out %s -> %s  proto %u  %lu bytes\n",
                                abuf, bbuf, (unsigned) ipv4_proto(ip),
                                (unsigned long) iplen);
-                        fflush(stdout);
                     }
                 } else {
                     st.dropped++;
@@ -1340,7 +1352,7 @@ int main(int argc, char **argv)
 after_out:
             ;
         } else if (rc < 0) {
-            fprintf(stderr, "capture error: %s\n", pcap_geterr(pc));
+            emit("capture error: %s\n", pcap_geterr(pc));
             break;
         }
 
@@ -1386,17 +1398,15 @@ after_out:
                     if (verbose) {
                         ipv4_format(abuf, sizeof abuf, ipv4_src(plain));
                         ipv4_format(bbuf, sizeof bbuf, ipv4_dst(plain));
-                        printf("in  %s -> %s  proto %u  %lu bytes\n",
+                        emit("in  %s -> %s  proto %u  %lu bytes\n",
                                abuf, bbuf, (unsigned) ipv4_proto(plain),
                                (unsigned long) iplen);
-                        fflush(stdout);
                     }
                 } else {
                     st.dropped++;
                     if (verbose) {
-                        printf("inject failed: %s\n",
+                        emit("inject failed: %s\n",
                                raw_injector_error(inj));
-                        fflush(stdout);
                     }
                 }
                 /*
@@ -1419,11 +1429,10 @@ after_out:
                                             ipv4_src(held));
                                 ipv4_format(bbuf, sizeof bbuf,
                                             ipv4_dst(held));
-                                printf("in  %s -> %s  proto %u  %lu bytes"
+                                emit("in  %s -> %s  proto %u  %lu bytes"
                                        "  (was held)\n", abuf, bbuf,
                                        (unsigned) ipv4_proto(held),
                                        (unsigned long) heldlen);
-                                fflush(stdout);
                             }
                         } else {
                             st.dropped++;
@@ -1433,22 +1442,21 @@ after_out:
             } else {
                 st.dropped++;
                 if (verbose) {
-                    printf("in  decrypted %lu bytes claiming an IP length"
+                    emit("in  decrypted %lu bytes claiming an IP length"
                            " of %lu  DROPPED: malformed\n",
                            (unsigned long) plainlen, (unsigned long) iplen);
-                    fflush(stdout);
                 }
             }
         } else if (rc == WG_SOCK_ERROR) {
-            fprintf(stderr, "tunnel receive error\n");
+            emit("tunnel receive error\n");
             break;
         }
     }
 
     if (stopped_by_file)
-        printf("\nstopped on request");
+        emit("\nstopped on request");
     else if (stop_requested)
-        printf("\ninterrupted");
+        emit("\ninterrupted");
 
     /* The summary itself is printed by print_summary, registered with
        atexit above, so that it appears whichever way we leave. */
