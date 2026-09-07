@@ -80,6 +80,33 @@ OpenVMS box. It needs no VPN software of its own.
 Still untested: a large outbound transfer, which is where the MTU gap
 below will bite. Nothing sent here exceeded 569 bytes outbound.
 
+## Confirmed: rekeying against the provider (2026-09-07)
+
+A five-minute run: **`ran for 5m 6s`, `rekeys: 2 succeeded, 0 failed`,
+`dropped 0`.** 306 seconds against a 120-second rekey interval is
+exactly the two expected.
+
+Rekeying had been verified against the Linux kernel module long before
+this, but never against a provider and never through the gateway. Every
+earlier gateway run was shorter than the rekey interval — the longest
+was 1m 18s — so the question had simply never been put.
+
+An earlier 6m 47s run had already settled it by inference, before the
+counters existed to say so plainly: `wg_client_send` refuses once a
+session passes `REJECT_AFTER_TIME` (180s) and the gateway counts that
+refusal as a drop, so 407 seconds with `dropped 0` could only mean the
+session had been replaced. Sound but indirect, which is the argument for
+counting it: a run that rekeys cleanly and a run too short to have
+needed to should not look identical.
+
+**Still unproven:** whether the transition is invisible to a
+*continuous* flow. `dropped 0` counts only our own refusals; a packet
+sent under a stale key would be discarded by the peer and never counted
+here. A `ping -i 1` from the client across a rekey is the test for that,
+and both runs so far carried only background traffic — visible in the
+summary as `translated` equalling `new flows`, meaning every flow was a
+single packet.
+
 ## The short answer
 
 **As written, this config cannot work on OpenVMS**, and not because of
