@@ -41,9 +41,15 @@ SSL_LIBRARY = SYS$LIBRARY:SSL3$LIBCRYPTO_SHR32
 ! VSI C V7.7 is GEM-based rather than Clang, so C99 is the ceiling. If
 ! /STANDARD=C99 rejects something, try /STANDARD=RELAXED.
 
+! [.src.tun] is in this list because interop and responder include
+! ethip.h and icmp.h. It was missing until MMS was first run for real,
+! while build_vms.com had carried it for months -- the same split that
+! left ethip.obj without a rule. Keep the two include lists identical.
+
 CFLAGS = /STANDARD=C99/DEFINE=(_SOCKADDR_LEN)/POINTER_SIZE=32-
 /PREFIX_LIBRARY_ENTRIES=ALL_ENTRIES-
-/INCLUDE_DIRECTORY=([.src.proto],[.src.platform],[.src.client],$(SSL_INCLUDE))
+/INCLUDE_DIRECTORY=([.src.proto],[.src.platform],[.src.client],-
+[.src.tun],$(SSL_INCLUDE))
 
 ! No socket library is named on the link line: per section 1.4 of the
 ! Sockets API manual, linking a sockets program needs nothing beyond
