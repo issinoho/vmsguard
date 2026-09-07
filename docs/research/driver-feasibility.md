@@ -396,6 +396,29 @@ bearing it while arriving on `IT0` looks spoofed; a reverse-path check
 would have dropped it. There is evidently no such check here, which is
 convenient and worth knowing rather than relying on.
 
+### Protocol 41 too (2026-09-07)
+
+The same probe with `--inner-proto 41`, carrying an ICMPv6 echo request:
+
+```
+$ netstat -i          IT0 ... 1
+$ PENC --tunnel-remote 192.0.2.1 --tunnel-local 192.168.0.80 \
+       --inner-proto 41
+  injected 76 bytes
+$ netstat -i          IT0 ... 2
+```
+
+**With IPv6 not configured on the system at all.** The tunnel matches on
+the outer IPv4 header and receives the packet before anything looks at
+what is inside, so the encapsulation path is protocol-agnostic: IPv4 in
+IPv4 and IPv6 in IPv4 are accepted alike.
+
+What that leaves unproven is only *delivery* of the inner IPv6 packet,
+and that is a configuration question rather than a capability one — the
+IPv4 case has already shown the stack acts on what it unwraps. Proving
+it needs IPv6 running, via `@SYS$MANAGER:TCPIP$IP6_SETUP`, which
+restarts TCP/IP Services.
+
 ### What this changes
 
 The client shape was abandoned, and IPv6 forwarding declared impossible,

@@ -167,7 +167,12 @@ from, `id 16962` matching the probe's own. No reverse-path check
 intervened, though the inner source was an address directly connected on
 another interface.
 
-Still unshown: whether the client shape's outbound half can capture the
+Protocol 41 is accepted too, with IPv6 not configured at all: the
+tunnel matches on the outer header before anything reads the payload.
+
+Still unshown: delivery of an inner *IPv6* packet, which needs IPv6
+running and is a configuration question rather than a capability one;
+and whether the client shape's outbound half can capture the
 encapsulated frame without leaking the inner packet to the segment. See
 `docs/research/driver-feasibility.md`.
 
