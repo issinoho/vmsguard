@@ -422,6 +422,37 @@ period through an entirely separate path.
 The log was read with `TYPE` while the gateway held it, which is the
 thing the append-and-close design exists for.
 
+### A long run (2026-09-07)
+
+The same job left to run for **1 h 50 m**:
+
+```
+12:20:06  ---- vmsguard gateway starting ----
+12:25:07  up, 247 captured / ... 2 rekeys, 24 mappings
+13:10:13  up, 3831 captured / ... 24 rekeys, 437 mappings
+14:10:18  up, 11325 captured / 11324 tunnelled / 11248 injected,
+          1 dropped, 54 rekeys, 27 mappings, 2 FAILED rekeys
+```
+
+**54 rekeys over 6612 seconds is one per 122 seconds**, against a
+120-second interval — the timers are firing at the right rate over
+hours, not merely once in a five-minute sample. One packet dropped in
+11,325 is 0.009%.
+
+Two rekeys failed, both inside the first 35 minutes, and neither
+recurred in the 75 minutes after. A rekey that fails is retried after
+`REKEY_TIMEOUT` and the session is good until `REJECT_AFTER_TIME`, so a
+peer that misses one handshake costs nothing permanent. Each failure
+does stall forwarding for up to five seconds, because the handshake is
+synchronous inside the packet loop — over this run that is ten seconds
+of stall in nearly two hours, but it is the known cost.
+
+**The peak of 437 live mappings vindicates raising `NAT_ENTRIES`.** That
+is 21% of the current 2048 and would have been 85% of the 512 it
+replaced, which is where eviction starts recycling live flows. The
+change was made on a measured 375-mapping estimate; a real browsing
+burst went past it within the hour.
+
 `--stop-file` names a file the gateway checks for once a second. When it
 appears, the gateway shuts down through its ordinary path and writes its
 summary — then removes the file, so its disappearance is the
