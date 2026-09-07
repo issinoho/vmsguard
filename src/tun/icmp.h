@@ -55,6 +55,22 @@ int ipv4_dont_fragment(const uint8_t *pkt, size_t len);
 #define ICMP_TYPE_TIME_EXCEEDED  11
 
 /*
+ * Destination-unreachable codes.
+ *
+ * Only some of these mean "I could not route this". Port and protocol
+ * unreachable are a host answering about *itself* and are perfectly
+ * ordinary; fragmentation-needed is the message this gateway generates
+ * on purpose, and reporting our own as the stack contradicting us would
+ * be worse than saying nothing.
+ */
+#define ICMP_CODE_NET_UNREACH      0
+#define ICMP_CODE_HOST_UNREACH     1
+#define ICMP_CODE_PROTO_UNREACH    2
+#define ICMP_CODE_PORT_UNREACH     3
+#define ICMP_CODE_NET_UNKNOWN      6
+#define ICMP_CODE_HOST_UNKNOWN     7
+
+/*
  * Whether `pkt` is an ICMP error message sent *by* `from_addr`, and if
  * so what it was complaining about.
  *
@@ -75,6 +91,18 @@ int ipv4_dont_fragment(const uint8_t *pkt, size_t len);
  * what makes the detection precise rather than a guess based on seeing
  * any ICMP at all. orig_dst and orig_proto are filled in from that
  * quoted header; either pointer may be NULL.
+ *
+ * Only errors that mean a *routing* failure count: net and host
+ * unreachable, net and host unknown, and time exceeded. Port and
+ * protocol unreachable are the host answering about itself and are
+ * normal. Fragmentation-needed is excluded above all, because this
+ * gateway generates those itself and captures its own injected packets
+ * — reporting them would turn a working feature into a warning.
+ *
+ * The caller must still decide whether the quoted destination is one it
+ * would have tunnelled. That cannot be answered here: with a full
+ * tunnel every address is nominally in the tunnel subnet, and only the
+ * caller knows its exclusions.
  *
  * Returns 1 if this is such an error, 0 otherwise.
  */

@@ -121,8 +121,24 @@ int icmp_error_from(const uint8_t *pkt, size_t len, uint32_t from_addr,
         return 0;
 
     type = pkt[ihl];
-    if (type != ICMP_TYPE_DEST_UNREACH && type != ICMP_TYPE_TIME_EXCEEDED)
+    if (type == ICMP_TYPE_DEST_UNREACH) {
+        uint8_t code = pkt[ihl + 1];
+
+        /*
+         * Routing failures only. Port and protocol unreachable are a
+         * host answering about itself, and fragmentation-needed is what
+         * this gateway sends on purpose — it captures its own injected
+         * packets, so counting those would report the MTU feature
+         * working as the stack misbehaving.
+         */
+        if (code != ICMP_CODE_NET_UNREACH &&
+            code != ICMP_CODE_HOST_UNREACH &&
+            code != ICMP_CODE_NET_UNKNOWN &&
+            code != ICMP_CODE_HOST_UNKNOWN)
+            return 0;
+    } else if (type != ICMP_TYPE_TIME_EXCEEDED) {
         return 0;
+    }
 
     /*
      * The quoted original follows the eight-byte ICMP header. It must

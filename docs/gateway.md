@@ -456,10 +456,30 @@ Nothing in this program can prevent it. There is no packet-filter
 facility on the platform that drops by rule, which is the same fact that
 makes the gateway shape necessary rather than the client shape (see
 `docs/research/driver-feasibility.md`). What the gateway does instead is
-notice: it recognises an ICMP error sent from its own address whose
-*quoted* original was headed for the tunnel subnet, which is precise
-enough not to fire on other people's ICMP crossing the segment. Under
-`--verbose` each one prints:
+notice.
+
+Getting that precise took a correction. The first version asked only
+whether the quoted destination was in the tunnel subnet, which under
+`--tunnel-subnet 0.0.0.0/0` is no question at all — every address is —
+and the first live run duly reported the OpenVMS box telling the LAN
+router that the OpenVMS box was unreachable, for a closed local UDP
+port. A correct answer about itself, and nothing to do with the tunnel.
+
+Four conditions now have to hold together:
+
+- the error comes from the gateway's own address;
+- its code is a *routing* failure — net or host unreachable, net or host
+  unknown, or time exceeded. Port and protocol unreachable are a host
+  answering about itself. **Fragmentation-needed is excluded above all**,
+  because the gateway sends those itself and captures its own injected
+  packets, so counting them would report the MTU feature working as the
+  stack misbehaving;
+- the quoted destination survives the same exclusions the forwarding
+  path applies, and is not multicast, broadcast or the peer endpoint;
+- and the complaint is addressed to a host named by `--client`, since a
+  complaint to anyone else is not about traffic we carry.
+
+Under `--verbose` each one prints:
 
 ```
 STACK: told 192.168.0.218 that 1.1.1.1 is unreachable, proto 6 — we are tunnelling it
@@ -478,10 +498,9 @@ $ TCPIP SHOW PROTOCOL IP
 $ TCPIP SET PROTOCOL IP /NOFORWARD
 ```
 
-This has not been exercised on the target: no run so far has reported a
-non-zero count, which either means forwarding is already off or that the
-conditions have not arisen. The detection is what makes the difference
-visible either way.
+Whether the OpenVMS box does this at all is still unknown: the one run
+that reported a count was the false positive described above. The
+detection is what will make the difference visible if it happens.
 
 No blackhole-route facility was found on OpenVMS — the only "blackhole"
 in the Management manual is a BIND ACL. Options, none yet tested:

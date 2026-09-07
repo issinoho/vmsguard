@@ -263,6 +263,45 @@ static void test_stack_contradiction(void)
           "time-exceeded counts too: a traceroute reaching us says the"
           " same thing");
 
+    /*
+     * Codes matter as much as types. Only a routing failure means the
+     * stack could not deliver what we are tunnelling; the rest are the
+     * host answering about itself, and one of them is ours.
+     */
+    len = build_icmp_error(p, ICMP_TYPE_DEST_UNREACH, GW_ADDR, CLIENT,
+                           CLIENT, FAR, 6, 28);
+    p[21] = ICMP_CODE_HOST_UNREACH;
+    check(icmp_error_from(p, len, GW_ADDR, NULL, NULL) == 1,
+          "host unreachable is a routing failure");
+    p[21] = ICMP_CODE_NET_UNKNOWN;
+    check(icmp_error_from(p, len, GW_ADDR, NULL, NULL) == 1,
+          "so is an unknown network");
+
+    /*
+     * Observed on the target: the OpenVMS box told the LAN router that
+     * the OpenVMS box was unreachable, for a closed local UDP port.
+     * A correct answer about itself, and nothing to do with the tunnel.
+     */
+    p[21] = ICMP_CODE_PORT_UNREACH;
+    check(icmp_error_from(p, len, GW_ADDR, NULL, NULL) == 0,
+          "but a closed port is a host answering about itself");
+    p[21] = ICMP_CODE_PROTO_UNREACH;
+    check(icmp_error_from(p, len, GW_ADDR, NULL, NULL) == 0,
+          "as is an unsupported protocol");
+
+    /*
+     * The one that would have hurt most. The gateway injects
+     * fragmentation-needed itself and captures its own injected
+     * packets, so counting these would report the MTU feature working
+     * as the stack misbehaving — and the louder the warning, the worse
+     * that is.
+     */
+    p[21] = ICMP_CODE_FRAG_NEEDED;
+    check(icmp_error_from(p, len, GW_ADDR, NULL, NULL) == 0,
+          "and fragmentation-needed is ours, never the stack's");
+
+    p[21] = 0;
+
     /* Echo requests and replies are not errors and quote nothing. */
     len = build_icmp_error(p, 8 /* echo request */, GW_ADDR, CLIENT,
                            CLIENT, FAR, 1, 28);

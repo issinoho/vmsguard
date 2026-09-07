@@ -152,6 +152,56 @@ static void on_interrupt(int sig)
  * Direction is spelled the same way as the forwarding lines, so the
  * three read as one column.
  */
+/*
+ * Whether a packet addressed here is one the gateway would tunnel,
+ * ignoring the tunnel subnet itself: not excluded, not multicast or
+ * broadcast, and not the peer's own endpoint.
+ *
+ * The forwarding path makes these same judgements inline. They are
+ * gathered here because the ICMP check needs to ask the same question
+ * about an address it has read out of a quoted header rather than off
+ * a captured packet.
+ */
+static int would_tunnel_to(uint32_t d, const struct client_filter *excludes,
+                           int nexcludes, const struct wg_endpoint *peer)
+{
+    int j;
+
+    if ((d & 0xF0000000UL) == 0xE0000000UL || d == 0xFFFFFFFFUL || d == 0)
+        return 0;
+
+    if (peer->family == WG_AF_INET) {
+        uint32_t pa = ((uint32_t) peer->addr[0] << 24) |
+                      ((uint32_t) peer->addr[1] << 16) |
+                      ((uint32_t) peer->addr[2] << 8) |
+                      (uint32_t) peer->addr[3];
+        if (d == pa)
+            return 0;
+    }
+
+    for (j = 0; j < nexcludes; j++) {
+        if (ipv4_in_subnet(d, excludes[j].net, excludes[j].mask))
+            return 0;
+    }
+    return 1;
+}
+
+/* Whether an address is one of the sources we forward for. With no
+   --client given the gateway serves any source, so anything counts. */
+static int is_a_client(uint32_t a, const struct client_filter *clients,
+                       int nclients)
+{
+    int j;
+
+    if (nclients == 0)
+        return 1;
+    for (j = 0; j < nclients; j++) {
+        if (ipv4_in_subnet(a, clients[j].net, clients[j].mask))
+            return 1;
+    }
+    return 0;
+}
+
 static void log_drop(const char *dir, const uint8_t *ip, size_t iplen,
                      const char *why)
 {
@@ -897,9 +947,28 @@ int main(int argc, char **argv)
                 uint32_t orig_dst = 0;
                 uint8_t orig_proto = 0;
 
+                /*
+                 * "Is the quoted destination in the tunnel subnet?" is
+                 * no test at all under a full tunnel, where every
+                 * address is. The question is whether it is a packet we
+                 * would actually have tunnelled, which means applying
+                 * the same exclusions and client filter the forwarding
+                 * path applies — and requiring the complaint to be
+                 * addressed to a client we forward for, since a
+                 * complaint to anyone else is not about our traffic.
+                 *
+                 * Without this the first live run reported the stack
+                 * telling the LAN router that the OpenVMS box itself
+                 * was unreachable, which is an ordinary answer about a
+                 * closed local port and nothing whatever to do with the
+                 * tunnel.
+                 */
                 if (icmp_error_from(ip, iplen, gw_addr, &orig_dst,
                                     &orig_proto) &&
-                    ipv4_in_subnet(orig_dst, tun_net, tun_mask)) {
+                    ipv4_in_subnet(orig_dst, tun_net, tun_mask) &&
+                    would_tunnel_to(orig_dst, excludes, nexcludes,
+                                    &endpoint) &&
+                    is_a_client(ipv4_dst(ip), clients, nclients)) {
                     st.stack_unreach++;
                     if (verbose) {
                         ipv4_format(abuf, sizeof abuf, ipv4_dst(ip));
