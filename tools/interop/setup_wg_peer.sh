@@ -35,6 +35,17 @@ IFACE=${IFACE:-wg-vmsguard}
 PORT=${PORT:-51820}
 PEER_ADDR=${PEER_ADDR:-10.9.0.1}
 VMSGUARD_ADDR=${VMSGUARD_ADDR:-10.9.0.2}
+# The IPv6 pair. A ULA prefix rather than anything globally routed: this
+# is a point-to-point test link and nothing outside it needs to reach
+# these addresses.
+PEER_ADDR6=${PEER_ADDR6:-fd00:1234::1}
+VMSGUARD_ADDR6=${VMSGUARD_ADDR6:-fd00:1234::2}
+# Extra networks to add to the peer's allowed-ips, comma-separated.
+# Needed for a gateway test, where vmsguard forwards for LAN hosts and
+# so sends from their addresses rather than its own -- allowed-ips that
+# does not cover them means the peer decrypts and then discards, which
+# looks exactly like a working handshake with no reply.
+EXTRA_ALLOWED=${EXTRA_ALLOWED:-}
 STATE_DIR=${STATE_DIR:-/etc/wireguard/vmsguard}
 
 usage() {
@@ -44,11 +55,13 @@ usage: $0 up <vmsguard-public-key>
        $0 status
 
   up      create $IFACE listening on UDP $PORT, with the given key as
-          its only peer, allowed-ips $VMSGUARD_ADDR/32
+          its only peer, allowed-ips $VMSGUARD_ADDR/32 and
+          $VMSGUARD_ADDR6/128
   down    delete the interface and the generated keys
   status  show the interface and handshake state
 
-Environment overrides: IFACE, PORT, PEER_ADDR, VMSGUARD_ADDR, STATE_DIR
+Environment overrides: IFACE, PORT, PEER_ADDR, VMSGUARD_ADDR,
+PEER_ADDR6, VMSGUARD_ADDR6, EXTRA_ALLOWED, STATE_DIR
 EOF
     exit 2
 }
@@ -86,15 +99,23 @@ up)
 
     ip link add dev "$IFACE" type wireguard
     ip addr add "$PEER_ADDR/24" dev "$IFACE"
+    # nodad: with no other node on the link duplicate-address detection
+    # has nothing to find, and skipping it avoids a window where the
+    # address is still tentative and a ping to it is answered by
+    # nothing at all.
+    ip -6 addr add "$PEER_ADDR6/64" dev "$IFACE" nodad
 
     # allowed-ips must cover the address vmsguard sends from, or the
     # peer decrypts our packets and then drops them — which looks like a
     # successful handshake with no echo reply.
+    ALLOWED="$VMSGUARD_ADDR/32,$VMSGUARD_ADDR6/128"
+    [ -n "$EXTRA_ALLOWED" ] && ALLOWED="$ALLOWED,$EXTRA_ALLOWED"
+
     wg set "$IFACE" \
         listen-port "$PORT" \
         private-key "$STATE_DIR/server.key" \
         peer "$CLIENT_PUB" \
-            allowed-ips "$VMSGUARD_ADDR/32"
+            allowed-ips "$ALLOWED"
 
     ip link set "$IFACE" up
 
@@ -103,7 +124,8 @@ up)
     echo "  peer public key : $(cat "$STATE_DIR/server.pub")"
     echo "  listening on    : UDP $PORT"
     echo "  tunnel address  : $PEER_ADDR (vmsguard should use $VMSGUARD_ADDR)"
-    echo "  allowed-ips     : $VMSGUARD_ADDR/32 for $CLIENT_PUB"
+    echo "  tunnel address 6: $PEER_ADDR6 (vmsguard should use $VMSGUARD_ADDR6)"
+    echo "  allowed-ips     : $ALLOWED for $CLIENT_PUB"
     echo
     # Fill in the host address rather than leaving a placeholder to be
     # pasted literally. The private key is the one paired with the
@@ -122,6 +144,16 @@ up)
     echo "    --peer-key \"$(cat "$STATE_DIR/server.pub")\" -"
     echo "    --endpoint $HOST_IP:$PORT -"
     echo "    --ping $VMSGUARD_ADDR $PEER_ADDR"
+    echo
+    echo "and the same with --ping6 to carry an IPv6 packet instead,"
+    echo "which is the only way to exercise the inner-IPv6 path against"
+    echo "upstream WireGuard rather than against our own responder:"
+    echo
+    echo '$ VG_INTEROP -'
+    echo '    --key "<the-private-key-for-the-public-key-above>" -'
+    echo "    --peer-key \"$(cat "$STATE_DIR/server.pub")\" -"
+    echo "    --endpoint $HOST_IP:$PORT -"
+    echo "    --ping6 $VMSGUARD_ADDR6 $PEER_ADDR6"
     if [ "$HOST_IP" = "<this-host-ip>" ]; then
         echo
         echo "  (could not determine this host's address automatically)"
