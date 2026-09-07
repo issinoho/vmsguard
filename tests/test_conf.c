@@ -155,6 +155,28 @@ static void test_refusals(void)
 
     check(parse(&c, "[Interface]\nPrivateKey\n") == -1,
           "a line with no '='");
+
+    /*
+     * A comment that lost its '#' in transit is the realistic version
+     * of this, and it happened: a config moved onto OpenVMS arrived
+     * with the leading '#' gone, and "expected 'Key = Value'" alone
+     * said nothing about why. The line has to be quoted back.
+     */
+    check(parse(&c, "TorGuard WireGuard Config\n[Interface]\n") == -1 &&
+          strstr(c.error, "TorGuard") != NULL,
+          "and the message quotes it, since the text is the diagnosis");
+    check(parse(&c, "[Nonsense]\n") == -1 &&
+          strstr(c.error, "Nonsense") != NULL,
+          "an unknown section names itself too");
+    {
+        /* Quoting must not turn into echoing a whole line of secrets. */
+        static const char longline[] =
+            "[Interface]\nAAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDD\n";
+        check(parse(&c, longline) == -1 &&
+              strstr(c.error, "...") != NULL &&
+              strstr(c.error, "DDDD") == NULL,
+              "a long line is cut short rather than printed entire");
+    }
     check(parse(&c, "[Interface\nPrivateKey = " KEY_A "\n") == -1,
           "a section header with no closing bracket");
     check(parse(&c, "[Nonsense]\nPrivateKey = " KEY_A "\n") == -1,

@@ -89,6 +89,26 @@ static void fail(struct wg_conf *conf, int lineno, const char *what)
 }
 
 /*
+ * As fail, but quoting the line it choked on.
+ *
+ * Worth the trouble: a config that lost its leading '#' in transit
+ * reported only "line 1: expected 'Key = Value'", which is true and
+ * says nothing about the cause. Showing the text makes it obvious.
+ *
+ * Truncated hard, because this prints and a config file is mostly
+ * secret. Only reached for a line containing no '=' at all, which a
+ * pasted key line always has, so what is shown should be a stray word
+ * rather than key material; the cap is there for when that reasoning
+ * turns out to be wrong.
+ */
+static void fail_quoting(struct wg_conf *conf, int lineno, const char *what,
+                         const char *text)
+{
+    snprintf(conf->error, sizeof conf->error, "line %d: %s: \"%.24s%s\"",
+             lineno, what, text, strlen(text) > 24 ? "..." : "");
+}
+
+/*
  * Split a comma-separated value into conf->allowed. Entries beyond the
  * table are an error rather than a silent truncation: quietly dropping
  * half of AllowedIPs would route traffic somewhere the operator did not
@@ -250,7 +270,7 @@ int wg_conf_parse(struct wg_conf *conf, const char *text, size_t len)
                 seen_peer = 1;
                 section = SECT_PEER;
             } else {
-                fail(conf, lineno, "unknown section");
+                fail_quoting(conf, lineno, "unknown section", s);
                 return -1;
             }
             continue;
@@ -258,7 +278,11 @@ int wg_conf_parse(struct wg_conf *conf, const char *text, size_t len)
 
         eq = strchr(s, '=');
         if (eq == NULL) {
-            fail(conf, lineno, "expected 'Key = Value'");
+            /*
+             * Most often a comment whose '#' did not survive being
+             * moved onto the machine, which is why the text is shown.
+             */
+            fail_quoting(conf, lineno, "expected 'Key = Value'", s);
             return -1;
         }
         *eq = '\0';
