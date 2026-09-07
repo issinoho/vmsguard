@@ -376,6 +376,72 @@ provider config is a wall of base64 and "bad key" on its own locates
 nothing. wg-quick's own directives (`PostUp`, `Table`, `SaveConfig`) are
 ignored rather than refused, since a real file contains them.
 
+### Running it detached
+
+Everything above assumes a terminal. For a gateway that has to outlive
+your login there are three flags:
+
+```
+--log DISK$TOOLS:[CODE.VMSGUARD]VMSGUARD.LOG
+--stop-file DISK$TOOLS:[CODE.VMSGUARD]VMSGUARD.STOP
+--status 300
+```
+
+`--log` is acted on **before** anything else, ahead even of `--config`.
+A detached process has no terminal, so output produced before the
+redirect goes nowhere — and that used to include the config file's own
+diagnostics, meaning a config that failed to parse reported the reason
+to nobody and exited with an empty log. It appends rather than
+truncates, so a restart adds to the record instead of erasing it.
+
+`--status` writes one line at that interval, in the same shape as the
+exit summary so there is only one format to learn:
+
+```
+14:22:07  up, 84210 captured / 84102 tunnelled / 83994 injected, 0 dropped, 4 rekeys, 61 mappings
+```
+
+It defaults to 300 seconds whenever `--log` is given. A log that says
+nothing between starting and stopping cannot distinguish a working
+gateway from a wedged one, which for an unattended process is the only
+question that matters.
+
+`--stop-file` names a file the gateway checks for once a second. When it
+appears, the gateway shuts down through its ordinary path and writes its
+summary — then removes the file, so its disappearance is the
+acknowledgement and a restart does not stop immediately.
+
+**This is why stopping it is not `STOP/IDENTIFICATION`.** Deleting the
+process skips the exit handler, and with it the summary, which for a run
+lasting days is the only record of what actually happened.
+
+Three DCL procedures in `tools/gateway/` do this:
+
+| | |
+| --- | --- |
+| `vmsguard_run.com` | the invocation; all site settings are symbols at the top |
+| `vmsguard_start.com` | submits it as a batch job |
+| `vmsguard_stop.com` | creates the stop file and waits for the acknowledgement |
+
+Batch rather than `RUN/DETACHED`, because a batch job inherits the
+submitting account's privileges — which is what packet capture and the
+raw socket need. `RUN/DETACHED` would mean naming every privilege on the
+command line and getting the quota list right as well.
+
+Two things to check before relying on it, neither of which the gateway
+can detect for itself:
+
+- **The queue's CPU time limit** (`SHOW QUEUE/FULL`). A limit there will
+  stop the gateway at some arbitrary hour with nothing in its own log to
+  explain it.
+- **Nothing restarts it.** A gateway that silently comes back after
+  failing is worse than one that stays down, because the log is the only
+  thing that will ever tell you it happened.
+
+Watch it with `TYPE/CONTINUOUS`. The gateway flushes after every line it
+writes, which is why it opens the log itself rather than relying on the
+batch log — that one is buffered and would show nothing for minutes.
+
 ### Stopping it, and the counters
 
 Both interrupt keys end the run with a summary:

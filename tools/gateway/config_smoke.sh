@@ -58,6 +58,63 @@ want "note: DNS"                         "DNS is reported as not applied"
 want "our address    : "                 "the local address facing the peer is found"
 want "error: "                            "and it stops at the raw socket, as it should"
 
+# ---------------------------------------------------------------------
+# --log: everything goes to the file, including failures during setup.
+# A detached process has no terminal, so a startup error that only
+# reached stdout would be lost entirely.
+# ---------------------------------------------------------------------
+
+logf=$(mktemp)
+rm -f "$logf"
+"$BUILD/vmsguard-gateway-stub" \
+    --config "$CONF" \
+    --interface ie0 \
+    --client 192.168.0.218/32 \
+    --exclude 192.168.0.0/24 \
+    --log "$logf" \
+    --stop-file /nonexistent/vmsguard.stop > "$out" 2>&1 || true
+
+if [ -s "$logf" ]; then
+    echo "  ok    --log creates and fills the log file"
+else
+    echo "  FAIL  --log produced no file"
+    fail=1
+fi
+if grep -q "vmsguard gateway starting" "$logf"; then
+    echo "  ok    the log opens with a timestamped start marker"
+else
+    echo "  FAIL  no start marker in the log"
+    fail=1
+fi
+# The failure happens after the redirect, so it belongs in the log and
+# not on the terminal — that is the whole point of opening it early.
+if grep -q "error: " "$logf"; then
+    echo "  ok    a setup failure is recorded in the log, not lost"
+else
+    echo "  FAIL  the setup failure did not reach the log"
+    fail=1
+fi
+if [ -s "$out" ]; then
+    echo "  FAIL  output still went to the terminal after --log"
+    fail=1
+else
+    echo "  ok    and nothing is left going to the terminal"
+fi
+
+# Appending, not truncating: a restart adds to the record.
+before=$(wc -l < "$logf")
+"$BUILD/vmsguard-gateway-stub" --config "$CONF" --interface ie0 \
+    --client 192.168.0.218/32 --exclude 192.168.0.0/24 \
+    --log "$logf" > /dev/null 2>&1 || true
+after=$(wc -l < "$logf")
+if [ "$after" -gt "$before" ]; then
+    echo "  ok    a restart appends rather than erasing the record"
+else
+    echo "  FAIL  --log truncated an existing log"
+    fail=1
+fi
+rm -f "$logf"
+
 if [ "$fail" -ne 0 ]; then
     echo
     echo "--- output ---"

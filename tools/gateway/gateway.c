@@ -126,7 +126,26 @@ static struct nat_table nat;
 static int              use_nat;
 static uint64_t         started_ms;
 
+/*
+ * Running with nobody watching.
+ *
+ * A detached process has no terminal, so Ctrl-C is not available to
+ * stop it and there is nothing to read its output. Three things follow:
+ * the output goes to a file, the log has to say something between
+ * starting and stopping or there is no way to tell a working gateway
+ * from a wedged one, and there must be some way to ask it to stop that
+ * still runs the shutdown path.
+ *
+ * Stopping by deleting the process would work but skips the exit
+ * handler, and with it the summary — which is the one part of a long
+ * run worth keeping.
+ */
+static const char *stop_file;
+static const char *log_file;
+static uint64_t    status_interval_ms;
+
 static volatile sig_atomic_t stop_requested;
+static int stopped_by_file;
 
 static void on_interrupt(int sig)
 {
@@ -200,6 +219,67 @@ static int is_a_client(uint32_t a, const struct client_filter *clients,
             return 1;
     }
     return 0;
+}
+
+/*
+ * Local time as HH:MM:SS. A log without times is nearly useless for a
+ * process that has been up for days — "when did it last rekey" is the
+ * whole question, and the counters alone cannot answer it.
+ */
+static const char *stamp(void)
+{
+    static char buf[16];
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+
+    if (tm == NULL || strftime(buf, sizeof buf, "%H:%M:%S", tm) == 0)
+        snprintf(buf, sizeof buf, "--:--:--");
+    return buf;
+}
+
+/*
+ * One line, periodically, so the log shows the thing is alive and what
+ * it has been doing. Deliberately the same figures as the exit summary,
+ * so a reader learns one format rather than two, and so a run that ends
+ * badly still has its last known state on record.
+ */
+static void log_status(const struct wg_client *c, int nat_live)
+{
+    printf("%s  up, %lu captured / %lu tunnelled / %lu injected,"
+           " %lu dropped, %lu rekey%s",
+           stamp(), st.captured, st.tunnelled, st.injected, st.dropped,
+           c->rekeys, c->rekeys == 1 ? "" : "s");
+    if (nat_live >= 0)
+        printf(", %d mappings", nat_live);
+    if (c->rekeys_failed > 0)
+        printf(", %lu FAILED rekey%s", c->rekeys_failed,
+               c->rekeys_failed == 1 ? "" : "s");
+    if (c->roams > 0)
+        printf(", %lu roam%s", c->roams, c->roams == 1 ? "" : "s");
+    printf("\n");
+    fflush(stdout);
+}
+
+/*
+ * Whether the operator has asked us to stop.
+ *
+ * A file, because it is the one signalling mechanism available from
+ * DCL, from a shell, and from a script, without knowing the process id
+ * or holding any privilege beyond writing to a directory. It is removed
+ * once seen so that a restart does not stop immediately.
+ */
+static int stop_requested_by_file(void)
+{
+    FILE *f;
+
+    if (stop_file == NULL)
+        return 0;
+    f = fopen(stop_file, "r");
+    if (f == NULL)
+        return 0;
+    fclose(f);
+    (void) remove(stop_file);
+    return 1;
 }
 
 static void log_drop(const char *dir, const uint8_t *ip, size_t iplen,
@@ -385,6 +465,18 @@ static void usage(const char *argv0)
 "                   ListenPort from a wg-quick config file, so a\n"
 "                   provider's .conf can be used as it arrives. Any\n"
 "                   flag given as well overrides the file\n"
+"  --log            append all output to this file, for a process\n"
+"                   with no terminal. Opened before anything is\n"
+"                   printed, so startup errors land in it too\n"
+"  --status         seconds between status lines in the log.\n"
+"                   Default 300 with --log, off without: a log\n"
+"                   that says nothing between starting and\n"
+"                   stopping cannot distinguish working from\n"
+"                   wedged\n"
+"  --stop-file      exit cleanly, writing the summary, when this\n"
+"                   file appears. The way to stop a detached\n"
+"                   process without deleting it, which would skip\n"
+"                   the summary. Removed once seen\n"
 "  --psk            optional preshared key, base64\n"
 "  --listen-port    local UDP port (default: any)\n"
 "  --tunnel-mtu     largest inner packet the tunnel carries. Default\n"
@@ -528,12 +620,38 @@ int main(int argc, char **argv)
     uint32_t gw_addr = 0;
     int have_gw_addr = 0;
     uint16_t listen_port = 0, peer_port;
+    int status_given = 0;
+    uint64_t last_status_ms = 0;
+    uint64_t last_tick_ms = 0;
     int i;
 
     memset(&st, 0, sizeof st);
 
     /*
-     * --config first, in a pass of its own, so that the ordinary flag
+     * --log before anything else, including --config.
+     *
+     * A detached process has no terminal, so any output produced before
+     * the redirect is simply lost — and that included the config file's
+     * own diagnostics. A config that failed to parse would have
+     * reported the reason to nobody and exited, leaving an empty log
+     * and no explanation.
+     */
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--log") != 0 || i + 1 >= argc)
+            continue;
+        log_file = argv[i + 1];
+        if (freopen(log_file, "a", stdout) == NULL) {
+            fprintf(stderr, "error: cannot open log file %s\n", log_file);
+            return 1;
+        }
+        (void) freopen(log_file, "a", stderr);
+        printf("\n%s  ---- vmsguard gateway starting ----\n", stamp());
+        fflush(stdout);
+        break;
+    }
+
+    /*
+     * --config next, in a pass of its own, so that the ordinary flag
      * loop below overwrites whatever the file supplied regardless of
      * where on the command line it appeared. A flag the operator typed
      * beats a file they may not have written.
@@ -708,6 +826,13 @@ int main(int argc, char **argv)
             }
         } else if (strcmp(argv[i], "--keepalive") == 0 && i + 1 < argc) {
             keepalive_s = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
+            i++;                    /* already acted on, above */
+        } else if (strcmp(argv[i], "--stop-file") == 0 && i + 1 < argc) {
+            stop_file = argv[++i];
+        } else if (strcmp(argv[i], "--status") == 0 && i + 1 < argc) {
+            status_interval_ms = (uint64_t) atoi(argv[++i]) * 1000;
+            status_given = 1;
         } else if (strcmp(argv[i], "--verbose") == 0) {
             verbose = 1;
         } else {
@@ -715,6 +840,13 @@ int main(int argc, char **argv)
             return 2;
         }
     }
+
+    /*
+     * A log nobody is watching needs to say something periodically, so
+     * logging turns status lines on unless a rate was given explicitly.
+     */
+    if (log_file != NULL && !status_given)
+        status_interval_ms = 300000;
 
     if (!have_key || !have_peer || endpoint_arg == NULL ||
         ifname == NULL || subnet_arg == NULL) {
@@ -916,6 +1048,8 @@ int main(int argc, char **argv)
     (void) atexit(print_summary);
 
     started_ms = wg_time_ms();
+    last_status_ms = started_ms;
+    last_tick_ms = started_ms;
 
     /* ---- the loop ---- */
 
@@ -929,6 +1063,31 @@ int main(int argc, char **argv)
 
         if (stop_requested)
             break;
+
+        /*
+         * Both checked on the same tick, once a second at most: neither
+         * is urgent, and a stat() plus a clock read for every captured
+         * packet would be a real cost on a busy segment.
+         */
+        {
+            uint64_t now = wg_time_ms();
+
+            if (now - last_tick_ms >= 1000) {
+                last_tick_ms = now;
+
+                if (stop_requested_by_file()) {
+                    printf("%s  stop file seen; shutting down\n", stamp());
+                    fflush(stdout);
+                    stopped_by_file = 1;
+                    break;
+                }
+                if (status_interval_ms > 0 &&
+                    now - last_status_ms >= status_interval_ms) {
+                    last_status_ms = now;
+                    log_status(&client, use_nat ? nat_active(&nat, now) : -1);
+                }
+            }
+        }
 
         /* Outbound: capture, filter, tunnel. */
         rc = pcap_next_ex(pc, &hdr, &frame);
@@ -1238,7 +1397,9 @@ after_out:
         }
     }
 
-    if (stop_requested)
+    if (stopped_by_file)
+        printf("\nstopped on request");
+    else if (stop_requested)
         printf("\ninterrupted");
 
     /* The summary itself is printed by print_summary, registered with
