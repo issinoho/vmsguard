@@ -507,10 +507,27 @@ Set the tunnel up first, and tell the gateway its two ends:
 
 ```
 $ iptunnel create 192.0.2.1
-$ ifconfig "IT0" ipv6 up
+$ ifconfig -a                     ! which unit did it get?
+$ ifconfig "IT1" ipv6 up
 
 $ GW --config ... --encap-local 192.168.0.80 --encap-remote 192.0.2.1
 ```
+
+Two things about the interface, both learned the tiresome way:
+
+**A configured tunnel does not survive a restart of TCP/IP Services.**
+Anything depending on one has to create it at startup, which is why
+`vmsguard_run.com` does.
+
+**`iptunnel` numbers upward and does not reuse freed units.** Create one
+without `-I` and you get whatever comes next, which cannot be brought up
+by name afterwards without looking. `vmsguard_run.com` names the unit
+explicitly for that reason. `SHOW DEVICE` will not find these at all —
+they are TCP/IP pseudo-interfaces, not VMS devices, so `ifconfig -a` is
+the only place they appear.
+
+The gateway is told the tunnel's *endpoints* rather than its name, so
+the unit number does not matter to it.
 
 The startup header says whether it can deliver:
 
