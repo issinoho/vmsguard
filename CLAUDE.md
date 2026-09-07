@@ -93,7 +93,13 @@ That makes a round trip expensive, so:
   pasted command wastes a round trip. Look the real value up.
 - **Check the link output.** Undefined symbols are *warnings* on VMS.
   A broken image builds cleanly and crashes when execution reaches the
-  unresolved reference.
+  unresolved reference. `build_vms.com` now tests `$SEVERITY` after
+  every link and stops, because `ON ERROR` does not catch a warning and
+  the build otherwise prints "build complete" over a broken image.
+- **A new dependency has three build files, not one.** `Makefile`,
+  `build_vms.com` and `descrip.mms`. Only the first is exercised here,
+  so the other two fail on the machine you cannot reach — and on VMS
+  they fail *quietly*.
 
 Compiler settings that are not optional are documented in the README's
 OpenVMS notes, along with the platform differences found so far. Read

@@ -124,17 +124,17 @@ $(OPT)/OPTIONS
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
 
 [.build]vmsguard_interop.exe : [.build]interop.obj, $(PROTO_OBJS), -
-$(PLAT_OBJS), $(CLIENT_OBJS), $(OPT)
+$(PLAT_OBJS), $(CLIENT_OBJS), [.build]ethip.obj, $(OPT)
     $(LINK)/EXECUTABLE=$(MMS$TARGET) [.build]interop.obj,$(PROTO_OBJS),-
-$(PLAT_OBJS),$(CLIENT_OBJS),$(OPT)/OPTIONS
+$(PLAT_OBJS),$(CLIENT_OBJS),[.build]ethip.obj,$(OPT)/OPTIONS
 
 [.build]responder.obj : [.tools.interop]responder.c
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
 
 [.build]vmsguard_responder.exe : [.build]responder.obj, $(PROTO_OBJS), -
-$(PLAT_OBJS), $(OPT)
+$(PLAT_OBJS), [.build]ethip.obj, $(OPT)
     $(LINK)/EXECUTABLE=$(MMS$TARGET) [.build]responder.obj,-
-$(PROTO_OBJS),$(PLAT_OBJS),$(OPT)/OPTIONS
+$(PROTO_OBJS),$(PLAT_OBJS),[.build]ethip.obj,$(OPT)/OPTIONS
 
 ! ==== tests ====
 

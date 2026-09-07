@@ -157,6 +157,18 @@ $!
 $ say "compiling client"
 $ cc 'cc_flags'/OBJECT=[.build]wg_client.obj  [.src.client]wg_client.c
 $!
+$! Packet plumbing. Compiled here, before anything links it: these used
+$! to be built alongside slip_spike, further down, and the tools linked
+$! above them silently picked up undefined symbols.
+$!
+$ say "compiling packet plumbing"
+$ cc 'cc_flags'/OBJECT=[.build]slip.obj [.src.tun]slip.c
+$ cc 'cc_flags'/OBJECT=[.build]hdlc.obj [.src.tun]hdlc.c
+$ cc 'cc_flags'/OBJECT=[.build]ethip.obj [.src.tun]ethip.c
+$ cc 'cc_flags'/OBJECT=[.build]rawinject.obj [.src.tun]rawinject.c
+$ cc 'cc_flags'/OBJECT=[.build]nat.obj [.src.tun]nat.c
+$ cc 'cc_flags'/OBJECT=[.build]icmp.obj [.src.tun]icmp.c
+$!
 $!---------------------------------------------------------------------
 $! Linker options file for the OpenSSL shareable image
 $!---------------------------------------------------------------------
@@ -187,54 +199,57 @@ $ say "building vmsguard_key"
 $ cc 'cc_flags'/OBJECT=[.build]keys.obj [.tools.keys]keys.c
 $ link/executable=[.build]vmsguard_key.exe -
       [.build]keys.obj,'proto_objs',[.build]vmsguard.opt/OPTIONS
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ say "building vmsguard_interop"
 $ cc 'cc_flags'/OBJECT=[.build]interop.obj [.tools.interop]interop.c
 $ link/executable=[.build]vmsguard_interop.exe -
       [.build]interop.obj,'proto_objs','plat_objs','client_objs',-
-      [.build]vmsguard.opt/OPTIONS
+      [.build]ethip.obj,[.build]vmsguard.opt/OPTIONS
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ say "building vmsguard_responder"
 $ cc 'cc_flags'/OBJECT=[.build]responder.obj [.tools.interop]responder.c
 $ link/executable=[.build]vmsguard_responder.exe -
       [.build]responder.obj,'proto_objs','plat_objs',-
-      [.build]vmsguard.opt/OPTIONS
+      [.build]ethip.obj,[.build]vmsguard.opt/OPTIONS
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ say "building slip_spike"
-$ cc 'cc_flags'/OBJECT=[.build]slip.obj [.src.tun]slip.c
-$ cc 'cc_flags'/OBJECT=[.build]hdlc.obj [.src.tun]hdlc.c
-$ cc 'cc_flags'/OBJECT=[.build]ethip.obj [.src.tun]ethip.c
-$ cc 'cc_flags'/OBJECT=[.build]rawinject.obj [.src.tun]rawinject.c
-$ cc 'cc_flags'/OBJECT=[.build]nat.obj [.src.tun]nat.c
-$ cc 'cc_flags'/OBJECT=[.build]icmp.obj [.src.tun]icmp.c
 $ cc 'cc_flags'/OBJECT=[.build]slip_spike.obj [.tools.spike]slip_spike.c
 $ link/executable=[.build]slip_spike.exe -
       [.build]slip_spike.obj,[.build]slip.obj,[.build]hdlc.obj
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ say "building test_slip"
 $ cc 'cc_flags'/OBJECT=[.build]test_slip.obj [.tests]test_slip.c
 $ link/executable=[.build]test_slip.exe -
       [.build]test_slip.obj,[.build]slip.obj
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ say "building test_icmp"
 $ cc 'cc_flags'/OBJECT=[.build]test_icmp.obj [.tests]test_icmp.c
 $ link/executable=[.build]test_icmp.exe -
       [.build]test_icmp.obj,[.build]icmp.obj,[.build]ethip.obj
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ say "building test_nat"
 $ cc 'cc_flags'/OBJECT=[.build]test_nat.obj [.tests]test_nat.c
 $ link/executable=[.build]test_nat.exe -
       [.build]test_nat.obj,[.build]nat.obj,[.build]ethip.obj
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ say "building test_ethip"
 $ cc 'cc_flags'/OBJECT=[.build]test_ethip.obj [.tests]test_ethip.c
 $ link/executable=[.build]test_ethip.exe -
       [.build]test_ethip.obj,[.build]ethip.obj
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ say "building test_hdlc"
 $ cc 'cc_flags'/OBJECT=[.build]test_hdlc.obj [.tests]test_hdlc.c
 $ link/executable=[.build]test_hdlc.exe -
       [.build]test_hdlc.obj,[.build]hdlc.obj
+$ if $severity .ne. 1 then goto linkfail
 $!
 $! ---- probes -------------------------------------------------------
 $!
@@ -246,13 +261,16 @@ $ say "building probes"
 $ cc 'cc_flags'/OBJECT=[.build]probe_openssl.obj [.tools.probes]probe_openssl.c
 $ link/executable=[.build]probe_openssl.exe -
       [.build]probe_openssl.obj,[.build]vmsguard.opt/OPTIONS
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ cc 'cc_flags'/OBJECT=[.build]probe_sockets.obj [.tools.probes]probe_sockets.c
 $ link/executable=[.build]probe_sockets.exe [.build]probe_sockets.obj
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ cc 'cc_flags'/OBJECT=[.build]probe_inject.obj [.tools.probes]probe_inject.c
 $ link/executable=[.build]probe_inject.exe -
       [.build]probe_inject.obj,[.build]ethip.obj,[.build]rawinject.obj
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ pcap_image = ""
 $ if f$search("SYS$LIBRARY:TCPIP$LIBPCAP_SHR.EXE") .nes. "" then -
@@ -281,6 +299,7 @@ $ say "building test_proto"
 $ cc 'cc_flags'/OBJECT=[.build]test_proto.obj [.tests]test_proto.c
 $ link/executable=[.build]test_proto.exe -
       [.build]test_proto.obj,'proto_objs',[.build]vmsguard.opt/OPTIONS
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ say ""
 $ say "build complete, executables in [.build]"
@@ -324,6 +343,15 @@ $     run [.build]test_icmp
 $ endif
 $!
 $ exit 1
+$!
+$ linkfail:
+$ say ""
+$ say "BUILD FAILED: the link above reported undefined symbols."
+$ say ""
+$ say "On OpenVMS an undefined symbol is a link *warning*, not an error:"
+$ say "the image is written anyway and crashes when execution reaches"
+$ say "the unresolved reference. Which is why this procedure checks."
+$ exit 2
 $!
 $ fail:
 $ say "BUILD FAILED"
