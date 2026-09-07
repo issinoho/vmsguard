@@ -434,10 +434,31 @@ The same job left to run for **1 h 50 m**:
           1 dropped, 54 rekeys, 27 mappings, 2 FAILED rekeys
 ```
 
-**54 rekeys over 6612 seconds is one per 122 seconds**, against a
-120-second interval — the timers are firing at the right rate over
-hours, not merely once in a five-minute sample. One packet dropped in
-11,325 is 0.009%.
+It was stopped with `vmsguard_stop.com`, and finished properly:
+
+```
+stopped on request
+ran for 110m 54s
+captured 11362, tunnelled 11361, received 11285, injected 11285, dropped 1
+rekeys: 55 succeeded, 2 failed
+NAT: 11361 translated, 11285 restored, 23 of 2048 mappings live,
+     dropped 1 unsupported / 0 unmatched / 0 table-full / 0 orphan fragments
+     11238 new flows over the run, 101 per minute
+```
+
+**55 rekeys over 6654 seconds is one per 121 seconds**, against a
+120-second interval — the timers fire at the right rate over hours, not
+merely once in a five-minute sample.
+
+**One packet dropped in 11,362**, and the summary says which kind: a
+single `unsupported`, meaning NAT declined to translate it. Almost
+certainly an ICMP error message, which it refuses on purpose because the
+header quoted inside one would need translating too. Nothing was lost
+that should have been carried.
+
+`stopped on request` is the graceful shutdown: the stop file was seen,
+the loop left by its ordinary path, and the summary was written. That
+was the last part of detached operation never to have run anywhere.
 
 Two rekeys failed, both inside the first 35 minutes, and neither
 recurred in the 75 minutes after. A rekey that fails is retried after
