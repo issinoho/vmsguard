@@ -442,10 +442,39 @@ hours, not merely once in a five-minute sample. One packet dropped in
 Two rekeys failed, both inside the first 35 minutes, and neither
 recurred in the 75 minutes after. A rekey that fails is retried after
 `REKEY_TIMEOUT` and the session is good until `REJECT_AFTER_TIME`, so a
-peer that misses one handshake costs nothing permanent. Each failure
-does stall forwarding for up to five seconds, because the handshake is
-synchronous inside the packet loop — over this run that is ten seconds
-of stall in nearly two hours, but it is the known cost.
+peer that misses one handshake costs nothing permanent.
+
+**Each failure also stalled forwarding for five seconds**, because the
+handshake was synchronous inside the packet loop — ten seconds of not
+forwarding, in a run whose whole point was that it forwarded reliably.
+That measurement is what prompted making the rekey a state machine: the
+initiation goes out, the answer is picked up by the ordinary receive
+path whenever it arrives, and nothing waits.
+
+`worst pass` in the status line is how to tell. It reports the longest
+single trip through the forwarding loop, which should stay near the pcap
+read timeout of 50 ms and never approach a handshake timeout:
+
+```
+14:10:18  up, 11325 captured / ... 54 rekeys, worst pass 51ms
+```
+
+### Drops, by cause
+
+The total on its own says a run lost something without saying what,
+which for an unattended run is the only part that matters. Both the
+status line and the summary now break it down, listing only the causes
+that actually happened:
+
+```
+1 dropped (unmatched 1)
+```
+
+`unsupported`, `unmatched`, `table-full` and `orphan-fragment` come
+straight from the NAT table's own counters rather than being tallied
+again, so they cannot drift from what NAT believes. `send-failed`,
+`inject-failed`, `malformed` and `too-big-to-translate` are the
+gateway's own.
 
 **The peak of 437 live mappings vindicates raising `NAT_ENTRIES`.** That
 is 21% of the current 2048 and would have been 85% of the 512 it

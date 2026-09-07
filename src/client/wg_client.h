@@ -65,6 +65,23 @@ struct wg_client {
     unsigned long        rekeys_failed;
 
     /*
+     * A rekey in flight.
+     *
+     * Rekeying used to be done by sending an initiation and then
+     * waiting up to REKEY_TIMEOUT for the answer, inside the caller's
+     * send path. That blocks whatever is driving the client: a gateway
+     * stops forwarding for five seconds every time a peer misses a
+     * handshake, which a two-hour run measured happening twice.
+     *
+     * So the initiation is sent and the state kept here, and the answer
+     * is picked up by the ordinary receive path whenever it arrives.
+     * Nothing waits.
+     */
+    struct wg_handshake  pending_hs;
+    int                  pending_rekey;
+    uint64_t             pending_sent_ms;
+
+    /*
      * Overridable so tests need not wait two minutes. Both default to
      * the whitepaper's figures in wg_client_init.
      */

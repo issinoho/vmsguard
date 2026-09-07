@@ -189,3 +189,69 @@ if grep -q "transport data failed to decrypt" "$log2"; then
     exit 1
 fi
 echo "a lost handshake response did not break the data path"
+
+# ---------------------------------------------------------------------
+# Scenario 3: a peer that will not rekey must not stop the client.
+#
+# The responder answers the first handshake and ignores every later
+# initiation. The client should go on sending its keepalive every
+# second regardless: a rekey is started and left outstanding, not
+# waited for.
+#
+# This is the regression test for a real measurement. Rekeying used to
+# block the caller for up to REKEY_TIMEOUT, and a two-hour run on the
+# target recorded two rekeys failing -- ten seconds during which the
+# gateway forwarded nothing. Under that behaviour eight seconds here
+# would yield three or four keepalives rather than eight.
+#
+# --reject-after is given explicitly because it otherwise follows
+# --rekey-after, and a session that expires after 2.25s ends the test
+# before the interesting part.
+# ---------------------------------------------------------------------
+
+PORT3=$((PORT + 2))
+log3=$(mktemp)
+out3=$(mktemp)
+cleanup3() { [ -n "$rpid3" ] && kill "$rpid3" 2>/dev/null; rm -f "$log3" "$out3"; }
+trap 'cleanup; cleanup2; cleanup3' EXIT
+
+"$BUILD/vmsguard-responder" \
+    --key "$sk" --peer-key "$cp" \
+    --listen-port "$PORT3" --ignore-rekey > "$log3" 2>&1 &
+rpid3=$!
+sleep 1
+
+# The exit status is expected to be non-zero: --duration asserts that a
+# rekey completed, and here by construction none can. What matters is
+# the keepalive count, and a crash would leave no such line at all.
+"$BUILD/vmsguard-interop" \
+    --key "$ck" --peer-key "$sp" \
+    --endpoint "127.0.0.1:$PORT3" \
+    --rekey-after 1500 --reject-after 60000 --duration 8 > "$out3" 2>&1 || true
+
+kill "$rpid3" 2>/dev/null
+rpid3=
+
+if ! grep -q "ignoring a rekey initiation" "$log3"; then
+    echo
+    echo "FAILED: the responder never ignored a rekey"
+    exit 1
+fi
+
+sent=$(sed -n 's/.*  \([0-9]*\) keepalives sent, \([0-9]*\) failed.*/\1 \2/p' "$out3")
+ka=$(echo "$sent" | cut -d' ' -f1)
+bad=$(echo "$sent" | cut -d' ' -f2)
+if [ -z "$ka" ]; then
+    cat "$out3"
+    echo
+    echo "FAILED: the client produced no keepalive count"
+    exit 1
+fi
+if [ "$ka" -lt 7 ] || [ "$bad" -ne 0 ]; then
+    cat "$out3"
+    echo
+    echo "FAILED: only $ka keepalives in 8s ($bad failed);"
+    echo "        an unanswered rekey is stalling the caller"
+    exit 1
+fi
+echo "an unanswered rekey did not stall the client ($ka keepalives in 8s)"

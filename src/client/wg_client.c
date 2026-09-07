@@ -358,6 +358,15 @@ static void install_keypair(struct wg_client *c, const struct wg_keypair *kp)
         c->last_send_ms = c->established_ms;
     c->state = WG_STATE_ESTABLISHED;
     c->rekey_started_ms = 0;
+
+    /*
+     * Cleared here rather than left to the caller. A keypair derived as
+     * *initiator* needs no confirming — the peer built it from our
+     * initiation — and only handle_initiation, which sets the flag
+     * again straight after, has reason to say otherwise. Leaving a
+     * stale 1 here would pin sending to the previous keypair for good.
+     */
+    c->kp_unconfirmed = 0;
 }
 
 int wg_client_handshake(struct wg_client *c, int attempts, int timeout_ms)
@@ -382,9 +391,16 @@ int wg_client_handshake(struct wg_client *c, int attempts, int timeout_ms)
  * nothing. Attempts are paced by WG_REKEY_TIMEOUT_MS so a dead peer is
  * not hammered, and abandoned after WG_REKEY_ATTEMPT_TIME_MS.
  */
+/*
+ * Start a rekey if one is due, and never wait for it.
+ *
+ * The initiation goes out and the handshake state is kept in the
+ * client; wg_client_recv picks the answer up whenever it arrives. A
+ * caller that used to lose five seconds here now loses microseconds.
+ */
 static void maybe_rekey(struct wg_client *c)
 {
-    struct wg_keypair kp;
+    uint8_t init_msg[WG_INIT_LEN];
     uint64_t now;
 
     if (c->state != WG_STATE_ESTABLISHED || !wg_client_needs_rekey(c))
@@ -394,26 +410,77 @@ static void maybe_rekey(struct wg_client *c)
 
     if (c->rekey_started_ms == 0)
         c->rekey_started_ms = now;
-    else if (now - c->rekey_started_ms > WG_REKEY_ATTEMPT_TIME_MS)
-        return;   /* given up; the session will expire on its own */
+    else if (now - c->rekey_started_ms > WG_REKEY_ATTEMPT_TIME_MS) {
+        /* Given up; the session will expire on its own. Counted once,
+           when the attempt is abandoned rather than per retry. */
+        if (c->pending_rekey) {
+            c->pending_rekey = 0;
+            c->rekeys_failed++;
+            wg_handshake_clear(&c->pending_hs);
+        }
+        return;
+    }
 
+    /* One initiation outstanding at a time, retried no faster than the
+       peer is given to answer. */
+    if (c->pending_rekey && now - c->pending_sent_ms < WG_REKEY_TIMEOUT_MS)
+        return;
     if (c->last_rekey_attempt_ms != 0 &&
         now - c->last_rekey_attempt_ms < WG_REKEY_TIMEOUT_MS)
         return;
     c->last_rekey_attempt_ms = now;
 
-    memset(&kp, 0, sizeof kp);
-    if (do_handshake(c, &kp, 1, (int) WG_REKEY_TIMEOUT_MS) == 0) {
-        install_keypair(c, &kp);
-        c->last_rekey_attempt_ms = 0;
-        c->rekeys++;
-    } else {
-        c->rekeys_failed++;
+    c->local_index++;
+    if (c->local_index == 0)
+        c->local_index = 1;
+
+    if (wg_handshake_create_initiation(init_msg, &c->pending_hs, &c->local,
+                                       &c->peer, c->local_index) != 0)
+        return;
+
+    (void) wg_cookie_apply(&c->cookie, init_msg, WG_INIT_OFF_MAC2, now);
+    wg_cookie_sent(&c->cookie, init_msg, WG_INIT_OFF_MAC1);
+
+    if (wg_socket_send(c->sock, &c->endpoint, init_msg, WG_INIT_LEN) != 0) {
+        wg_handshake_clear(&c->pending_hs);
+        return;
     }
-    wg_keypair_clear(&kp);
+
+    c->pending_rekey = 1;
+    c->pending_sent_ms = now;
 }
 
-/* ---- data ------------------------------------------------------------ */
+/*
+ * The answer to a rekey we started. Returns 1 if the message was one,
+ * whether or not it was any good.
+ */
+static int handle_rekey_response(struct wg_client *c, const uint8_t *buf,
+                                 size_t len, const struct wg_endpoint *from)
+{
+    struct wg_keypair kp;
+
+    if (len != WG_RESP_LEN || buf[0] != WG_MSG_HANDSHAKE_RESP)
+        return 0;
+    if (!c->pending_rekey)
+        return 1;       /* not expecting one; nothing to do with it */
+
+    /* mac1 on a response is keyed with our own static public key. */
+    if (!wg_mac1_verify(buf, len, WG_RESP_OFF_MAC1, c->self_mac1_key))
+        return 1;
+
+    if (wg_handshake_consume_response(buf, &c->pending_hs, &c->local,
+                                      &c->peer, &kp) != 0)
+        return 1;       /* not ours, or corrupt: the retry will follow */
+
+    maybe_roam(c, from);
+    install_keypair(c, &kp);
+    wg_zero(&kp, sizeof kp);
+
+    c->pending_rekey = 0;
+    c->last_rekey_attempt_ms = 0;
+    c->rekeys++;
+    return 1;
+}
 
 /*
  * Answer a handshake initiation from the peer.
@@ -651,6 +718,33 @@ int wg_client_recv(struct wg_client *c, uint8_t *out, size_t cap,
          */
         if (handle_initiation(c, buf, len, &from))
             continue;
+
+        /*
+         * The answer to a rekey we started. It arrives here rather than
+         * being waited for, which is the point of not blocking.
+         */
+        if (handle_rekey_response(c, buf, len, &from))
+            continue;
+
+        /*
+         * A loaded peer answering a rekey initiation with a cookie
+         * challenge. Taking it here means the retry carries the mac2 it
+         * asked for; ignoring it would mean rekeying never completed
+         * while the peer stayed busy.
+         */
+        if (len == WG_COOKIE_LEN && buf[0] == WG_MSG_COOKIE_REPLY) {
+            if (c->pending_rekey &&
+                wg_cookie_consume(&c->cookie, buf, len, c->local_index,
+                                  wg_time_ms()) == 0) {
+                c->cookies_received++;
+                /* Retry at once rather than waiting out the timeout:
+                   this attempt is already refused. */
+                c->pending_rekey = 0;
+                c->last_rekey_attempt_ms = 0;
+                wg_handshake_clear(&c->pending_hs);
+            }
+            continue;
+        }
 
         if (len < WG_DATA_HDR_LEN + WG_TAG_LEN)
             continue;

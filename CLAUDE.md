@@ -151,7 +151,8 @@ to gaps:
    arriving early are held until it does; nothing puts the pieces back
    together, and nothing needs to.
 
-Done: detached operation with logging, peer-initiated handshakes,
+Done: non-blocking rekeying, detached operation with logging,
+peer-initiated handshakes,
 rekeying, the replay sliding window,
 PersistentKeepalive, the
 gateway's source filter, source NAT, ICMP fragmentation-needed, NAT of

@@ -175,6 +175,12 @@ static void usage(const char *argv0)
 "  --attempts      handshake attempts (default 3)\n"
 "  --timeout       milliseconds to wait per attempt (default 5000)\n"
 "  --rekey-after   override the rekey interval, ms (default 120000).\n"
+"  --reject-after  override when a session becomes unusable, ms.\n"
+"                  Defaults to one and a half times --rekey-after,\n"
+"                  which is the right shape for testing rekeying but\n"
+"                  wrong for testing what happens when a peer will not\n"
+"                  rekey: the session expires before anything else can\n"
+"                  be observed\n"
 "                  reject-after is scaled to keep the same 2:3 ratio\n"
 "  --duration      after the handshake, send a keepalive a second for\n"
 "                  this many seconds, reporting each rekey\n"
@@ -204,6 +210,7 @@ int main(int argc, char **argv)
     int have_key = 0, have_peer = 0, do_ping = 0, verbose = 0;
     int attempts = 3, timeout_ms = 5000;
     unsigned long rekey_after_ms = 0;
+    unsigned long reject_after_ms = 0;
     int duration_s = 0, keepalive_s = 0, idle_s = 0;
     uint16_t listen_port = 0, peer_port;
     int i;
@@ -238,6 +245,8 @@ int main(int argc, char **argv)
             do_ping = 1;
         } else if (strcmp(argv[i], "--rekey-after") == 0 && i + 1 < argc) {
             rekey_after_ms = strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--reject-after") == 0 && i + 1 < argc) {
+            reject_after_ms = strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--duration") == 0 && i + 1 < argc) {
             duration_s = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--keepalive") == 0 && i + 1 < argc) {
@@ -302,6 +311,9 @@ int main(int argc, char **argv)
         /* Keep the whitepaper's 120:180 proportion so a shortened
            interval still leaves room to rekey before expiry. */
         client.reject_after_ms = rekey_after_ms * 3 / 2;
+    }
+    if (reject_after_ms > 0) {
+        client.reject_after_ms = reject_after_ms;
     }
 
     wg_key_to_base64(b64, client.local.static_public);

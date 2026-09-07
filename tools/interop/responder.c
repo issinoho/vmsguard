@@ -133,6 +133,10 @@ static void usage(const char *argv0)
 "             responses, as if they had been lost. The client is then\n"
 "             holding a keypair we never derived, and must keep sending\n"
 "             on the previous one or its traffic stops decrypting\n"
+"  --ignore-rekey  answer the first handshake and then ignore every\n"
+"             later initiation, as an unresponsive peer does. A client\n"
+"             that waits for the answer stops doing anything else while\n"
+"             it waits, and that shows up as keepalives it did not send\n"
 "  --ipv6     listen on IPv6 instead of IPv4\n", argv0);
 }
 
@@ -166,6 +170,7 @@ int main(int argc, char **argv)
     int initiations_sent = 0;
     int responses_seen = 0;
     int drop_response = 0;
+    int ignore_rekey = 0;
     struct wg_keypair prev_kp;
     int have_prev = 0;
     struct wg_handshake init_hs;
@@ -207,6 +212,8 @@ int main(int argc, char **argv)
             reinit_after = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--drop-response") == 0 && i + 1 < argc) {
             drop_response = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--ignore-rekey") == 0) {
+            ignore_rekey = 1;
         } else if (strcmp(argv[i], "--ipv6") == 0) {
             family = WG_AF_INET6;
         } else {
@@ -262,6 +269,12 @@ int main(int argc, char **argv)
 
         if (buf[0] == WG_MSG_HANDSHAKE_INIT && len == WG_INIT_LEN) {
             uint8_t resp[WG_RESP_LEN];
+
+            if (ignore_rekey && established) {
+                printf("  ignoring a rekey initiation\n");
+                fflush(stdout);
+                continue;
+            }
 
             if (!wg_mac1_verify(buf, len, WG_INIT_OFF_MAC1, self_mac1)) {
                 printf("  initiation with bad mac1, ignored\n");

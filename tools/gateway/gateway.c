@@ -88,6 +88,25 @@ struct stats {
     unsigned long too_big;
     unsigned long icmp_sent;
     unsigned long stack_unreach;
+
+    /* Drops, by cause. The total on its own says a run lost something
+       without saying what, which for an unattended run is the only
+       part that matters. */
+    unsigned long drop_send;
+    unsigned long drop_inject;
+    unsigned long drop_malformed;
+    unsigned long drop_oversize;
+
+    /*
+     * The longest a single pass of the forwarding loop has taken.
+     *
+     * Rekeying used to block the loop for up to five seconds waiting
+     * for a handshake, and a two-hour run measured that happening
+     * twice. Now that it does not, this is how to tell: the figure
+     * should stay at the pcap read timeout and never approach a
+     * handshake timeout.
+     */
+    unsigned long max_stall_ms;
 };
 
 /*
@@ -301,6 +320,41 @@ static const char *stamp(void)
 }
 
 /*
+ * Why packets were dropped, appended to a line that has just said how
+ * many. Only non-zero causes appear: a run that lost one packet should
+ * say which kind, not recite six zeroes.
+ *
+ * The NAT counters are read straight from the table rather than
+ * duplicated, so they cannot drift from what NAT itself believes.
+ */
+static void emit_drop_causes(void)
+{
+    if (st.dropped == 0)
+        return;
+
+    emit(" (");
+    if (use_nat) {
+        if (nat.dropped_unsupported > 0)
+            emit("unsupported %lu ", nat.dropped_unsupported);
+        if (nat.dropped_no_mapping > 0)
+            emit("unmatched %lu ", nat.dropped_no_mapping);
+        if (nat.dropped_table_full > 0)
+            emit("table-full %lu ", nat.dropped_table_full);
+        if (nat.dropped_frag_orphan > 0)
+            emit("orphan-fragment %lu ", nat.dropped_frag_orphan);
+    }
+    if (st.drop_send > 0)
+        emit("send-failed %lu ", st.drop_send);
+    if (st.drop_inject > 0)
+        emit("inject-failed %lu ", st.drop_inject);
+    if (st.drop_malformed > 0)
+        emit("malformed %lu ", st.drop_malformed);
+    if (st.drop_oversize > 0)
+        emit("too-big-to-translate %lu ", st.drop_oversize);
+    emit(")");
+}
+
+/*
  * One line, periodically, so the log shows the thing is alive and what
  * it has been doing. Deliberately the same figures as the exit summary,
  * so a reader learns one format rather than two, and so a run that ends
@@ -309,9 +363,10 @@ static const char *stamp(void)
 static void log_status(const struct wg_client *c, int nat_live)
 {
     emit("%s  up, %lu captured / %lu tunnelled / %lu injected,"
-           " %lu dropped, %lu rekey%s",
-           stamp(), st.captured, st.tunnelled, st.injected, st.dropped,
-           c->rekeys, c->rekeys == 1 ? "" : "s");
+         " %lu dropped",
+         stamp(), st.captured, st.tunnelled, st.injected, st.dropped);
+    emit_drop_causes();
+    emit(", %lu rekey%s", c->rekeys, c->rekeys == 1 ? "" : "s");
     if (nat_live >= 0)
         emit(", %d mappings", nat_live);
     if (c->rekeys_failed > 0)
@@ -319,6 +374,12 @@ static void log_status(const struct wg_client *c, int nat_live)
                c->rekeys_failed == 1 ? "" : "s");
     if (c->roams > 0)
         emit(", %lu roam%s", c->roams, c->roams == 1 ? "" : "s");
+    /*
+     * The longest single pass through the loop. Anything near a
+     * handshake timeout means forwarding stopped while a rekey waited,
+     * which is the thing that was supposed to have been fixed.
+     */
+    emit(", worst pass %lums", st.max_stall_ms);
     emit("\n");
 }
 
@@ -393,8 +454,12 @@ static void print_summary(void)
     emit("\nran for %s\n", dur);
 
     emit("captured %lu, tunnelled %lu, received %lu, injected %lu,"
-           " dropped %lu\n",
-           st.captured, st.tunnelled, st.received, st.injected, st.dropped);
+         " dropped %lu",
+         st.captured, st.tunnelled, st.received, st.injected, st.dropped);
+    emit_drop_causes();
+    emit("\n");
+    emit("longest single pass through the forwarding loop: %lums\n",
+         st.max_stall_ms);
     /*
      * Loud, because this one silently breaks connections that would
      * otherwise have worked, and the fix is a one-line setting on the
@@ -682,6 +747,7 @@ int main(int argc, char **argv)
     int status_given = 0;
     uint64_t last_status_ms = 0;
     uint64_t last_tick_ms = 0;
+    uint64_t last_pass_ms = 0;
     int i;
 
     memset(&st, 0, sizeof st);
@@ -1144,6 +1210,19 @@ int main(int argc, char **argv)
         {
             uint64_t now = wg_time_ms();
 
+            /*
+             * How long the previous pass took. Measured rather than
+             * assumed: it is the only evidence that a change made to
+             * stop the loop stalling actually stopped it.
+             */
+            if (last_pass_ms != 0) {
+                uint64_t took = now - last_pass_ms;
+
+                if (took > st.max_stall_ms)
+                    st.max_stall_ms = (unsigned long) took;
+            }
+            last_pass_ms = now;
+
             if (now - last_tick_ms >= 1000) {
                 last_tick_ms = now;
 
@@ -1323,6 +1402,7 @@ int main(int argc, char **argv)
 
                     if (iplen > sizeof natbuf) {
                         st.dropped++;
+                        st.drop_oversize++;
                         if (verbose)
                             log_drop("out", ip, iplen,
                                      "larger than the translation buffer");
@@ -1353,6 +1433,7 @@ int main(int argc, char **argv)
                     }
                 } else {
                     st.dropped++;
+                    st.drop_send++;
                     if (verbose)
                         log_drop("out", ip, iplen, "tunnel send failed");
                 }
@@ -1412,6 +1493,7 @@ after_out:
                     }
                 } else {
                     st.dropped++;
+                    st.drop_inject++;
                     if (verbose) {
                         emit("inject failed: %s\n",
                                raw_injector_error(inj));
@@ -1449,6 +1531,7 @@ after_out:
                 }
             } else {
                 st.dropped++;
+                st.drop_malformed++;
                 if (verbose) {
                     emit("in  decrypted %lu bytes claiming an IP length"
                            " of %lu  DROPPED: malformed\n",
