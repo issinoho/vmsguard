@@ -26,6 +26,9 @@
 
 #include <signal.h>
 #include <stdio.h>
+/* dup2 and fileno, for the shared log open below. wg_platform_posix.c
+   already relies on this header building on OpenVMS. */
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -231,20 +234,37 @@ static int is_a_client(uint32_t a, const struct client_filter *clients,
  *   %TYPE-W-OPENIN, error opening ...VMSGUARD.LOG;1 as input
  *   -RMS-E-FLK, file currently locked by another user
  *
- * A log nobody can read while the process is running is not a log. The
- * "shr" argument is a C RTL extension and takes the same values as the
- * FAB$B_SHR field: readers, other writers, and the rest.
+ * A log nobody can read while the process is running is not a log, and
+ * watching it is the whole reason a detached process writes one.
  *
- * Falls back to a plain open if that is refused, because a log with
+ * The "shr" argument is a C RTL extension taking the same values as the
+ * FAB$B_SHR field. It is an extension to *fopen*, though, not to
+ * freopen, which VSI C declares with exactly three arguments:
+ *
+ *   %CC-E-TOOMANYARGS, ... "freopen" expects 3 arguments, but 4 are
+ *   supplied
+ *
+ * So the file is opened with fopen and its descriptor put in place of
+ * the stream's. dup2 leaves the stream's own descriptor referring to
+ * the same open file, so closing the temporary FILE afterwards is
+ * safe and avoids holding two handles for the life of the process.
+ *
+ * Falls back to a plain freopen if any of that is refused: a log with
  * awkward sharing beats no log at all.
  */
 static FILE *open_log(const char *path, FILE *stream)
 {
 #ifdef __VMS
-    FILE *f = freopen(path, "a", stream, "shr=get,put,upd,del");
+    FILE *f = fopen(path, "a", "shr=get,put,upd,del");
 
-    if (f != NULL)
-        return f;
+    if (f != NULL) {
+        fflush(stream);
+        if (dup2(fileno(f), fileno(stream)) >= 0) {
+            fclose(f);
+            return stream;
+        }
+        fclose(f);
+    }
 #endif
     return freopen(path, "a", stream);
 }

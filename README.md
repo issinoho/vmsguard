@@ -212,6 +212,12 @@ another user`. The C RTL takes optional attribute arguments for this —
 `fopen(path, "a", "shr=get,put,upd,del")` — and a log nobody can read
 while it is running is not a log.
 
+**Those optional arguments are an extension to `fopen`, not to
+`freopen`.** VSI C declares `freopen` with exactly three parameters and
+rejects a fourth outright (`%CC-E-TOOMANYARGS`), so redirecting a stream
+*and* asking for sharing means `fopen` followed by `dup2` onto the
+stream's descriptor.
+
 **DCL lowercases unquoted arguments** to a foreign command. Base64 keys
 must be quoted — they are case-sensitive and contain `/`, which DCL reads
 as a qualifier. Device names too: `IE0` arrives as `ie0` and pcap is
