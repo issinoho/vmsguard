@@ -180,9 +180,12 @@ The client shape is **narrowed, not solved**. Its inbound half is the
 above. Its outbound half needs the encapsulated frame captured, and
 pcap does not list `IT0` — only `IE0` and `LO0` — so capture would have
 to happen on `IE0`, where the frame carries the inner packet
-unencrypted to the router. Untested: pointing the tunnel at `127.0.0.1`
-so the encapsulated frames go over loopback, which pcap can see and the
-LAN cannot. See `docs/research/driver-feasibility.md`.
+unencrypted to the router. A tunnel cannot terminate locally —
+`127.0.0.1` and the machine's own address are both refused with
+`invalid argument`, while a remote one succeeds — so the encapsulated
+frame must reach the wire and the leak is unavoidable. What remains is
+a narrow ask: make `ITn` visible to pcap. See
+`docs/research/driver-feasibility.md`.
 
 ## Known gaps, in priority order
 

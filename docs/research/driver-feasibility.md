@@ -506,15 +506,51 @@ before. The old one was that the stack could not be handed a packet, and
 it is gone. The new one is that the stack's *output* cannot be observed
 without also being transmitted.
 
-**Untested idea.** `iptunnel create 127.0.0.1` would send the
-encapsulated packets over loopback, which pcap *can* see, and nothing
-would reach the LAN. Whether the tunnel can be created that way, whether
-the frames appear on `LO0`, and whether the stack then tries to
-decapsulate its own output are all unknown. It is one command to find
-out and worth doing before concluding anything.
+**A tunnel cannot terminate locally**, which was the one way round it:
+
+```
+$ iptunnel create 127.0.0.1
+iptunnel: SIOCIPTUNNEL create: invalid argument
+
+$ iptunnel create 192.168.0.80
+iptunnel: SIOCIPTUNNEL create: invalid argument
+
+$ iptunnel create 192.0.2.2
+IT1  iftype IFT_IPV4 (208) src 192.168.0.80 dst 192.0.2.2
+```
+
+Creation plainly works — the third succeeded — so it is local
+destinations specifically that are refused, both loopback and the
+machine's own LAN address. Sending the encapsulated packets over
+loopback, where pcap can see them and the LAN cannot, is therefore not
+available.
+
+The destination must be remote, so the encapsulated frame must go to the
+wire, so the inner packet is on the segment in the clear. There is no
+configuration of this mechanism that avoids it.
 
 (`pcap_sendpacket` still fails, unchanged, which confirms the earlier
 finding rather than revisiting it.)
+
+### Where this leaves the client shape
+
+Blocked, for a different and much smaller reason than before.
+
+| | |
+| --- | --- |
+| Hand the stack a packet to deliver | **solved** — inject to a tunnel |
+| Suppress the plaintext original | **solved** — routing at `ITn` encapsulates it instead |
+| Observe what the stack emits | **blocked** — pcap cannot see `ITn` |
+
+The third is the whole of what remains, and it is a narrow, concrete
+thing to ask VSI for: **make `ITn` visible to pcap**, or provide any way
+to read what a tunnel interface emits. Not a new subsystem — a capture
+hook on an interface that already exists and already works.
+
+Worth stating plainly what changed today. The client shape was abandoned
+because a packet originating on this machine could not be suppressed;
+that is now solved, by a facility already shipping. What replaced it is
+a gap in observability rather than in capability.
 
 ### What is still unknown
 
