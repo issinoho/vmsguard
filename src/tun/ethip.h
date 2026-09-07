@@ -80,6 +80,62 @@ int ipv4_in_any(const struct ipv4_subnet *list, int n, uint32_t addr);
 int ipv4_best_match(const struct ipv4_subnet *list, int n, uint32_t addr,
                     uint32_t *mask);
 
+/* ---- IPv6 ------------------------------------------------------------ */
+
+/*
+ * The IPv6 side is deliberately a parallel set of functions rather than
+ * a generalisation of the IPv4 ones. Widening uint32_t addresses to a
+ * tagged union would touch every line of working, tested code to make
+ * room for a family that shares none of its arithmetic — IPv6 has no
+ * broadcast, no netmask as a number, and a prefix length instead.
+ *
+ * Addresses are 16 bytes in network order throughout, and prefixes are
+ * a length in bits rather than a mask, which is how IPv6 is written and
+ * how AllowedIPs gives them.
+ */
+#define IPV6_MIN_HDR 40
+
+struct ipv6_subnet {
+    uint8_t net[16];
+    uint8_t prefix;         /* 0..128 */
+};
+
+/*
+ * The IPv6 packet inside an Ethernet frame, or NULL. As with
+ * ethip_ipv4, *iplen is the length the header claims rather than what
+ * was captured, so trailing padding is not carried into the tunnel.
+ */
+const uint8_t *ethip_ipv6(const uint8_t *frame, size_t framelen,
+                          size_t *iplen);
+
+/* Pointers into the packet; both are 16 bytes. */
+const uint8_t *ipv6_src(const uint8_t *pkt);
+const uint8_t *ipv6_dst(const uint8_t *pkt);
+
+/* Whether a packet looks like IPv6 at all: version nibble 6, and long
+   enough to hold a header. */
+int ipv6_looks_valid(const uint8_t *pkt, size_t len);
+
+int ipv6_in_subnet(const uint8_t *addr, const uint8_t *net, uint8_t prefix);
+int ipv6_in_any(const struct ipv6_subnet *list, int n, const uint8_t *addr);
+
+/* Longest prefix, as ipv4_best_match. Writes the winning prefix length. */
+int ipv6_best_match(const struct ipv6_subnet *list, int n,
+                    const uint8_t *addr, uint8_t *prefix);
+
+/*
+ * Parse "fd00::/8", "2001:db8::1/128" or a bare address (taken as
+ * /128). Returns 0 on success.
+ *
+ * Embedded IPv4 forms such as ::ffff:1.2.3.4 are not accepted: they do
+ * not appear in AllowedIPs, and refusing what is not understood beats
+ * guessing at it.
+ */
+int ethip_parse_cidr6(const char *text, uint8_t net[16], uint8_t *prefix);
+
+/* Text form, with the longest run of zeroes compressed to "::". */
+void ipv6_format(char *out, size_t cap, const uint8_t *addr);
+
 /*
  * Parse "10.9.0.0/24" into a network address and mask, both in network
  * order. A missing prefix length is treated as /32.

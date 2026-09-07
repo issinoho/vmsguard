@@ -300,6 +300,239 @@ static void test_best_match(void)
           "no default route means unmatched really is unmatched");
 }
 
+/* ---- IPv6 ------------------------------------------------------------ */
+
+static int addr6(const char *text, uint8_t out[16])
+{
+    uint8_t prefix;
+    return ethip_parse_cidr6(text, out, &prefix) == 0;
+}
+
+static void test_parse6(void)
+{
+    uint8_t a[16], p;
+    char buf[64];
+
+    printf("\nIPv6 text\n");
+
+    /* The forms AllowedIPs actually contains. */
+    check(ethip_parse_cidr6("::/0", a, &p) == 0 && p == 0,
+          "the default route");
+    check(ethip_parse_cidr6("2001:db8::/32", a, &p) == 0 && p == 32 &&
+          a[0] == 0x20 && a[1] == 0x01 && a[2] == 0x0d && a[3] == 0xb8 &&
+          a[4] == 0,
+          "a documentation prefix");
+    check(ethip_parse_cidr6("fd00::1", a, &p) == 0 && p == 128 &&
+          a[0] == 0xfd && a[15] == 0x01,
+          "a bare address is a /128");
+    /*
+     * fe80::c2a8:ff:fe50:0 is one group before the gap and four after,
+     * so the tail sits at groups 4-7 and the zeroes fill 1-3. Written
+     * out: fe80:0:0:0:c2a8:00ff:fe50:0000.
+     */
+    check(ethip_parse_cidr6("fe80::c2a8:ff:fe50:0/64", a, &p) == 0 &&
+          p == 64 && a[0] == 0xfe && a[1] == 0x80 &&
+          a[2] == 0 && a[7] == 0 &&
+          a[8] == 0xc2 && a[9] == 0xa8 && a[11] == 0xff &&
+          a[12] == 0xfe && a[13] == 0x50 && a[15] == 0,
+          "a link-local with a tail, as the target reported it");
+
+    /* "::" in each position it can occupy. */
+    check(ethip_parse_cidr6("::1", a, &p) == 0 && a[15] == 1 && a[0] == 0,
+          "leading");
+    check(ethip_parse_cidr6("fd00::", a, &p) == 0 && a[0] == 0xfd &&
+          a[15] == 0, "trailing");
+    check(ethip_parse_cidr6("1:2:3:4:5:6:7:8", a, &p) == 0 &&
+          a[1] == 1 && a[15] == 8, "and a full address needing none");
+
+    /* Refusals. Each is a way a config file could be wrong. */
+    check(ethip_parse_cidr6("1:2:3:4:5:6:7", a, &p) != 0,
+          "too few groups without '::'");
+    check(ethip_parse_cidr6("1:2:3:4:5:6:7:8:9", a, &p) != 0,
+          "too many groups");
+    check(ethip_parse_cidr6("fd00::1::2", a, &p) != 0,
+          "two '::' would be ambiguous");
+    check(ethip_parse_cidr6("fd00::/129", a, &p) != 0,
+          "a prefix longer than 128");
+    check(ethip_parse_cidr6("fd00::/", a, &p) != 0, "an empty prefix");
+    check(ethip_parse_cidr6("fd00::12345", a, &p) != 0,
+          "a group of more than four digits");
+    check(ethip_parse_cidr6("::ffff:192.0.2.1", a, &p) != 0,
+          "an embedded IPv4 form, which is refused rather than guessed at");
+    check(ethip_parse_cidr6("192.0.2.1", a, &p) != 0, "an IPv4 address");
+    check(ethip_parse_cidr6("", a, &p) != 0, "nothing at all");
+
+    /* Round trip, including the compression rules. */
+    (void) addr6("fe80::c2a8:ff:fe50:0", a);
+    ipv6_format(buf, sizeof buf, a);
+    check(strcmp(buf, "fe80::c2a8:ff:fe50:0") == 0,
+          "formatting compresses the longest run of zeroes");
+
+    (void) addr6("::", a);
+    ipv6_format(buf, sizeof buf, a);
+    check(strcmp(buf, "::") == 0, "the unspecified address");
+
+    (void) addr6("1:0:0:0:0:0:0:8", a);
+    ipv6_format(buf, sizeof buf, a);
+    check(strcmp(buf, "1::8") == 0, "a long interior run");
+
+    /*
+     * A single zero group is left uncompressed: "::" saves nothing and
+     * reads worse, and RFC 5952 says not to.
+     */
+    (void) addr6("1:0:2:3:4:5:6:7", a);
+    ipv6_format(buf, sizeof buf, a);
+    check(strcmp(buf, "1:0:2:3:4:5:6:7") == 0,
+          "but a single zero group is left alone");
+}
+
+static void test_subnet6(void)
+{
+    struct ipv6_subnet list[3];
+    uint8_t a[16], p;
+
+    printf("\nIPv6 prefixes\n");
+
+    (void) ethip_parse_cidr6("2001:db8::/32", list[0].net, &list[0].prefix);
+    (void) ethip_parse_cidr6("fd00::/8", list[1].net, &list[1].prefix);
+
+    (void) addr6("2001:db8:1234::1", a);
+    check(ipv6_in_subnet(a, list[0].net, list[0].prefix),
+          "an address inside a /32");
+    (void) addr6("2001:db9::1", a);
+    check(!ipv6_in_subnet(a, list[0].net, list[0].prefix),
+          "and one just outside it");
+
+    /* A prefix that is not a whole number of bytes is where an
+       off-by-one lives, so both sides of /8 are checked. */
+    (void) addr6("fdff::1", a);
+    check(ipv6_in_subnet(a, list[1].net, list[1].prefix),
+          "fd00::/8 covers the whole fd00-fdff range");
+    (void) addr6("fe00::1", a);
+    check(!ipv6_in_subnet(a, list[1].net, list[1].prefix),
+          "and stops at fe00");
+
+    /*
+     * A prefix that is not a whole number of bytes, which every case
+     * above happens to be. Without one the sub-byte masking is never
+     * executed, and removing it entirely passed the whole suite.
+     *
+     * fc00::/7 is the real example: it is the ULA range, and its
+     * boundary falls inside the first byte.
+     */
+    (void) ethip_parse_cidr6("fc00::/7", list[2].net, &list[2].prefix);
+    (void) addr6("fc00::1", a);
+    check(ipv6_in_subnet(a, list[2].net, list[2].prefix),
+          "fc00::/7 covers fc00");
+    (void) addr6("fdff:ffff::1", a);
+    check(ipv6_in_subnet(a, list[2].net, list[2].prefix), "and fdff");
+    (void) addr6("fe00::1", a);
+    check(!ipv6_in_subnet(a, list[2].net, list[2].prefix),
+          "and stops before fe00, one bit away");
+    (void) addr6("fbff::1", a);
+    check(!ipv6_in_subnet(a, list[2].net, list[2].prefix),
+          "and does not start before fc00");
+
+    /* A partial byte further in, where the whole-byte compare runs
+       first and the mask applies to a later byte. */
+    (void) ethip_parse_cidr6("2001:db8:8000::/33", list[2].net,
+                             &list[2].prefix);
+    (void) addr6("2001:db8:8001::1", a);
+    check(ipv6_in_subnet(a, list[2].net, list[2].prefix),
+          "a /33 matches inside its half");
+    (void) addr6("2001:db8:7fff::1", a);
+    check(!ipv6_in_subnet(a, list[2].net, list[2].prefix),
+          "and not the half below it");
+
+    /* /0 matches everything, /128 exactly one thing. */
+    memset(list[2].net, 0, 16);
+    list[2].prefix = 0;
+    (void) addr6("2001:4860:4860::8888", a);
+    check(ipv6_in_subnet(a, list[2].net, list[2].prefix),
+          "::/0 matches any address");
+
+    (void) ethip_parse_cidr6("fd00::1/128", list[2].net, &list[2].prefix);
+    (void) addr6("fd00::1", a);
+    check(ipv6_in_subnet(a, list[2].net, list[2].prefix), "a /128 matches");
+    (void) addr6("fd00::2", a);
+    check(!ipv6_in_subnet(a, list[2].net, list[2].prefix),
+          "and not its neighbour");
+
+    /* Longest prefix, as for IPv4 and for the same reason. */
+    (void) ethip_parse_cidr6("::/0", list[0].net, &list[0].prefix);
+    (void) ethip_parse_cidr6("2001:db8::/32", list[1].net, &list[1].prefix);
+    (void) ethip_parse_cidr6("2001:db8:1::/48", list[2].net, &list[2].prefix);
+
+    (void) addr6("2001:db8:1::5", a);
+    check(ipv6_best_match(list, 3, a, &p) && p == 48,
+          "the /48 wins over the /32 and the default route");
+    (void) addr6("2001:db8:2::5", a);
+    check(ipv6_best_match(list, 3, a, &p) && p == 32,
+          "and the /32 when the /48 does not contain it");
+    (void) addr6("2600::1", a);
+    check(ipv6_best_match(list, 3, a, &p) && p == 0,
+          "falling back to ::/0");
+    check(!ipv6_best_match(list, 0, a, &p), "an empty list matches nothing");
+}
+
+static void test_frame6(void)
+{
+    uint8_t frame[128];
+    const uint8_t *ip;
+    size_t iplen = 0;
+    uint8_t want[16];
+
+    printf("\nIPv6 in a frame\n");
+
+    memset(frame, 0, sizeof frame);
+    frame[12] = 0x86; frame[13] = 0xDD;
+    frame[14] = 0x60;                       /* version 6 */
+    frame[14 + 4] = 0; frame[14 + 5] = 8;   /* payload length 8 */
+    frame[14 + 6] = 58;                     /* ICMPv6 */
+    frame[14 + 7] = 64;
+    (void) addr6("fd00::1", frame + 14 + 8);
+    (void) addr6("fd00::2", frame + 14 + 24);
+
+    ip = ethip_ipv6(frame, sizeof frame, &iplen);
+    check(ip != NULL, "an IPv6 frame is recognised");
+    check(iplen == 48,
+          "and its length comes from the header, not the capture");
+
+    (void) addr6("fd00::1", want);
+    check(ip != NULL && memcmp(ipv6_src(ip), want, 16) == 0,
+          "the source is where it should be");
+    (void) addr6("fd00::2", want);
+    check(ip != NULL && memcmp(ipv6_dst(ip), want, 16) == 0,
+          "and the destination");
+
+    /* An IPv4 frame must not be taken for one. */
+    frame[12] = 0x08; frame[13] = 0x00;
+    check(ethip_ipv6(frame, sizeof frame, &iplen) == NULL,
+          "an IPv4 frame is not IPv6");
+
+    /* A VLAN tag in front of it, as the IPv4 path allows. */
+    memset(frame, 0, sizeof frame);
+    frame[12] = 0x81; frame[13] = 0x00;
+    frame[16] = 0x86; frame[17] = 0xDD;
+    frame[18] = 0x60;
+    frame[18 + 5] = 8;
+    check(ethip_ipv6(frame, sizeof frame, &iplen) == frame + 18 &&
+          iplen == 48, "a VLAN tag is stepped over");
+
+    /* A header claiming more than arrived is refused. */
+    memset(frame, 0, sizeof frame);
+    frame[12] = 0x86; frame[13] = 0xDD;
+    frame[14] = 0x60;
+    frame[14 + 4] = 0xFF; frame[14 + 5] = 0xFF;
+    check(ethip_ipv6(frame, 80, &iplen) == NULL,
+          "a payload length longer than the frame is refused");
+
+    check(!ipv6_looks_valid(frame, 10), "a runt is not a packet");
+    frame[14] = 0x45;
+    check(!ipv6_looks_valid(frame + 14, 40),
+          "and neither is something whose version is 4");
+}
+
 int main(void)
 {
     printf("vmsguard Ethernet/IPv4 inspection tests\n");
@@ -310,6 +543,9 @@ int main(void)
     test_cidr();
     test_subnet();    test_in_any();
     test_best_match();
+    test_parse6();
+    test_subnet6();
+    test_frame6();
 
 
     printf("\n%s — %d checks, %d failure%s\n",
