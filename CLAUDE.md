@@ -12,10 +12,19 @@ make test       # 336 checks across seven binaries
 make loopback   # end-to-end over real UDP, needs no privilege
 ```
 
-`tools/gateway/gateway.c` needs pcap and only runs on OpenVMS, so it is
-never linked here. `make gateway-check` compiles it for its diagnostics
-anyway, against the stub `<pcap.h>` in `tools/gateway/pcapstub/`, so a
-typo costs a second rather than a round trip. `all` depends on it.
+`tools/gateway/gateway.c` needs pcap and only runs on OpenVMS. `make
+gateway-check` links it against the stub libpcap in
+`tools/gateway/pcapstub/` and **runs** it against
+`tests/data/sample.conf`, checking what it derived from that file before
+the stub stops it. `all` depends on it.
+
+Compiling it was not enough. A config value left pointing into a struct
+scrubbed on scope exit parsed perfectly and then failed on the target: a
+syntax check cannot see a lifetime bug, and running it can. Anything
+past `pcap_open_live` still belongs on the target.
+
+Note also that a `memset` used to scrub a secret from a local is a dead
+store the compiler may remove, and GCC at -O2 does. Use `wg_zero`.
 
 Always run `make test` before committing. `make loopback` too if you
 touched anything in `src/client/`, `src/platform/` or `src/proto/`.
