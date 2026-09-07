@@ -189,6 +189,104 @@ static void test_short_original(void)
     check(elen == 20 + 8 + 24, "quotes only what was actually present");
 }
 
+/*
+ * Recognising the OpenVMS stack contradicting the gateway.
+ *
+ * The stack sees the same forwarded packets pcap does and, having no
+ * route for them, answers the sender with "destination unreachable"
+ * while the gateway is tunnelling the very same packet. Nothing can
+ * stop it — there is no packet filter on the platform that drops by
+ * rule — so the aim is to recognise it precisely enough to report it
+ * without crying wolf at every ICMP on the wire.
+ */
+/* An ICMP error from `src` to `dst` quoting a packet that was headed
+   for `orig_dst`. */
+static size_t build_icmp_error(uint8_t *p, uint8_t type, uint32_t src,
+                               uint32_t dst, uint32_t orig_src,
+                               uint32_t orig_dst, uint8_t orig_proto,
+                               size_t quote)
+{
+    size_t total = 20 + 8 + quote;
+
+    memset(p, 0, total);
+    p[0] = 0x45;
+    p[2] = (uint8_t) (total >> 8);
+    p[3] = (uint8_t) (total & 0xFF);
+    p[8] = 64;
+    p[9] = 1;                       /* ICMP */
+    put32(p + 12, src);
+    put32(p + 16, dst);
+
+    p[20] = type;
+    p[21] = 0;                      /* code: net unreachable */
+
+    /* The quoted original: its own IP header, then whatever fits. */
+    if (quote >= 20) {
+        p[28] = 0x45;
+        p[28 + 8] = 63;
+        p[28 + 9] = orig_proto;
+        put32(p + 28 + 12, orig_src);
+        put32(p + 28 + 16, orig_dst);
+    }
+    return total;
+}
+
+static void test_stack_contradiction(void)
+{
+    uint8_t p[128];
+    size_t len;
+    uint32_t dst = 0;
+    uint8_t proto = 0;
+
+    printf("\nthe stack answering for traffic we tunnel\n");
+
+    len = build_icmp_error(p, ICMP_TYPE_DEST_UNREACH, GW_ADDR, CLIENT,
+                           CLIENT, FAR, 6, 28);
+    check(icmp_error_from(p, len, GW_ADDR, &dst, &proto) == 1,
+          "an unreachable from our own address is recognised");
+    check(dst == FAR,
+          "and the quoted header says where the sender was trying to go");
+    check(proto == 6, "along with what it was trying to do");
+
+    /*
+     * The address test is what keeps this from firing on every ICMP
+     * error crossing the segment. An unreachable from a router
+     * elsewhere is somebody else's business.
+     */
+    dst = 0;
+    check(icmp_error_from(p, len, 0xC0A80001UL, &dst, &proto) == 0,
+          "an error from any other address is not ours to report");
+
+    len = build_icmp_error(p, ICMP_TYPE_TIME_EXCEEDED, GW_ADDR, CLIENT,
+                           CLIENT, FAR, 17, 28);
+    check(icmp_error_from(p, len, GW_ADDR, &dst, &proto) == 1,
+          "time-exceeded counts too: a traceroute reaching us says the"
+          " same thing");
+
+    /* Echo requests and replies are not errors and quote nothing. */
+    len = build_icmp_error(p, 8 /* echo request */, GW_ADDR, CLIENT,
+                           CLIENT, FAR, 1, 28);
+    check(icmp_error_from(p, len, GW_ADDR, NULL, NULL) == 0,
+          "an echo request is not an error message");
+
+    /* A quotation too short to hold an IP header is not worth guessing
+       at, and reading past it would be worse than saying nothing. */
+    len = build_icmp_error(p, ICMP_TYPE_DEST_UNREACH, GW_ADDR, CLIENT,
+                           CLIENT, FAR, 6, 12);
+    check(icmp_error_from(p, len, GW_ADDR, NULL, NULL) == 0,
+          "a truncated quotation is refused rather than half-read");
+
+    /* Not ICMP at all. */
+    len = build_icmp_error(p, ICMP_TYPE_DEST_UNREACH, GW_ADDR, CLIENT,
+                           CLIENT, FAR, 6, 28);
+    p[9] = 6;
+    check(icmp_error_from(p, len, GW_ADDR, NULL, NULL) == 0,
+          "and a TCP packet is not an ICMP error however it is shaped");
+
+    check(icmp_error_from(p, 8, GW_ADDR, NULL, NULL) == 0,
+          "a runt is refused");
+}
+
 int main(void)
 {
     printf("vmsguard ICMP error tests\n");
@@ -197,6 +295,7 @@ int main(void)
     test_quoted_original();
     test_rejections();
     test_short_original();
+    test_stack_contradiction();
 
     printf("\n%s — %d checks, %d failure%s\n",
            failures == 0 ? "PASS" : "FAIL",

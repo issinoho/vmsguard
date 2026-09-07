@@ -8,7 +8,7 @@ things.
 
 ```sh
 make            # everything, and syntax-checks the gateway
-make test       # 327 checks across seven binaries
+make test       # 336 checks across seven binaries
 make loopback   # end-to-end over real UDP, needs no privilege
 ```
 
@@ -131,13 +131,18 @@ information justifies it.
 
 ## Known gaps, in priority order
 
-1. **ICMP unreachables.** The VMS stack answers for the tunnelled subnet
-   it cannot route, while the gateway tunnels the same packets.
+1. **Endpoint DNS is resolved once.** A hostname endpoint is looked up
+   at startup only. Roaming covers a peer that moves and keeps talking;
+   it cannot cover one that goes silent and reappears elsewhere.
+2. **Fragment reassembly is not done.** Later fragments inherit their
+   first fragment's mapping, which is enough to pass them through, but a
+   first fragment that never arrives leaves the rest orphaned.
 
 Done: rekeying, the replay sliding window, PersistentKeepalive, the
 gateway's source filter, source NAT, ICMP fragmentation-needed, NAT of
 fragmented datagrams, the cookie mechanism (`mac2`), and reading a
-provider's `.conf` directly, and roaming.
+provider's `.conf` directly, roaming, and detection of the stack's own
+contradictory ICMP unreachables.
 
 ## Commits
 

@@ -86,6 +86,7 @@ struct stats {
     unsigned long dropped;
     unsigned long too_big;
     unsigned long icmp_sent;
+    unsigned long stack_unreach;
 };
 
 /*
@@ -203,6 +204,22 @@ static void print_summary(void)
     printf("captured %lu, tunnelled %lu, received %lu, injected %lu,"
            " dropped %lu\n",
            st.captured, st.tunnelled, st.received, st.injected, st.dropped);
+    /*
+     * Loud, because this one silently breaks connections that would
+     * otherwise have worked, and the fix is a one-line setting on the
+     * OpenVMS box rather than anything in this program.
+     */
+    if (st.stack_unreach > 0)
+        printf("WARNING: the OpenVMS stack sent %lu ICMP unreachable%s to"
+               " clients about\n"
+               "         destinations this gateway was tunnelling. Those"
+               " senders were told\n"
+               "         the traffic failed while it was in fact"
+               " working. See the ICMP\n"
+               "         unreachables section of docs/gateway.md — IP"
+               " forwarding should\n"
+               "         be disabled on this machine.\n",
+               st.stack_unreach, st.stack_unreach == 1 ? "" : "s");
     if (st.too_big > 0)
         printf("oversized: %lu, of which %lu answered with ICMP"
                " fragmentation-needed\n", st.too_big, st.icmp_sent);
@@ -818,6 +835,44 @@ int main(int argc, char **argv)
             size_t iplen = 0;
 
             ip = ethip_ipv4((const uint8_t *) frame, hdr->caplen, &iplen);
+
+            /*
+             * Before any filtering: the OpenVMS stack sees these same
+             * forwarded packets and, having no route for them, may
+             * answer the sender "destination unreachable" while we are
+             * tunnelling the very same packet. The sender believes the
+             * ICMP — a TCP connect fails outright rather than waiting
+             * for the reply already on its way.
+             *
+             * Nothing here can stop it: there is no packet filter on
+             * this platform that drops by rule, which is the same fact
+             * that makes the gateway shape necessary in the first
+             * place. What we can do is notice, so this shows up as a
+             * known problem with a documented fix rather than as
+             * connections that fail for no visible reason.
+             *
+             * Checked here rather than below because the message is
+             * addressed to the client on the local segment, so every
+             * filter that follows would discard it.
+             */
+            if (ip != NULL && have_gw_addr) {
+                uint32_t orig_dst = 0;
+                uint8_t orig_proto = 0;
+
+                if (icmp_error_from(ip, iplen, gw_addr, &orig_dst,
+                                    &orig_proto) &&
+                    ipv4_in_subnet(orig_dst, tun_net, tun_mask)) {
+                    st.stack_unreach++;
+                    if (verbose) {
+                        ipv4_format(abuf, sizeof abuf, ipv4_dst(ip));
+                        ipv4_format(bbuf, sizeof bbuf, orig_dst);
+                        printf("STACK: told %s that %s is unreachable,"
+                               " proto %u — we are tunnelling it\n",
+                               abuf, bbuf, (unsigned) orig_proto);
+                        fflush(stdout);
+                    }
+                }
+            }
 
             /*
              * Never tunnel our own encrypted traffic. With a wide

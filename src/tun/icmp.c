@@ -100,3 +100,47 @@ size_t icmp_frag_needed(uint8_t *out, size_t outcap, uint32_t src_addr,
 
     return total;
 }
+
+/* ---- recognising the stack's own contradictions ---------------------- */
+
+int icmp_error_from(const uint8_t *pkt, size_t len, uint32_t from_addr,
+                    uint32_t *orig_dst, uint8_t *orig_proto)
+{
+    size_t ihl, orig_off, orig_ihl;
+    uint8_t type;
+
+    if (len < IPV4_MIN_HDR || (pkt[0] >> 4) != 4)
+        return 0;
+    if (pkt[9] != 1)                    /* not ICMP */
+        return 0;
+    if (ipv4_src(pkt) != from_addr)
+        return 0;
+
+    ihl = (size_t) (pkt[0] & 0x0F) * 4;
+    if (ihl < IPV4_MIN_HDR || ihl + 8 > len)
+        return 0;
+
+    type = pkt[ihl];
+    if (type != ICMP_TYPE_DEST_UNREACH && type != ICMP_TYPE_TIME_EXCEEDED)
+        return 0;
+
+    /*
+     * The quoted original follows the eight-byte ICMP header. It must
+     * be a whole IPv4 header for its destination to be readable — a
+     * truncated quotation is not worth guessing at.
+     */
+    orig_off = ihl + 8;
+    if (orig_off + IPV4_MIN_HDR > len)
+        return 0;
+    if ((pkt[orig_off] >> 4) != 4)
+        return 0;
+    orig_ihl = (size_t) (pkt[orig_off] & 0x0F) * 4;
+    if (orig_ihl < IPV4_MIN_HDR || orig_off + orig_ihl > len)
+        return 0;
+
+    if (orig_dst != NULL)
+        *orig_dst = ipv4_dst(pkt + orig_off);
+    if (orig_proto != NULL)
+        *orig_proto = pkt[orig_off + 9];
+    return 1;
+}

@@ -423,10 +423,44 @@ leaving the network.
 
 ## Known problems to design around
 
-**ICMP unreachables.** When a packet arrives for a subnet OpenVMS has no
-route to, the stack will normally answer with an ICMP destination
-unreachable while we are separately tunnelling the packet. The sender
-then gets a contradictory signal.
+**ICMP unreachables.** The OpenVMS stack sees the same forwarded packets
+pcap does. Having no route for them, it may answer the sender with
+"destination unreachable" while the gateway is quietly tunnelling the
+very same packet — and the sender believes the ICMP. A TCP connect fails
+outright rather than waiting for the reply that is already on its way,
+so the symptom is connections that fail immediately and intermittently
+while ping works perfectly.
+
+Nothing in this program can prevent it. There is no packet-filter
+facility on the platform that drops by rule, which is the same fact that
+makes the gateway shape necessary rather than the client shape (see
+`docs/research/driver-feasibility.md`). What the gateway does instead is
+notice: it recognises an ICMP error sent from its own address whose
+*quoted* original was headed for the tunnel subnet, which is precise
+enough not to fire on other people's ICMP crossing the segment. Under
+`--verbose` each one prints:
+
+```
+STACK: told 192.168.0.218 that 1.1.1.1 is unreachable, proto 6 — we are tunnelling it
+```
+
+and the summary ends with a warning naming the count.
+
+**The fix is on the OpenVMS box, not here: IP forwarding should be
+off.** A host that is not a router discards a packet not addressed to it
+and says nothing, which is exactly what is wanted — the gateway already
+has its copy from pcap. A host that *is* forwarding, and has no route,
+generates the unreachable instead. Check and clear it with:
+
+```
+$ TCPIP SHOW PROTOCOL IP
+$ TCPIP SET PROTOCOL IP /NOFORWARD
+```
+
+This has not been exercised on the target: no run so far has reported a
+non-zero count, which either means forwarding is already off or that the
+conditions have not arisen. The detection is what makes the difference
+visible either way.
 
 No blackhole-route facility was found on OpenVMS — the only "blackhole"
 in the Management manual is a BIND ACL. Options, none yet tested:
