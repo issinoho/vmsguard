@@ -529,6 +529,26 @@ the only place they appear.
 The gateway is told the tunnel's *endpoints* rather than its name, so
 the unit number does not matter to it.
 
+Confirmed initialising on the target (2026-09-07):
+
+```
+  allowed-ips    : 0.0.0.0 mask 0.0.0.0
+  ipv6 return    : a configured tunnel, 192.0.2.1 -> 192.168.0.80
+  source NAT to  : 10.13.49.21
+  handshake with 64.20.211.133:1443
+    established, keepalive every 25 s
+```
+
+That run carried no IPv6 — the provider's config has no IPv6
+`AllowedIPs`, so nothing matched — but it is the first on real hardware
+with cryptokey routing, several peers and the IPv6 paths all compiled
+in, and the IPv4 tunnel came up unchanged.
+
+Exercising IPv6 properly needs a peer that offers it. A commercial
+provider handing out one IPv4 address will not; a second WireGuard
+interface on a machine you control, with an IPv6 prefix in its
+`AllowedIPs`, will.
+
 The startup header says whether it can deliver:
 
 ```
