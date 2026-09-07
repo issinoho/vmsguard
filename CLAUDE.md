@@ -150,14 +150,14 @@ path rather than uid, so root does not help.
 have the full reasoning. If reopening any of these, say what new
 information justifies it.
 
-**Open lead (2026-09-07): configured tunnels.** The VSI *Guide to IPv6*
-documents `iptunnel create`, which makes a virtual interface `ITn` that
-encapsulates IPv4 or IPv6 in IPv4 (RFC 2003). If it exists, injecting a
-protocol-41 packet with `IP_HDRINCL` — already proven — would let the
-stack decapsulate and forward IPv6, which is the one thing missing for
-an IPv6 gateway. It may also bear on the client shape. Unverified: this
-platform has documented two facilities that turned out not to exist.
-See `docs/research/driver-feasibility.md`.
+**Open lead (2026-09-07): configured tunnels — and `IT0` is real.**
+`iptunnel create 192.0.2.1` produces a `RUNNING` virtual interface with
+a resolved next hop. It is the first documented virtual interface on
+this platform that actually exists. What is *not* yet known is whether
+the stack decapsulates a packet we inject into it (`probe_encap` asks
+exactly that) and whether the encapsulated output can be captured
+without putting the inner packet on the wire in the clear. See
+`docs/research/driver-feasibility.md`.
 
 ## Known gaps, in priority order
 

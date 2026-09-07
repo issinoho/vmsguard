@@ -309,6 +309,63 @@ at the local box, and whether pcap can then capture it, is unknown and
 is the question to settle before treating this as a route to the client
 shape at all.
 
+### Confirmed to exist (2026-09-07)
+
+Unlike SLIP and PPP before it, this one is real:
+
+```
+$ iptunnel create 192.0.2.1
+IT0  iftype IFT_IPV4 (208) src 192.168.0.80 dst 192.0.2.1
+
+$ ifconfig -a
+IT0: flags=4c2<BROADCAST,RUNNING,NOARP,MULTICAST>
+     192.168.0.80 --> 192.0.2.1
+
+$ iptunnel show it0
+interface IT0 src 192.168.0.80 dst 192.0.2.1 gate 192.168.0.1
+```
+
+The interface is created and `RUNNING`. `iptunnel help` gives the real
+syntax, which the manual's examples obscure:
+
+```
+create  [-I <intf-name>] [-V <ipversion>] <tunnel-dst> [tunnel-src]
+delete  <intf-name>
+show    <intf-name>
+```
+
+**`gate 192.168.0.1` is the significant part.** The stack has already
+resolved a next hop for tunnelled packets — the LAN router. So an
+encapsulated packet is a real frame on a real interface, which means
+pcap can capture it. It also means it leaves the machine, which is the
+whole of the caveat below.
+
+### What is still unknown
+
+Creation is not operation. Two questions remain, and they are
+independent:
+
+1. **Does the stack decapsulate a packet we inject?** `probe_encap`
+   answers this: it wraps an ICMP echo request in an IPv4 protocol-4
+   header addressed to this machine from the tunnel's remote endpoint
+   and injects it with `IP_HDRINCL`. If the stack matches it to `IT0`,
+   unwraps it and answers, a reply arrives at whatever address the
+   inner packet claimed to be from. That is the mechanism an IPv6
+   gateway needs, with protocol 41 instead of 4.
+
+2. **Can the encapsulated output be captured without leaking it?** For
+   the client shape the stack would encapsulate our own outbound
+   traffic, and we would capture and encrypt it. But `gate` says that
+   frame goes to the router, so the inner packet is on the segment in
+   the clear. Pointing the tunnel at this machine, or at an address
+   whose next hop goes nowhere, might avoid that — and might equally
+   stop the frame being emitted at all, which would stop pcap seeing
+   it. Nothing here settles it.
+
+The first question is worth answering on its own: it unblocks IPv6
+through the gateway, where nothing is leaked because the injection is
+addressed to this machine and what leaves afterwards is natively routed.
+
 ### Probing it
 
 The command's existence is the first question, and DCL answers it:

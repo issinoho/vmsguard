@@ -275,6 +275,10 @@ $ cc 'cc_flags'/OBJECT=[.build]probe_inject6.obj [.tools.probes]probe_inject6.c
 $ link/executable=[.build]probe_inject6.exe -
       [.build]probe_inject6.obj
 $ if $severity .ne. 1 then goto linkfail
+$ cc 'cc_flags'/OBJECT=[.build]probe_encap.obj [.tools.probes]probe_encap.c
+$ link/executable=[.build]probe_encap.exe -
+      [.build]probe_encap.obj,[.build]ethip.obj,[.build]rawinject.obj
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ pcap_image = ""
 $ if f$search("SYS$LIBRARY:TCPIP$LIBPCAP_SHR.EXE") .nes. "" then -
@@ -320,6 +324,8 @@ $ say "  $ pinj := $sys$disk:[.build]probe_inject.exe"
 $ say "  $ pinj --src <ip> --dst <ip>      raw-socket injection"
 $ say "  $ pinj6 := $sys$disk:[.build]probe_inject6.exe"
 $ say "  $ pinj6 --src <ipv6> --dst <ipv6>  IPv6 injection: can we forge a source?"
+$ say "  $ penc := $sys$disk:[.build]probe_encap.exe"
+$ say "  $ penc --tunnel-remote .. --tunnel-local .. --inner-src .."
 $ say ""
 $ say "  $ spike := $sys$disk:[.build]slip_spike.exe"
 $ say "  $ spike --raw                     SLIP/PPP over-pty spike"
