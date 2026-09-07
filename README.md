@@ -15,13 +15,17 @@ module and against a commercial VPN provider over the public internet.
 
 | | |
 | --- | --- |
-| Protocol core | 93 self-tests pass natively on OpenVMS |
+| Protocol core | 113 self-tests pass natively on OpenVMS |
 | Handshake and transport | Wire-compatible with upstream WireGuard |
 | Rekeying | Verified against real WireGuard |
 | Replay window | 64-bit sliding window, RFC-style |
+| Cookies (`mac2`) | Full mechanism, incl. XChaCha20-Poly1305 |
 | Source NAT | TCP, UDP and ICMP echo, with connection tracking |
+| Fragmented datagrams | Translated, both directions |
 | Path MTU | ICMP fragmentation-needed, RFC 1191 |
 | PersistentKeepalive | Verified: fires on an idle tunnel |
+| Roaming | Follows the peer, on authenticated packets only |
+| Provider configs | Reads a `wg-quick` `.conf` directly |
 | Gateway | Forwards a subnet through the tunnel, end to end |
 | Key tooling | `genkey`/`pubkey` agree with `wg(8)` on 100/100 keys |
 
@@ -49,8 +53,8 @@ It also connects to a **commercial VPN provider** over the public
 internet. Pointed at a TorGuard endpoint, it completes a handshake and
 gets an ICMP echo answered by their DNS server through the tunnel — a
 third independent WireGuard implementation, and the first test over a
-real internet path. See [`docs/vpn-provider.md`](docs/vpn-provider.md)
-for what would still be needed to use a provider config in earnest.
+real internet path. Their `.conf` file is read directly. See
+[`docs/vpn-provider.md`](docs/vpn-provider.md).
 
 ### Gateway
 
@@ -89,13 +93,19 @@ never ours, so there is no plaintext original to suppress.
 
 ### Remaining gaps
 
-- **Fragmented traffic does not pass.** NAT refuses non-first fragments,
-  which carry no port to demultiplex on, so a fragmented datagram never
-  reassembles at the far end. Affects fragmented UDP and ICMP; TCP is
-  unaffected because it sets DF and adapts to the ICMP
-  fragmentation-needed instead.
-- **No provider config file parsing.** Everything is command-line
-  arguments. See [`docs/vpn-provider.md`](docs/vpn-provider.md).
+Nothing known blocks ordinary use of the gateway. The nearest things:
+
+- **The NAT table is a linear scan**, 2048 entries, walked for every
+  outbound packet. Cheap next to encrypting that same packet, but it is
+  the first thing to index if the gateway is pushed hard.
+- **Datagrams are passed through, not reassembled.** Later fragments
+  inherit their first fragment's mapping, and inbound ones that arrive
+  early are held until it does. Nothing puts the pieces back together,
+  and for a forwarder nothing needs to.
+- **ICMP unreachables from the local stack** cannot be suppressed —
+  there is no packet filter on the platform that drops by rule. The
+  gateway detects and reports them instead; the fix is `TCPIP SET
+  PROTOCOL IP /NOFORWARD` on the OpenVMS box.
 
 ---
 
@@ -104,9 +114,10 @@ never ours, so there is no plaintext original to suppress.
 ### Linux
 
 ```sh
-make          # protocol core, tools, tests
-make test     # 233 checks across six binaries
-make loopback # end-to-end self-test over real UDP
+make          # protocol core, tools, tests, and runs the gateway
+make test     # 375 checks across eight binaries
+make loopback # end-to-end self-test over real UDP: handshake,
+              # cookie challenge, roaming and data path
 ```
 
 Needs OpenSSL headers. Builds with `-std=c99 -pedantic -Wall -Wextra`
