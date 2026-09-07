@@ -20,9 +20,18 @@ $!---------------------------------------------------------------------
 $! Configuration — check these first
 $!---------------------------------------------------------------------
 $!
-$! SSL3 is OpenSSL 3.0.x (the LTS branch); SSL31 is 3.1.x.
+$! SSL3 is OpenSSL 3.0.x (the LTS branch); SSL31 is 3.1.x. SSL111 and
+$! SSL1 are 1.1.1, which is what an OpenVMS Itanium system is likely to
+$! have instead -- wg_crypto.c compiles against either, selecting the
+$! pre-3.0 entry points automatically, so the older image is a fallback
+$! rather than a failure.
 $!
-$ ssl_include = "SSL3$INCLUDE"
+$! The include logical is chosen to match whichever image is found, so
+$! that headers and shareable image cannot come from different OpenSSL
+$! versions. Getting that wrong is not a link error: it compiles against
+$! one ABI and calls another.
+$!
+$ ssl_include = ""
 $!
 $! The crypto shareable image is located rather than assumed. Naming it
 $! bare as "SSL3$LIBCRYPTO_SHR" makes the linker look in the current
@@ -44,15 +53,26 @@ $! the other value rather than linking the mismatched one.
 $!
 $ pointer_size = "32"
 $!
+$! Newest first: 3.x is preferred where it exists, and 1.1.1 is taken
+$! only when it does not.
+$!
 $ if pointer_size .eqs. "32"
 $ then
 $     ssl_candidates = "SYS$LIBRARY:SSL3$LIBCRYPTO_SHR32," + -
                        "SYS$SHARE:SSL3$LIBCRYPTO_SHR32," + -
-                       "SYS$LIBRARY:SSL31$LIBCRYPTO_SHR32"
+                       "SYS$LIBRARY:SSL31$LIBCRYPTO_SHR32," + -
+                       "SYS$LIBRARY:SSL111$LIBCRYPTO_SHR32," + -
+                       "SYS$SHARE:SSL111$LIBCRYPTO_SHR32," + -
+                       "SYS$LIBRARY:SSL1$LIBCRYPTO_SHR32," + -
+                       "SYS$SHARE:SSL1$LIBCRYPTO_SHR32"
 $ else
 $     ssl_candidates = "SYS$LIBRARY:SSL3$LIBCRYPTO_SHR," + -
                        "SYS$SHARE:SSL3$LIBCRYPTO_SHR," + -
-                       "SYS$LIBRARY:SSL31$LIBCRYPTO_SHR"
+                       "SYS$LIBRARY:SSL31$LIBCRYPTO_SHR," + -
+                       "SYS$LIBRARY:SSL111$LIBCRYPTO_SHR," + -
+                       "SYS$SHARE:SSL111$LIBCRYPTO_SHR," + -
+                       "SYS$LIBRARY:SSL1$LIBCRYPTO_SHR," + -
+                       "SYS$SHARE:SSL1$LIBCRYPTO_SHR"
 $ endif
 $!
 $ ssl_library = ""
@@ -63,6 +83,16 @@ $   if name .eqs. "," then goto ssl_done
 $   if f$search(name + ".EXE") .nes. ""
 $   then
 $       ssl_library = name
+$!      Take the include logical from the same family as the image, so
+$!      headers and shareable image cannot disagree about the version.
+$       if f$locate("SSL31$", name) .lt. f$length(name) then -
+            ssl_include = "SSL31$INCLUDE"
+$       if f$locate("SSL3$", name) .lt. f$length(name) then -
+            ssl_include = "SSL3$INCLUDE"
+$       if f$locate("SSL111$", name) .lt. f$length(name) then -
+            ssl_include = "SSL111$INCLUDE"
+$       if f$locate("SSL1$", name) .lt. f$length(name) then -
+            ssl_include = "SSL1$INCLUDE"
 $       goto ssl_done
 $   endif
 $   i = i + 1
@@ -84,6 +114,7 @@ $     say "builds cleanly and then crashes inside OpenSSL."
 $     exit 2
 $ endif
 $ say "using OpenSSL image: ''ssl_library'"
+$ say "        and headers: ''ssl_include'"
 $!
 $! _SOCKADDR_LEN selects the BSD 4.4 socket structures, which is what
 $! provides sockaddr_in6 and sockaddr_storage. Section 1.4.1 of the

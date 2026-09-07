@@ -11,6 +11,52 @@
 #include "blake2s.h"
 #include "wg_crypto.h"
 
+/*
+ * OpenSSL 3.0 replaced the way an algorithm is named. EVP_CIPHER_fetch,
+ * EVP_PKEY_CTX_new_from_name and EVP_PKEY_generate are all 3.0 and
+ * later; before that the same primitives were reached through
+ * EVP_chacha20_poly1305, EVP_PKEY_CTX_new_id and EVP_PKEY_keygen.
+ *
+ * This matters for OpenVMS on Itanium, where the shipped OpenSSL is
+ * older than the SSL3$ images the x86-64 build links against. Both sets
+ * of entry points exist in 3.x -- the older ones are current API, not
+ * deprecated -- so the legacy path can be forced on here with
+ * -DVMSGUARD_LEGACY_OPENSSL and put through the whole test suite,
+ * rather than being written blind and first exercised on hardware that
+ * is expensive to reach.
+ *
+ * The fetched cipher is reference-counted and must be freed; the
+ * returned-by-value one must not be. wg_cipher_release hides that
+ * difference so the call sites do not have to know which they have.
+ */
+#if defined(VMSGUARD_LEGACY_OPENSSL) || OPENSSL_VERSION_NUMBER < 0x30000000L
+#define WG_LEGACY_OPENSSL 1
+#endif
+
+#ifdef WG_LEGACY_OPENSSL
+typedef const EVP_CIPHER wg_cipher_t;
+#else
+typedef EVP_CIPHER wg_cipher_t;
+#endif
+
+static wg_cipher_t *wg_cipher_chachapoly(void)
+{
+#ifdef WG_LEGACY_OPENSSL
+    return EVP_chacha20_poly1305();
+#else
+    return EVP_CIPHER_fetch(NULL, "ChaCha20-Poly1305", NULL);
+#endif
+}
+
+static void wg_cipher_release(wg_cipher_t *ciph)
+{
+#ifdef WG_LEGACY_OPENSSL
+    (void) ciph;
+#else
+    EVP_CIPHER_free(ciph);
+#endif
+}
+
 /* ---- hashing -------------------------------------------------------- */
 
 void wg_hash(uint8_t out[WG_HASH_LEN], const uint8_t *in, size_t inlen)
@@ -121,11 +167,22 @@ int wg_dh_generate(uint8_t sk[WG_KEY_LEN], uint8_t pk[WG_KEY_LEN])
     size_t len;
     int rc = -1;
 
+#ifdef WG_LEGACY_OPENSSL
+    ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_X25519, NULL);
+#else
     ctx = EVP_PKEY_CTX_new_from_name(NULL, "X25519", NULL);
+#endif
     if (ctx == NULL)
         goto out;
-    if (EVP_PKEY_keygen_init(ctx) <= 0 || EVP_PKEY_generate(ctx, &key) <= 0)
+    if (EVP_PKEY_keygen_init(ctx) <= 0)
         goto out;
+#ifdef WG_LEGACY_OPENSSL
+    if (EVP_PKEY_keygen(ctx, &key) <= 0)
+        goto out;
+#else
+    if (EVP_PKEY_generate(ctx, &key) <= 0)
+        goto out;
+#endif
 
     len = WG_KEY_LEN;
     if (EVP_PKEY_get_raw_private_key(key, sk, &len) <= 0 || len != WG_KEY_LEN)
@@ -299,7 +356,7 @@ static int xaead(uint8_t *out, const uint8_t key[WG_KEY_LEN],
                  const uint8_t *in, size_t inlen,
                  const uint8_t *ad, size_t adlen, int enc)
 {
-    EVP_CIPHER *ciph = NULL;
+    wg_cipher_t *ciph = NULL;
     EVP_CIPHER_CTX *ctx = NULL;
     uint8_t subkey[32];
     uint8_t n12[12];
@@ -316,7 +373,7 @@ static int xaead(uint8_t *out, const uint8_t key[WG_KEY_LEN],
     memset(n12, 0, 4);                  /* the IETF construction's zeros */
     memcpy(n12 + 4, nonce + 16, 8);
 
-    ciph = EVP_CIPHER_fetch(NULL, "ChaCha20-Poly1305", NULL);
+    ciph = wg_cipher_chachapoly();
     if (ciph == NULL)
         goto out;
     ctx = EVP_CIPHER_CTX_new();
@@ -357,7 +414,7 @@ static int xaead(uint8_t *out, const uint8_t key[WG_KEY_LEN],
     rc = 0;
 out:
     EVP_CIPHER_CTX_free(ctx);
-    EVP_CIPHER_free(ciph);
+    wg_cipher_release(ciph);
     wg_zero(subkey, sizeof subkey);
     wg_zero(n12, sizeof n12);
     return rc;
@@ -385,7 +442,7 @@ int wg_aead_encrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
                     uint64_t counter, const uint8_t *pt, size_t ptlen,
                     const uint8_t *ad, size_t adlen)
 {
-    EVP_CIPHER *ciph = NULL;
+    wg_cipher_t *ciph = NULL;
     EVP_CIPHER_CTX *ctx = NULL;
     uint8_t nonce[12];
     int len = 0;
@@ -393,7 +450,7 @@ int wg_aead_encrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
 
     wg_nonce(nonce, counter);
 
-    ciph = EVP_CIPHER_fetch(NULL, "ChaCha20-Poly1305", NULL);
+    ciph = wg_cipher_chachapoly();
     if (ciph == NULL)
         goto out;
     ctx = EVP_CIPHER_CTX_new();
@@ -417,7 +474,7 @@ int wg_aead_encrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
     rc = 0;
 out:
     EVP_CIPHER_CTX_free(ctx);
-    EVP_CIPHER_free(ciph);
+    wg_cipher_release(ciph);
     wg_zero(nonce, sizeof nonce);
     return rc;
 }
@@ -426,7 +483,7 @@ int wg_aead_decrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
                     uint64_t counter, const uint8_t *ct, size_t ctlen,
                     const uint8_t *ad, size_t adlen)
 {
-    EVP_CIPHER *ciph = NULL;
+    wg_cipher_t *ciph = NULL;
     EVP_CIPHER_CTX *ctx = NULL;
     uint8_t nonce[12];
     uint8_t tag[WG_TAG_LEN];
@@ -441,7 +498,7 @@ int wg_aead_decrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
     wg_nonce(nonce, counter);
     memcpy(tag, ct + ptlen, WG_TAG_LEN);
 
-    ciph = EVP_CIPHER_fetch(NULL, "ChaCha20-Poly1305", NULL);
+    ciph = wg_cipher_chachapoly();
     if (ciph == NULL)
         goto out;
     ctx = EVP_CIPHER_CTX_new();
@@ -464,7 +521,7 @@ int wg_aead_decrypt(uint8_t *out, const uint8_t key[WG_KEY_LEN],
     rc = 0;
 out:
     EVP_CIPHER_CTX_free(ctx);
-    EVP_CIPHER_free(ciph);
+    wg_cipher_release(ciph);
     wg_zero(nonce, sizeof nonce);
     wg_zero(tag, sizeof tag);
     return rc;
