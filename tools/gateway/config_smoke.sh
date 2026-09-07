@@ -143,6 +143,41 @@ want "172.16.0.0 mask 255.240.0.0" \
 want "source NAT works with one peer only" \
      "source NAT with several peers is refused, not guessed at"
 
+# ---------------------------------------------------------------------
+# Dual stack. An IPv6 AllowedIPs entry has to be recognised, and the
+# gateway has to say plainly whether it can deliver inbound IPv6 at all
+# -- there is nowhere to put a decrypted IPv6 packet without a
+# configured tunnel to hand it to.
+# ---------------------------------------------------------------------
+
+"$BUILD/vmsguard-gateway-stub" \
+    --config tests/data/dualstack.conf \
+    --interface ie0 \
+    --client 192.168.0.0/24 --client fd00:9999::/64 \
+    --encap-local 192.168.0.80 --encap-remote 192.0.2.1 > "$out" 2>&1 || true
+
+want "fd00:1234::/48"                    "an IPv6 AllowedIPs entry is read"
+want "ipv6 return    : a configured tunnel, 192.0.2.1 -> 192.168.0.80" \
+     "and the tunnel it would be delivered through is named"
+
+"$BUILD/vmsguard-gateway-stub" \
+    --config tests/data/dualstack.conf \
+    --interface ie0 --client 192.168.0.0/24 > "$out" 2>&1 || true
+
+want "ipv6 return    : NOTHING" \
+     "without a tunnel it says so at startup, not later by silence"
+
+# An IPv6 --client must be accepted rather than read as bad CIDR.
+"$BUILD/vmsguard-gateway-stub" \
+    --config tests/data/dualstack.conf --interface ie0 \
+    --client fd00:9999::/64 > "$out" 2>&1 || true
+if grep -q "is not valid CIDR" "$out"; then
+    echo "  FAIL  an IPv6 --client was rejected"
+    fail=1
+else
+    echo "  ok    --client takes IPv6 as readily as IPv4"
+fi
+
 if [ "$fail" -ne 0 ]; then
     echo
     echo "--- output ---"

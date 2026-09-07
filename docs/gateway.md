@@ -480,6 +480,70 @@ read timeout of 50 ms and never approach a handshake timeout:
 14:10:18  up, 11325 captured / ... 54 rekeys, worst pass 51ms
 ```
 
+### IPv6
+
+IPv6 traverses the gateway, by a route this platform makes possible and
+most do not.
+
+**Outbound needs nothing special.** An IPv6 frame from the client is
+captured by pcap like any other, matched against the peer's `AllowedIPs`
+by longest prefix, and encrypted. The WireGuard layer never cared which
+family it was carrying.
+
+**Inbound is the interesting half.** A decrypted IPv6 packet cannot be
+put on the LAN directly: the stack will not let a program originate a
+packet with a source address it does not own, and OpenVMS has no
+`IPV6_HDRINCL` to ask with. So the packet is *given* to the stack
+instead — wrapped in an IPv4 header, protocol 41, addressed to this
+machine from the far end of a configured tunnel. The stack matches it to
+that tunnel, unwraps it, and routes the IPv6 inside natively.
+
+Nothing is forged: the injection is addressed to us, and what leaves
+afterwards is the stack's own routing. See
+`docs/research/driver-feasibility.md`, where the mechanism was proven
+before any of this was written.
+
+Set the tunnel up first, and tell the gateway its two ends:
+
+```
+$ iptunnel create 192.0.2.1
+$ ifconfig "IT0" ipv6 up
+
+$ GW --config ... --encap-local 192.168.0.80 --encap-remote 192.0.2.1
+```
+
+The startup header says whether it can deliver:
+
+```
+  allowed-ips    : 10.9.0.0 mask 255.255.255.0
+                 : fd00:1234::/48
+  ipv6 return    : a configured tunnel, 192.0.2.1 -> 192.168.0.80
+```
+
+and says so just as plainly when it cannot, rather than leaving it to be
+discovered as traffic that goes out and never comes back:
+
+```
+  ipv6 return    : NOTHING. --encap-local and --encap-remote were not
+                   given, so inbound IPv6 will be dropped.
+```
+
+`--client` and `--exclude` take IPv6 prefixes as readily as IPv4, so a
+dual-stack client is two entries rather than a different flag.
+
+**No NAT.** There is no NAT66 and a site-to-site link does not want one,
+so IPv6 is forwarded with its addresses intact. A provider that assigns
+a single IPv6 address rather than a prefix would therefore reject it —
+`--tunnel-address` is IPv4 only.
+
+**Known gap: no ICMPv6 Packet Too Big.** An IPv6 router may not
+fragment, so a packet larger than the tunnel MTU has to be refused and
+the sender told. The refusal happens and is counted; the telling does
+not. Large IPv6 flows will stall where large IPv4 ones adapt, which is
+the same failure the IPv4 side had before `icmp_frag_needed` was
+written. Under `--verbose` it says so by name rather than dropping in
+silence.
+
 ### Several peers
 
 A config file may hold more than one `[Peer]`. Each is a separate

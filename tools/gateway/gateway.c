@@ -49,6 +49,7 @@
 #  pragma names restore
 #endif
 
+#include "encap.h"
 #include "ethip.h"
 #include "icmp.h"
 #include "nat.h"
@@ -92,6 +93,9 @@ struct stats {
     unsigned long drop_malformed;
     unsigned long drop_oversize;
     unsigned long drop_not_allowed;
+    unsigned long drop_no_encap;
+    unsigned long v6_captured;
+    unsigned long v6_injected;
 
     /*
      * The longest a single pass of the forwarding loop has taken.
@@ -153,6 +157,8 @@ struct tunnel {
     struct wg_client   client;
     struct ipv4_subnet allowed[MAX_CLIENTS];
     int                nallowed;
+    struct ipv6_subnet allowed6[MAX_CLIENTS];
+    int                nallowed6;
     char               label[80];     /* the endpoint, for the log */
 };
 
@@ -188,6 +194,26 @@ static uint64_t         started_ms;
  * handler, and with it the summary — which is the one part of a long
  * run worth keeping.
  */
+/*
+ * IPv6 forwarding, which works by a route this platform provides and
+ * most do not.
+ *
+ * A decrypted IPv6 packet cannot be put on the LAN directly: the stack
+ * will not let a program originate one with a source address it does
+ * not own, and there is no IPV6_HDRINCL to ask with. What it will do is
+ * accept an IPv4 packet addressed to itself carrying an IPv6 one
+ * inside, unwrap it, and route the contents natively -- if a configured
+ * tunnel interface exists to match it against.
+ *
+ * So these are that tunnel's endpoints, and without them IPv6 is simply
+ * not forwarded. Confirmed working on the target before any of this was
+ * written; see docs/research/driver-feasibility.md.
+ */
+static uint32_t encap_local;
+static uint32_t encap_remote;
+static int      encap_ready;
+static uint16_t encap_id;
+
 static const char *stop_file;
 static const char *log_file;
 static uint64_t    status_interval_ms;
@@ -386,6 +412,8 @@ static void emit_drop_causes(void)
         emit("too-big-to-translate %lu ", st.drop_oversize);
     if (st.drop_not_allowed > 0)
         emit("outside-allowedips %lu ", st.drop_not_allowed);
+    if (st.drop_no_encap > 0)
+        emit("ipv6-with-no-tunnel %lu ", st.drop_no_encap);
     emit(")");
 }
 
@@ -453,6 +481,7 @@ static int open_tunnel(const uint8_t *privkey, const uint8_t *peerkey,
                        const uint8_t *psk, const char *host, uint16_t port,
                        const struct wg_endpoint *ep, uint16_t listen_port,
                        const struct ipv4_subnet *allowed, int nallowed,
+                       const struct ipv6_subnet *allowed6, int nallowed6,
                        int keepalive_s)
 {
     struct tunnel *t;
@@ -483,6 +512,10 @@ static int open_tunnel(const uint8_t *privkey, const uint8_t *peerkey,
 
     memcpy(t->allowed, allowed, (size_t) nallowed * sizeof allowed[0]);
     t->nallowed = nallowed;
+    if (nallowed6 > 0)
+        memcpy(t->allowed6, allowed6,
+               (size_t) nallowed6 * sizeof allowed6[0]);
+    t->nallowed6 = nallowed6;
     snprintf(t->label, sizeof t->label, "%s:%u", host, (unsigned) port);
 
     ntunnels++;
@@ -524,6 +557,96 @@ static int tunnel_for(uint32_t dst)
         }
     }
     return best;
+}
+
+/* As tunnel_for, over IPv6 prefixes. */
+static int tunnel_for6(const uint8_t *dst)
+{
+    int best = -1;
+    uint8_t best_prefix = 0;
+    int i;
+
+    for (i = 0; i < ntunnels; i++) {
+        uint8_t p;
+
+        if (!ipv6_best_match(tunnels[i].allowed6, tunnels[i].nallowed6,
+                             dst, &p))
+            continue;
+        if (best < 0 || p > best_prefix) {
+            best = i;
+            best_prefix = p;
+        }
+    }
+    return best;
+}
+
+/*
+ * Outbound IPv6: filter, choose a tunnel, encrypt, send.
+ *
+ * Separate from the IPv4 path rather than merged into it. They share
+ * the shape and none of the details -- no NAT, since there is no NAT66
+ * and a site-to-site link does not want one; no fragmentation, since
+ * IPv6 routers do not fragment; and a different address type
+ * throughout. Interleaving the two would make both harder to read for
+ * the sake of a few lines.
+ */
+static void forward_outbound6(const uint8_t *ip, size_t iplen,
+                              const struct ipv6_subnet *clients6,
+                              int nclients6,
+                              const struct ipv6_subnet *excludes6,
+                              int nexcludes6, int tunnel_mtu, int verbose)
+{
+    char s6[48], d6[48];
+    int t;
+
+    /* Never tunnel to somewhere excluded, nor to multicast, which has
+       no meaning at the far end of a point-to-point tunnel. */
+    if (ipv6_dst(ip)[0] == 0xFF)
+        return;
+    if (ipv6_in_any(excludes6, nexcludes6, ipv6_dst(ip)))
+        return;
+
+    /* Only for hosts we were told to serve. An empty list means any. */
+    if (nclients6 > 0 && !ipv6_in_any(clients6, nclients6, ipv6_src(ip)))
+        return;
+
+    t = tunnel_for6(ipv6_dst(ip));
+    if (t < 0)
+        return;
+
+    st.captured++;
+    st.v6_captured++;
+
+    /*
+     * Too large for the tunnel. An IPv6 router may not fragment, so the
+     * sender has to be told -- and telling it means an ICMPv6 Packet
+     * Too Big, which is not built yet. Counted and, under --verbose,
+     * named, so that this shows as a known gap rather than as traffic
+     * that mysteriously stops.
+     */
+    if (iplen > (size_t) tunnel_mtu) {
+        st.too_big++;
+        st.dropped++;
+        if (verbose) {
+            ipv6_format(s6, sizeof s6, ipv6_src(ip));
+            emit("big %lu bytes from %s: no ICMPv6 Packet Too Big is sent"
+                 " yet\n", (unsigned long) iplen, s6);
+        }
+        return;
+    }
+
+    if (wg_client_send(&tunnels[t].client, ip, iplen) == 0) {
+        st.tunnelled++;
+        if (verbose) {
+            ipv6_format(s6, sizeof s6, ipv6_src(ip));
+            ipv6_format(d6, sizeof d6, ipv6_dst(ip));
+            emit("out %s -> %s  next-header %u  %lu bytes\n",
+                 s6, d6, (unsigned) ip[6], (unsigned long) iplen);
+        }
+    } else {
+        st.dropped++;
+        st.drop_send++;
+    }
 }
 
 /*
@@ -595,6 +718,61 @@ static void deliver_inbound(struct tunnel *t, uint8_t *plain,
     char abuf[16], bbuf[16];
 
     st.received++;
+
+    /*
+     * IPv6, which takes a different road onto the LAN. It cannot be
+     * injected as it stands -- the stack will not originate a packet
+     * from an address we do not hold -- so it is wrapped in IPv4 and
+     * addressed to this machine, which unwraps it and routes it
+     * natively. Everything the tunnel needs is in the outer header.
+     */
+    if (ipv6_looks_valid(plain, plainlen)) {
+        uint8_t wrapped[WG_MAX_PACKET];
+        char s6[48], d6[48];
+        size_t v6len = IPV6_MIN_HDR +
+                       (((size_t) plain[4] << 8) | plain[5]);
+        size_t n;
+
+        if (!encap_ready) {
+            st.dropped++;
+            st.drop_no_encap++;
+            return;
+        }
+        /* Cryptokey routing applies exactly as it does to IPv4. */
+        if (!ipv6_in_any(t->allowed6, t->nallowed6, ipv6_src(plain))) {
+            st.dropped++;
+            st.drop_not_allowed++;
+            if (verbose) {
+                ipv6_format(s6, sizeof s6, ipv6_src(plain));
+                emit("in  %s  DROPPED: source outside the peer's"
+                     " AllowedIPs\n", s6);
+            }
+            return;
+        }
+
+        n = ip4_encap(wrapped, sizeof wrapped, encap_remote, encap_local,
+                      ENCAP_PROTO_IPV6, encap_id++, plain, v6len);
+        if (n == 0 || raw_injector_send(inj, wrapped, n) != 0) {
+            st.dropped++;
+            st.drop_inject++;
+            if (verbose)
+                emit("in  IPv6 %lu bytes  DROPPED: %s\n",
+                     (unsigned long) v6len,
+                     n == 0 ? "would not encapsulate"
+                            : raw_injector_error(inj));
+            return;
+        }
+        st.injected++;
+        st.v6_injected++;
+        if (verbose) {
+            ipv6_format(s6, sizeof s6, ipv6_src(plain));
+            ipv6_format(d6, sizeof d6, ipv6_dst(plain));
+            emit("in  %s -> %s  next-header %u  %lu bytes  (via %s)\n",
+                 s6, d6, (unsigned) plain[6], (unsigned long) v6len,
+                 "the tunnel interface");
+        }
+        return;
+    }
 
     /*
      * Trust the packet's own length rather than the decrypted
@@ -883,6 +1061,13 @@ static void usage(const char *argv0)
 "                   file appears. The way to stop a detached\n"
 "                   process without deleting it, which would skip\n"
 "                   the summary. Removed once seen\n"
+"  --encap-local    this machine's end of an OpenVMS configured\n"
+"                   tunnel (iptunnel create), and\n"
+"  --encap-remote   the far end of it. Both are needed to forward\n"
+"                   IPv6: a decrypted IPv6 packet cannot be put on\n"
+"                   the LAN directly, so it is wrapped in IPv4 and\n"
+"                   handed to the stack, which unwraps and routes\n"
+"                   it. Without them IPv6 is captured and dropped\n"
 "  --psk            optional preshared key, base64\n"
 "  --listen-port    local UDP port (default: any)\n"
 "  --tunnel-mtu     largest inner packet the tunnel carries. Default\n"
@@ -1011,10 +1196,16 @@ int main(int argc, char **argv)
     uint8_t *pskp = NULL;
     struct ipv4_subnet allowed[MAX_CLIENTS];
     int nallowed = 0;
+    struct ipv6_subnet allowed6[MAX_CLIENTS];
+    int nallowed6 = 0;
     struct ipv4_subnet clients[MAX_CLIENTS];
     int nclients = 0;
     struct ipv4_subnet excludes[MAX_CLIENTS];
     int nexcludes = 0;
+    struct ipv6_subnet clients6[MAX_CLIENTS];
+    int nclients6 = 0;
+    struct ipv6_subnet excludes6[MAX_CLIENTS];
+    int nexcludes6 = 0;
     uint32_t tunnel_addr = 0, tunnel_addr_mask = 0;
     const char *endpoint_arg = NULL, *ifname = NULL, *subnet_arg = NULL;
     const char *colon;
@@ -1148,16 +1339,24 @@ int main(int argc, char **argv)
                          p0->allowed[0]);
                 subnet_arg = conf_subnet;
                 nallowed = 0;
-                for (k = 0; k < p0->n_allowed && nallowed < MAX_CLIENTS;
-                     k++) {
-                    if (ethip_parse_cidr(p0->allowed[k],
+                nallowed6 = 0;
+                for (k = 0; k < p0->n_allowed; k++) {
+                    if (nallowed < MAX_CLIENTS &&
+                        ethip_parse_cidr(p0->allowed[k],
                                          &allowed[nallowed].net,
-                                         &allowed[nallowed].mask) != 0) {
+                                         &allowed[nallowed].mask) == 0) {
+                        nallowed++;
+                    } else if (nallowed6 < MAX_CLIENTS &&
+                               ethip_parse_cidr6(p0->allowed[k],
+                                                 allowed6[nallowed6].net,
+                                                 &allowed6[nallowed6].prefix)
+                               == 0) {
+                        nallowed6++;
+                    } else {
                         emit("error: %s: AllowedIPs '%s' is not valid"
                              " CIDR\n", argv[i + 1], p0->allowed[k]);
                         return 2;
                     }
-                    nallowed++;
                 }
             }
             if (p0->keepalive > 0)
@@ -1245,26 +1444,42 @@ int main(int argc, char **argv)
                         MAX_CLIENTS);
                 return 2;
             }
-            if (ethip_parse_cidr(argv[++i], &excludes[nexcludes].net,
-                                 &excludes[nexcludes].mask) != 0) {
-                emit("error: --exclude '%s' is not valid CIDR\n",
-                        argv[i]);
+            i++;
+            if (ethip_parse_cidr(argv[i], &excludes[nexcludes].net,
+                                 &excludes[nexcludes].mask) == 0) {
+                nexcludes++;
+            } else if (nexcludes6 < MAX_CLIENTS &&
+                       ethip_parse_cidr6(argv[i], excludes6[nexcludes6].net,
+                                         &excludes6[nexcludes6].prefix)
+                       == 0) {
+                nexcludes6++;
+            } else {
+                emit("error: --exclude '%s' is not valid CIDR\n", argv[i]);
                 return 2;
             }
-            nexcludes++;
         } else if (strcmp(argv[i], "--client") == 0 && i + 1 < argc) {
             if (nclients >= MAX_CLIENTS) {
                 emit("error: at most %d --client entries\n",
                         MAX_CLIENTS);
                 return 2;
             }
-            if (ethip_parse_cidr(argv[++i], &clients[nclients].net,
-                                 &clients[nclients].mask) != 0) {
-                emit("error: --client '%s' is not valid CIDR\n",
-                        argv[i]);
+            /*
+             * IPv4 or IPv6, decided by which parser accepts it, so a
+             * dual-stack client is two --client entries and not a
+             * different flag.
+             */
+            i++;
+            if (ethip_parse_cidr(argv[i], &clients[nclients].net,
+                                 &clients[nclients].mask) == 0) {
+                nclients++;
+            } else if (nclients6 < MAX_CLIENTS &&
+                       ethip_parse_cidr6(argv[i], clients6[nclients6].net,
+                                         &clients6[nclients6].prefix) == 0) {
+                nclients6++;
+            } else {
+                emit("error: --client '%s' is not valid CIDR\n", argv[i]);
                 return 2;
             }
-            nclients++;
         } else if (strcmp(argv[i], "--listen-port") == 0 && i + 1 < argc) {
             listen_port = (uint16_t) atoi(argv[++i]);
         } else if (strcmp(argv[i], "--tunnel-mtu") == 0 && i + 1 < argc) {
@@ -1282,6 +1497,20 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--status") == 0 && i + 1 < argc) {
             status_interval_ms = (uint64_t) atoi(argv[++i]) * 1000;
             status_given = 1;
+        } else if (strcmp(argv[i], "--encap-local") == 0 && i + 1 < argc) {
+            uint32_t m;
+            if (ethip_parse_cidr(argv[++i], &encap_local, &m) != 0 ||
+                m != 0xFFFFFFFFUL) {
+                emit("error: --encap-local must be a plain address\n");
+                return 2;
+            }
+        } else if (strcmp(argv[i], "--encap-remote") == 0 && i + 1 < argc) {
+            uint32_t m;
+            if (ethip_parse_cidr(argv[++i], &encap_remote, &m) != 0 ||
+                m != 0xFFFFFFFFUL) {
+                emit("error: --encap-remote must be a plain address\n");
+                return 2;
+            }
         } else if (strcmp(argv[i], "--verbose") == 0) {
             verbose = 1;
         } else {
@@ -1303,12 +1532,16 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    if (nallowed == 0 &&
-        ethip_parse_cidr(subnet_arg, &allowed[0].net,
-                         &allowed[0].mask) == 0)
-        nallowed = 1;
+    if (nallowed == 0 && nallowed6 == 0 && subnet_arg != NULL) {
+        if (ethip_parse_cidr(subnet_arg, &allowed[0].net,
+                             &allowed[0].mask) == 0)
+            nallowed = 1;
+        else if (ethip_parse_cidr6(subnet_arg, allowed6[0].net,
+                                   &allowed6[0].prefix) == 0)
+            nallowed6 = 1;
+    }
 
-    if (nallowed == 0) {
+    if (nallowed == 0 && nallowed6 == 0) {
         emit("error: --tunnel-subnet '%s' is not valid CIDR\n",
                 subnet_arg);
         return 2;
@@ -1325,7 +1558,8 @@ int main(int argc, char **argv)
      * for. /8 is the cut-off: anything broader is almost certainly a
      * full tunnel, where this matters most.
      */
-    if (allowed[0].mask < 0xFF000000UL && nclients == 0) {
+    if (nallowed > 0 && allowed[0].mask < 0xFF000000UL &&
+        nclients == 0 && nclients6 == 0) {
         emit("error: --tunnel-subnet %s is wider than /8, so --client is\n"
             "       required. Capture is promiscuous, and without a source\n"
             "       filter this would tunnel other machines' traffic.\n",
@@ -1342,7 +1576,8 @@ int main(int argc, char **argv)
      * local subnet; there is no equivalent here, so it has to be said
      * explicitly.
      */
-    if (allowed[0].mask < 0xFF000000UL && nexcludes == 0) {
+    if (nallowed > 0 && allowed[0].mask < 0xFF000000UL &&
+        nexcludes == 0 && nexcludes6 == 0) {
         emit("error: --tunnel-subnet %s is wider than /8, so --exclude is\n"
             "       required. Without it, traffic to local destinations is\n"
             "       tunnelled too — including conversations with this\n"
@@ -1378,16 +1613,18 @@ int main(int argc, char **argv)
      * exactly as the config file gave them.
      */
     if (open_tunnel(privkey, peerkey, pskp, host, peer_port, &endpoint,
-                    listen_port, allowed, nallowed, keepalive_s) != 0)
+                    listen_port, allowed, nallowed, allowed6, nallowed6,
+                    keepalive_s) != 0)
         return 1;
 
     for (i = 1; i < n_conf_peers; i++) {
         const struct wg_conf_peer *pr = &conf_peers[i];
         struct ipv4_subnet pa[MAX_CLIENTS];
+        struct ipv6_subnet pa6[MAX_CLIENTS];
         struct wg_endpoint pe;
         char phost[128];
         uint16_t pport;
-        int npa = 0, k;
+        int npa = 0, npa6 = 0, k;
         char *pc;
 
         if (!pr->have_public_key || !pr->have_endpoint) {
@@ -1395,16 +1632,22 @@ int main(int argc, char **argv)
                  pr->have_public_key ? "Endpoint" : "PublicKey");
             return 2;
         }
-        for (k = 0; k < pr->n_allowed && npa < MAX_CLIENTS; k++) {
-            if (ethip_parse_cidr(pr->allowed[k], &pa[npa].net,
-                                 &pa[npa].mask) != 0) {
+        for (k = 0; k < pr->n_allowed; k++) {
+            if (npa < MAX_CLIENTS &&
+                ethip_parse_cidr(pr->allowed[k], &pa[npa].net,
+                                 &pa[npa].mask) == 0) {
+                npa++;
+            } else if (npa6 < MAX_CLIENTS &&
+                       ethip_parse_cidr6(pr->allowed[k], pa6[npa6].net,
+                                         &pa6[npa6].prefix) == 0) {
+                npa6++;
+            } else {
                 emit("error: peer %d: AllowedIPs '%s' is not valid CIDR\n",
                      i + 1, pr->allowed[k]);
                 return 2;
             }
-            npa++;
         }
-        if (npa == 0) {
+        if (npa == 0 && npa6 == 0) {
             emit("error: peer %d has no AllowedIPs, so nothing would ever"
                  " be sent to it\n", i + 1);
             return 2;
@@ -1430,7 +1673,7 @@ int main(int argc, char **argv)
          */
         if (open_tunnel(privkey, pr->public_key,
                         pr->have_preshared_key ? pr->preshared_key : NULL,
-                        phost, pport, &pe, 0, pa, npa,
+                        phost, pport, &pe, 0, pa, npa, pa6, npa6,
                         pr->keepalive) != 0)
             return 1;
     }
@@ -1456,8 +1699,47 @@ int main(int argc, char **argv)
                      (k == 0 && ntunnels > 1) ? "  via " : "",
                      (k == 0 && ntunnels > 1) ? tunnels[t].label : "");
             }
+            for (k = 0; k < tunnels[t].nallowed6; k++) {
+                int first = (k == 0 && tunnels[t].nallowed == 0);
+                char n6[48];
+
+                ipv6_format(n6, sizeof n6, tunnels[t].allowed6[k].net);
+                emit("  %-15s: %s/%u%s%s\n",
+                     first ? "allowed-ips" : "",
+                     n6, (unsigned) tunnels[t].allowed6[k].prefix,
+                     (first && ntunnels > 1) ? "  via " : "",
+                     (first && ntunnels > 1) ? tunnels[t].label : "");
+            }
         }
     }
+    encap_ready = (encap_local != 0 && encap_remote != 0);
+    {
+        int any6 = 0, k;
+
+        for (k = 0; k < ntunnels; k++)
+            any6 += tunnels[k].nallowed6;
+
+        if (encap_ready) {
+            ipv4_format(abuf, sizeof abuf, encap_remote);
+            ipv4_format(bbuf, sizeof bbuf, encap_local);
+            emit("  ipv6 return    : a configured tunnel, %s -> %s\n",
+                 abuf, bbuf);
+        } else if (any6 > 0) {
+            /*
+             * AllowedIPs names IPv6 prefixes but there is nowhere to
+             * put a decrypted IPv6 packet. Said at startup rather than
+             * left to be discovered as traffic that goes out and never
+             * comes back.
+             */
+            emit("  ipv6 return    : NOTHING. --encap-local and"
+                 " --encap-remote were not\n"
+                 "                   given, so inbound IPv6 will be"
+                 " dropped. Create a\n"
+                 "                   tunnel with iptunnel and name its"
+                 " two ends.\n");
+        }
+    }
+
     if (use_nat) {
         ipv4_format(abuf, sizeof abuf, tunnel_addr);
         emit("  source NAT to  : %s\n", abuf);
@@ -1665,6 +1947,24 @@ int main(int argc, char **argv)
             size_t iplen = 0;
 
             ip = ethip_ipv4((const uint8_t *) frame, hdr->caplen, &iplen);
+
+            /*
+             * IPv6 needs no tunnel interface on the way out: a frame
+             * from the client is captured like any other, and what
+             * leaves is a WireGuard datagram. Only the return direction
+             * needs the stack's help.
+             */
+            if (ip == NULL) {
+                const uint8_t *ip6;
+                size_t v6len = 0;
+
+                ip6 = ethip_ipv6((const uint8_t *) frame, hdr->caplen,
+                                 &v6len);
+                if (ip6 != NULL)
+                    forward_outbound6(ip6, v6len, clients6, nclients6,
+                                      excludes6, nexcludes6, tunnel_mtu,
+                                      verbose);
+            }
 
             /*
              * Before any filtering: the OpenVMS stack sees these same

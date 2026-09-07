@@ -306,7 +306,7 @@ $     cc 'cc_flags'/OBJECT=[.build]gateway.obj [.tools.gateway]gateway.c
 $     link/executable=[.build]vmsguard_gateway.exe -
           [.build]gateway.obj,'proto_objs','plat_objs','client_objs',-
           [.build]ethip.obj,[.build]rawinject.obj,[.build]nat.obj,-
-          [.build]icmp.obj,-
+          [.build]icmp.obj,[.build]encap.obj,-
           [.build]vmsguard.opt/OPTIONS,[.build]pcap.opt/OPTIONS
 $ endif
 $!
