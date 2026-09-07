@@ -92,6 +92,15 @@ ALL : [.build]vmsguard_key.exe, [.build]vmsguard_interop.exe, -
 [.build]encap.obj : [.src.tun]encap.c, [.src.tun]encap.h
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
 
+! ethip is linked into interop and responder, which parse the IPv4
+! headers they ping with. The rule was missed when those tools gained
+! the dependency, so MMS had a target it did not know how to build
+! while build_vms.com carried on working -- the exact split the
+! three-build-files rule exists to catch.
+
+[.build]ethip.obj : [.src.tun]ethip.c, [.src.tun]ethip.h
+    $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
+
 ! ==== platform and client ====
 !
 ! The POSIX implementation is used on purpose: VSI TCP/IP Services

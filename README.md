@@ -86,14 +86,28 @@ and a TLS session all confirmed. See
 ### What it deliberately does not do
 
 There is **no transparent tunnel for traffic originating on the OpenVMS
-box itself**. That needs a TUN device to claim outbound packets before
-the stack sends them, and OpenVMS has nothing that can. SLIP and PPP
-over a pseudo-terminal were both investigated in depth and ruled out;
+box itself** — but the reason is narrower than it was. SLIP and PPP over
+a pseudo-terminal were both investigated in depth and ruled out;
 [`docs/research/slip-tunnel.md`](docs/research/slip-tunnel.md) records
 why, so nobody repeats the work.
 
-The gateway shape sidesteps the problem entirely: forwarded traffic was
-never ours, so there is no plaintext original to suppress.
+What is *not* missing is a virtual interface. `iptunnel create` makes a
+real one, `ITn`, and routing traffic at it makes the stack encapsulate
+that traffic rather than send it in the clear — which is the suppression
+half of the problem, solved. The stack will also accept a packet
+injected back into `ITn` and process it as though it arrived from
+elsewhere, which is how IPv6 now returns through the gateway.
+
+What blocks the client shape is the remaining half: pcap does not list
+`ITn`, only `IE0` and `LO0`, so there is no way to read what the tunnel
+emits. Capturing on `IE0` instead would work, but the encapsulated frame
+crosses the segment carrying the inner packet unencrypted, and a tunnel
+cannot terminate locally to avoid that — `127.0.0.1` and the machine's
+own address are both refused. See
+[`docs/research/driver-feasibility.md`](docs/research/driver-feasibility.md).
+
+The gateway shape sidesteps all of it: forwarded traffic was never ours,
+so there is no plaintext original to suppress.
 
 ### Remaining gaps
 
@@ -140,9 +154,11 @@ $ set default [.vmsguard]
 $ @build_vms TEST
 ```
 
-`build_vms.com` uses only `CC` and `LINK`. There is also a `descrip.mms`
-for MMS, checked against the manual but less exercised. Full detail in
-[`docs/building-vms.md`](docs/building-vms.md).
+`build_vms.com` uses only `CC` and `LINK`, and is the exercised path —
+every run on the target has gone through it. There is also a
+`descrip.mms` for MMS, which builds the protocol core, the tools and the
+protocol tests but *not* the gateway, since that needs pcap. Full detail
+in [`docs/building-vms.md`](docs/building-vms.md).
 
 ---
 
@@ -157,7 +173,7 @@ for MMS, checked against the manual but less exercised. Full detail in
                                      |                  |
   src/platform/            wg_platform (sockets, clock)  │
                                                          |
-  src/tun/                        ethip, rawinject, slip, hdlc
+  src/tun/           ethip, nat, icmp, encap, rawinject, slip, hdlc
 ```
 
 **`src/proto/`** is the protocol: Noise_IKpsk2, transport encryption,
@@ -170,9 +186,12 @@ types — no `sockaddr`, no fd, no `timeval` — so a `$QIO`-based
 implementation would have been equally possible. In the event none was
 needed.
 
-**`src/tun/`** holds packet plumbing: Ethernet/IPv4 inspection, raw
-injection, and SLIP and HDLC framing left over from the virtual-interface
-investigation.
+**`src/tun/`** holds packet plumbing: Ethernet, IPv4 and IPv6
+inspection, source NAT with connection tracking, ICMP generation,
+IP-in-IP encapsulation, raw injection, and the SLIP and HDLC framing left
+over from the virtual-interface investigation. It is where anything
+testable goes, so that packet handling is exercised here rather than only
+on OpenVMS.
 
 ### Two decisions that paid off
 
@@ -275,15 +294,25 @@ serves Linux and OpenVMS, with a single `#ifdef __VMS` for the clock.
 Also confirmed available: `SOCK_RAW` with SYSPRV, `IP_HDRINCL`,
 `SIOCADDRT`/`SIOCDELRT` for programmatic routing, and the full interface
 ioctls. Absent: TUN/TAP, BSD routing sockets, any packet-filter facility
-that can drop by rule.
+that can drop by rule, and `IPV6_HDRINCL`.
+
+Present, and easy to miss: **configured tunnels**. `iptunnel create`
+builds a virtual interface `ITn` that encapsulates per RFC 2003, and the
+stack decapsulates a packet injected into it. That is not a TUN device,
+but for handing the stack a packet it does the same job — and it is what
+makes IPv6 forwarding work without forging anything.
 
 ---
 
 ## Testing
 
 ```sh
-make test       # 155 checks: protocol, SLIP framing, HDLC framing, IP inspection
-make loopback   # handshake, keepalive and ICMP round trip over real UDP
+make test       # 469 checks: protocol, framing, IPv4/IPv6 inspection,
+                #   NAT, ICMP, encapsulation and config parsing
+make loopback   # four scenarios over real UDP: cookie challenge, roaming,
+                #   a peer-initiated handshake and its replay, a lost
+                #   handshake response, a peer that will not rekey, and a
+                #   peer sourcing outside its AllowedIPs
 ```
 
 Against real WireGuard — the test that actually establishes wire
@@ -309,13 +338,15 @@ would have surfaced from one side alone.
 src/proto/      protocol core — Noise, transport, BLAKE2s, keys
 src/platform/   the platform interface, and its POSIX/VMS implementation
 src/client/     handshake and transport over a platform socket
-src/tun/        packet plumbing — Ethernet/IPv4, raw injection, SLIP, HDLC
+src/tun/        packet plumbing — Ethernet/IPv4/IPv6, NAT, ICMP,
+                encapsulation, raw injection, SLIP, HDLC
 tools/keys/     vmsguard-key: genkey, pubkey, genpsk
 tools/interop/  interop client, test responder, loopback and peer setup
-tools/gateway/  the subnet gateway
+tools/gateway/  the subnet gateway, its DCL procedures, and a stub
+                libpcap so the Linux build can compile and run it
 tools/probes/   OpenSSL, sockets, pcap and injection probes
 tools/spike/    the pseudo-terminal spike from the TUN investigation
-tests/          155 checks
+tests/          469 checks across nine binaries
 docs/           building, interop, gateway
 docs/research/  toolchain, TCP/IP stack, crypto, virtual-interface findings
 ```

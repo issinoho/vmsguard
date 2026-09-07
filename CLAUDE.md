@@ -29,7 +29,8 @@ store the compiler may remove, and GCC at -O2 does. Use `wg_zero`.
 Always run `make test` before committing. `make loopback` too if you
 touched anything in `src/client/`, `src/platform/` or `src/proto/`.
 
-OpenVMS builds with `@build_vms TEST` (DCL) or `MMS` (`descrip.mms`).
+OpenVMS builds with `@build_vms TEST` (DCL) or `MMS` (`descrip.mms`,
+core and tools only). `build_vms.com` is the exercised path.
 
 ## Hard constraints
 
@@ -99,7 +100,13 @@ That makes a round trip expensive, so:
 - **A new dependency has three build files, not one.** `Makefile`,
   `build_vms.com` and `descrip.mms`. Only the first is exercised here,
   so the other two fail on the machine you cannot reach — and on VMS
-  they fail *quietly*.
+  they fail *quietly*. This has already happened once: `ethip.obj`
+  became a dependency of interop and responder, was added to the first
+  two files, and left `descrip.mms` naming a target it had no rule to
+  build. Nothing here could see it, because nothing here runs MMS.
+  Note the scope difference too — `descrip.mms` builds the protocol
+  core, tools and protocol tests, but *not* the gateway, which needs
+  pcap.
 
 Compiler settings that are not optional are documented in the README's
 OpenVMS notes, along with the platform differences found so far. Read
