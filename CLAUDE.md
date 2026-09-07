@@ -8,7 +8,7 @@ things.
 
 ```sh
 make            # everything, and syntax-checks the gateway
-make test       # 469 checks across nine binaries
+make test       # 508 checks across nine binaries
 make loopback   # end-to-end over real UDP, needs no privilege
 ```
 
@@ -205,16 +205,13 @@ to gaps:
 1. **The NAT table is scanned linearly**, for every outbound packet, and
    is now 2048 entries. Cheap next to encrypting the same packet, but it
    is the first thing to index if the gateway is ever pushed hard.
-2. **No ICMPv6 Packet Too Big.** An IPv6 packet larger than the tunnel
-   MTU is refused and counted, but the sender is not told, so large
-   IPv6 flows stall where IPv4 ones adapt. Same failure the IPv4 side
-   had before `icmp_frag_needed`.
-3. **Datagrams are not reassembled**, only passed through. Later
+2. **Datagrams are not reassembled**, only passed through. Later
    fragments inherit their first fragment's mapping, and inbound ones
    arriving early are held until it does; nothing puts the pieces back
    together, and nothing needs to.
 
-Done: IPv6 through the gateway, several peers, cryptokey routing in
+Done: IPv6 through the gateway (including ICMPv6 Packet Too Big,
+which needs `--gateway-ip6` for a source address), several peers, cryptokey routing in
 both directions, non-blocking rekeying, detached operation with logging,
 peer-initiated handshakes,
 rekeying, the replay sliding window,

@@ -303,3 +303,65 @@ if ! grep -q "refused a packet sourced 8.8.8.8" "$out4"; then
     exit 1
 fi
 echo "a peer claiming an address outside AllowedIPs was refused"
+
+# ---------------------------------------------------------------------
+# Scenario 5: an IPv6 packet through the tunnel.
+#
+# The gateway forwards IPv6 and the README says so, but until this
+# existed nothing had ever carried an inner IPv6 packet end to end --
+# the pieces had unit tests and the composition had none. Wire
+# compatibility for IPv6 is settled by a real peer, not here; what this
+# settles is that the client sends an IPv6 packet, the peer receives
+# exactly it, and the ICMPv6 checksum survives the round trip.
+#
+# --ping6 refuses a reply whose checksum does not verify, so a mistake
+# in the pseudo-header at either end fails this rather than passing
+# quietly, which is the whole reason the check is on the receive side.
+# ---------------------------------------------------------------------
+
+PORT5=$((PORT + 4))
+log5=$(mktemp)
+out5=$(mktemp)
+cleanup5() { [ -n "$rpid5" ] && kill "$rpid5" 2>/dev/null; rm -f "$log5" "$out5"; }
+trap 'cleanup; cleanup2; cleanup3; cleanup4; cleanup5' EXIT
+
+"$BUILD/vmsguard-responder" \
+    --key "$sk" --peer-key "$cp" \
+    --listen-port "$PORT5" --packets 2 > "$log5" 2>&1 &
+rpid5=$!
+sleep 1
+
+if ! "$BUILD/vmsguard-interop" \
+        --key "$ck" --peer-key "$sp" \
+        --endpoint "127.0.0.1:$PORT5" \
+        --ping6 fd00:1234::1 fd00:1234::2 \
+        --timeout 3000 > "$out5" 2>&1; then
+    cat "$out5"
+    echo
+    echo "--- responder output ---"
+    cat "$log5"
+    echo
+    echo "FAILED: an IPv6 packet did not complete the round trip"
+    exit 1
+fi
+
+wait "$rpid5" 2>/dev/null || true
+rpid5=
+
+# Both ends again: the client reporting a reply is not enough, because
+# it would report the same if the responder had echoed the request back
+# unchanged and the client had been lax about the type.
+if ! grep -q "converted ICMPv6 echo request to echo reply" "$log5"; then
+    echo
+    echo "--- responder output ---"
+    cat "$log5"
+    echo
+    echo "FAILED: the responder did not recognise the packet as ICMPv6"
+    exit 1
+fi
+if ! grep -q "echo reply received" "$out5"; then
+    echo
+    echo "FAILED: the client did not accept the ICMPv6 echo reply"
+    exit 1
+fi
+echo "an IPv6 packet completed the round trip, checksum verified"

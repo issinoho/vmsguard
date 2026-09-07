@@ -160,6 +160,22 @@ want "fd00:1234::/48"                    "an IPv6 AllowedIPs entry is read"
 want "ipv6 return    : a configured tunnel, 192.0.2.1 -> 192.168.0.80" \
      "and the tunnel it would be delivered through is named"
 
+# An IPv6 tunnel with no address to send ICMPv6 from will stall large
+# flows, and the whole point of saying so at startup is that the
+# stall is otherwise unexplainable.
+want "icmpv6 from    : nothing" \
+     "a tunnel without --gateway-ip6 warns that large IPv6 flows stall"
+
+"$BUILD/vmsguard-gateway-stub" \
+    --config tests/data/dualstack.conf \
+    --interface ie0 \
+    --client 192.168.0.0/24 --client fd00:9999::/64 \
+    --encap-local 192.168.0.80 --encap-remote 192.0.2.1 \
+    --gateway-ip6 fd00:1234::1 > "$out" 2>&1 || true
+
+want "icmpv6 from    : fd00:1234::1" \
+     "and with it, the address the message will claim to come from"
+
 "$BUILD/vmsguard-gateway-stub" \
     --config tests/data/dualstack.conf \
     --interface ie0 --client 192.168.0.0/24 > "$out" 2>&1 || true

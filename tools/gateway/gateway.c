@@ -214,6 +214,20 @@ static uint32_t encap_remote;
 static int      encap_ready;
 static uint16_t encap_id;
 
+/*
+ * The address an ICMPv6 Packet Too Big claims to come from.
+ *
+ * The IPv4 side learns its equivalent from the socket, because the
+ * gateway necessarily has an IPv4 address to reach its peer with. There
+ * is no such guarantee for IPv6 -- the machine may have no IPv6 address
+ * at all, and the tunnel's own is link-local, which is the wrong scope
+ * for an error going to a client that is not on link. So it is asked
+ * for rather than guessed, and without it the message is not sent and
+ * the gateway says so.
+ */
+static uint8_t gw_addr6[16];
+static int     have_gw_addr6;
+
 static const char *stop_file;
 static const char *log_file;
 static uint64_t    status_interval_ms;
@@ -594,7 +608,8 @@ static void forward_outbound6(const uint8_t *ip, size_t iplen,
                               const struct ipv6_subnet *clients6,
                               int nclients6,
                               const struct ipv6_subnet *excludes6,
-                              int nexcludes6, int tunnel_mtu, int verbose)
+                              int nexcludes6, int tunnel_mtu,
+                              struct raw_injector *inj, int verbose)
 {
     char s6[48], d6[48];
     int t;
@@ -618,20 +633,55 @@ static void forward_outbound6(const uint8_t *ip, size_t iplen,
     st.v6_captured++;
 
     /*
-     * Too large for the tunnel. An IPv6 router may not fragment, so the
-     * sender has to be told -- and telling it means an ICMPv6 Packet
-     * Too Big, which is not built yet. Counted and, under --verbose,
-     * named, so that this shows as a known gap rather than as traffic
-     * that mysteriously stops.
+     * Too large for the tunnel. An IPv6 router may not fragment, so
+     * where IPv4 could pass this on in pieces, here the sender is the
+     * only thing that can act -- and it only acts if told. Without the
+     * ICMPv6 a large flow does not slow down, it stops.
+     *
+     * The error goes back the way inbound IPv6 does: wrapped in
+     * protocol 41 and injected, letting the stack decapsulate it and
+     * route the ICMPv6 inside to the client. There is no IPV6_HDRINCL
+     * on this platform to put it on the LAN directly, and this is the
+     * same mechanism deliver_inbound() already relies on -- the stack
+     * was seen to route a decapsulated inner packet onward when
+     * probe_encap's echo request was answered.
      */
     if (iplen > (size_t) tunnel_mtu) {
+        int told = 0;
+
         st.too_big++;
-        st.dropped++;
-        if (verbose) {
-            ipv6_format(s6, sizeof s6, ipv6_src(ip));
-            emit("big %lu bytes from %s: no ICMPv6 Packet Too Big is sent"
-                 " yet\n", (unsigned long) iplen, s6);
+        if (encap_ready && have_gw_addr6) {
+            uint8_t err[1280], wrapped[1280 + IPV4_MIN_HDR];
+            size_t elen = icmp6_packet_too_big(err, sizeof err,
+                                               gw_addr6, ip, iplen,
+                                               (uint32_t) tunnel_mtu);
+            if (elen > 0) {
+                size_t n = ip4_encap(wrapped, sizeof wrapped, encap_remote,
+                                     encap_local, ENCAP_PROTO_IPV6,
+                                     encap_id++, err, elen);
+                if (n > 0 && raw_injector_send(inj, wrapped, n) == 0) {
+                    st.icmp_sent++;
+                    told = 1;
+                    if (verbose) {
+                        ipv6_format(s6, sizeof s6, ipv6_src(ip));
+                        emit("big %lu bytes from %s, told to use %d\n",
+                             (unsigned long) iplen, s6, tunnel_mtu);
+                    }
+                }
+            }
         }
+        /*
+         * Unanswered, this is the silent stall the message exists to
+         * prevent, so it is named rather than left in a counter.
+         */
+        if (!told && verbose) {
+            ipv6_format(s6, sizeof s6, ipv6_src(ip));
+            emit("big %lu bytes from %s: DROPPED, and no ICMPv6 Packet Too"
+                 " Big could be sent%s\n", (unsigned long) iplen, s6,
+                 !encap_ready ? " (no --encap-local/--encap-remote)"
+                              : !have_gw_addr6 ? " (no --gateway-ip6)" : "");
+        }
+        st.dropped++;
         return;
     }
 
@@ -1060,7 +1110,15 @@ static void usage(const char *argv0)
 "  --stop-file      exit cleanly, writing the summary, when this\n"
 "                   file appears. The way to stop a detached\n"
 "                   process without deleting it, which would skip\n"
-"                   the summary. Removed once seen\n"
+"                   the summary. Removed once seen\n");
+    /*
+     * Split here deliberately. C99 only requires a compiler to support
+     * a 4095-character string literal, and VSI C is the ceiling this
+     * project builds to -- one continuous usage text had grown past
+     * that and gcc warned. Two calls cost nothing and the limit stops
+     * being something to remember.
+     */
+    emit(
 "  --encap-local    this machine's end of an OpenVMS configured\n"
 "                   tunnel (iptunnel create), and\n"
 "  --encap-remote   the far end of it. Both are needed to forward\n"
@@ -1068,6 +1126,11 @@ static void usage(const char *argv0)
 "                   the LAN directly, so it is wrapped in IPv4 and\n"
 "                   handed to the stack, which unwraps and routes\n"
 "                   it. Without them IPv6 is captured and dropped\n"
+"  --gateway-ip6    an IPv6 address of this machine, used as the\n"
+"                   source of ICMPv6 Packet Too Big. IPv6 routers\n"
+"                   may not fragment, so an oversized packet stalls\n"
+"                   the sender unless it is told. Without this the\n"
+"                   packet is dropped and counted instead\n"
 "  --psk            optional preshared key, base64\n"
 "  --listen-port    local UDP port (default: any)\n"
 "  --tunnel-mtu     largest inner packet the tunnel carries. Default\n"
@@ -1497,6 +1560,14 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--status") == 0 && i + 1 < argc) {
             status_interval_ms = (uint64_t) atoi(argv[++i]) * 1000;
             status_given = 1;
+        } else if (strcmp(argv[i], "--gateway-ip6") == 0 && i + 1 < argc) {
+            uint8_t plen;
+            if (ethip_parse_cidr6(argv[++i], gw_addr6, &plen) != 0 ||
+                plen != 128) {
+                emit("error: --gateway-ip6 must be a plain address\n");
+                return 2;
+            }
+            have_gw_addr6 = 1;
         } else if (strcmp(argv[i], "--encap-local") == 0 && i + 1 < argc) {
             uint32_t m;
             if (ethip_parse_cidr(argv[++i], &encap_local, &m) != 0 ||
@@ -1724,6 +1795,23 @@ int main(int argc, char **argv)
             ipv4_format(bbuf, sizeof bbuf, encap_local);
             emit("  ipv6 return    : a configured tunnel, %s -> %s\n",
                  abuf, bbuf);
+            if (have_gw_addr6) {
+                char g6[46];
+                ipv6_format(g6, sizeof g6, gw_addr6);
+                emit("  icmpv6 from    : %s\n", g6);
+            } else {
+                /*
+                 * Not fatal, but a large IPv6 flow will stall with
+                 * nothing to explain it, so it is said once here
+                 * rather than only in the summary afterwards.
+                 */
+                emit("  icmpv6 from    : nothing. --gateway-ip6 was not"
+                     " given, so an\n"
+                     "                   oversized IPv6 packet is dropped"
+                     " without telling\n"
+                     "                   the sender, and large flows will"
+                     " stall\n");
+            }
         } else if (any6 > 0) {
             /*
              * AllowedIPs names IPv6 prefixes but there is nowhere to
@@ -1963,7 +2051,7 @@ int main(int argc, char **argv)
                 if (ip6 != NULL)
                     forward_outbound6(ip6, v6len, clients6, nclients6,
                                       excludes6, nexcludes6, tunnel_mtu,
-                                      verbose);
+                                      inj, verbose);
             }
 
             /*

@@ -573,13 +573,29 @@ so IPv6 is forwarded with its addresses intact. A provider that assigns
 a single IPv6 address rather than a prefix would therefore reject it —
 `--tunnel-address` is IPv4 only.
 
-**Known gap: no ICMPv6 Packet Too Big.** An IPv6 router may not
+**ICMPv6 Packet Too Big needs `--gateway-ip6`.** An IPv6 router may not
 fragment, so a packet larger than the tunnel MTU has to be refused and
-the sender told. The refusal happens and is counted; the telling does
-not. Large IPv6 flows will stall where large IPv4 ones adapt, which is
-the same failure the IPv4 side had before `icmp_frag_needed` was
-written. Under `--verbose` it says so by name rather than dropping in
-silence.
+the sender told — otherwise a large flow does not slow down, it stops.
+The gateway sends the message, but it needs an address to send it from,
+and unlike the IPv4 side it cannot work one out: the IPv4 equivalent
+learns the gateway's address from its own socket, whereas this machine
+may have no IPv6 address at all and the tunnel's own is link-local,
+which is the wrong scope for a client that is not on link.
+
+    --gateway-ip6 fd00:1234::1
+
+The error goes back the same way inbound IPv6 does — wrapped in protocol
+41 and injected, for the stack to decapsulate and route to the client —
+because there is no `IPV6_HDRINCL` here to put it on the LAN directly.
+
+Without the flag the oversized packet is dropped and counted, and
+startup says so:
+
+```
+  icmpv6 from    : nothing. --gateway-ip6 was not given, so an
+                   oversized IPv6 packet is dropped without telling
+                   the sender, and large flows will stall
+```
 
 ### Several peers
 

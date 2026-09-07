@@ -206,14 +206,14 @@ $ say "building vmsguard_interop"
 $ cc 'cc_flags'/OBJECT=[.build]interop.obj [.tools.interop]interop.c
 $ link/executable=[.build]vmsguard_interop.exe -
       [.build]interop.obj,'proto_objs','plat_objs','client_objs',-
-      [.build]ethip.obj,[.build]vmsguard.opt/OPTIONS
+      [.build]ethip.obj,[.build]icmp.obj,[.build]vmsguard.opt/OPTIONS
 $ if $severity .ne. 1 then goto linkfail
 $!
 $ say "building vmsguard_responder"
 $ cc 'cc_flags'/OBJECT=[.build]responder.obj [.tools.interop]responder.c
 $ link/executable=[.build]vmsguard_responder.exe -
       [.build]responder.obj,'proto_objs','plat_objs',-
-      [.build]ethip.obj,[.build]vmsguard.opt/OPTIONS
+      [.build]ethip.obj,[.build]icmp.obj,[.build]vmsguard.opt/OPTIONS
 $ if $severity .ne. 1 then goto linkfail
 $!
 $ say "building slip_spike"

@@ -30,6 +30,7 @@ module and against a commercial VPN provider over the public internet.
 | Several peers | Routed by longest-prefix `AllowedIPs` |
 | Cryptokey routing | Enforced in both directions |
 | IPv6 forwarding | Returned through a configured tunnel, protocol 41 |
+| ICMPv6 | Packet Too Big, RFC 4443, from `--gateway-ip6` |
 | Unattended operation | Batch job, live-readable log, graceful stop |
 | Key tooling | `genkey`/`pubkey` agree with `wg(8)` on 100/100 keys |
 
@@ -120,11 +121,11 @@ Nothing known blocks ordinary use of the gateway. The nearest things:
   inherit their first fragment's mapping, and inbound ones that arrive
   early are held until it does. Nothing puts the pieces back together,
   and for a forwarder nothing needs to.
-- **No ICMPv6 Packet Too Big.** IPv6 does traverse the gateway, but a
-  packet larger than the tunnel MTU is refused and counted without
-  telling the sender, so large IPv6 flows stall where IPv4 ones adapt.
-  The IPv4 side sends the RFC 1191 equivalent; the IPv6 side does not
-  yet.
+- **ICMPv6 Packet Too Big needs to be told an address.** The IPv4 side
+  learns the gateway's own address from its socket; the IPv6 side
+  cannot, since the machine may have no IPv6 address and the tunnel's is
+  link-local. So it takes `--gateway-ip6`, and without it an oversized
+  IPv6 packet is dropped rather than answered. Startup says so.
 - **ICMP unreachables from the local stack** cannot be suppressed —
   there is no packet filter on the platform that drops by rule. The
   gateway detects and reports them instead; the fix is `TCPIP SET
@@ -138,7 +139,7 @@ Nothing known blocks ordinary use of the gateway. The nearest things:
 
 ```sh
 make          # protocol core, tools, tests, and runs the gateway
-make test     # 469 checks across nine binaries
+make test     # 508 checks across nine binaries
 make loopback # end-to-end self-test over real UDP: handshake,
               # cookie challenge, roaming and data path
 ```
@@ -307,7 +308,7 @@ makes IPv6 forwarding work without forging anything.
 ## Testing
 
 ```sh
-make test       # 469 checks: protocol, framing, IPv4/IPv6 inspection,
+make test       # 508 checks: protocol, framing, IPv4/IPv6 inspection,
                 #   NAT, ICMP, encapsulation and config parsing
 make loopback   # four scenarios over real UDP: cookie challenge, roaming,
                 #   a peer-initiated handshake and its replay, a lost
@@ -346,7 +347,7 @@ tools/gateway/  the subnet gateway, its DCL procedures, and a stub
                 libpcap so the Linux build can compile and run it
 tools/probes/   OpenSSL, sockets, pcap and injection probes
 tools/spike/    the pseudo-terminal spike from the TUN investigation
-tests/          469 checks across nine binaries
+tests/          508 checks across nine binaries
 docs/           building, interop, gateway
 docs/research/  toolchain, TCP/IP stack, crypto, virtual-interface findings
 ```

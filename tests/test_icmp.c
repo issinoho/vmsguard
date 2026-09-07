@@ -326,6 +326,177 @@ static void test_stack_contradiction(void)
           "a runt is refused");
 }
 
+/* ---- ICMPv6 ---------------------------------------------------------- */
+
+/*
+ * fd00:1234::1 and ::2.
+ */
+static const uint8_t V6_A[16] = {
+    0xfd,0x00,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0x01
+};
+static const uint8_t V6_B[16] = {
+    0xfd,0x00,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0x02
+};
+
+/*
+ * The checksums below were computed by a separate implementation
+ * written from RFC 4443 section 2.3 and RFC 2460 section 8.1, not by
+ * this code. A checksum test that calls the function it is testing to
+ * produce the expected value proves only that the function is
+ * deterministic, which is the failure mode this project has hit before:
+ * a misreading of a specification passes against itself.
+ */
+static void test_icmp6_checksum(void)
+{
+    uint8_t pkt[128];
+    size_t n;
+
+    printf("\nICMPv6 checksum, against an independent implementation\n");
+
+    n = icmp6_echo_request(pkt, sizeof pkt, V6_A, V6_B, 0x4242, 1);
+    check(n == 40 + 8 + 22, "an echo request is header, ICMPv6 and payload");
+    check(get16(pkt + 40 + 2) == 0xF456,
+          "its checksum matches the reference value");
+
+    /*
+     * The standard property: summing a valid message *including* its
+     * checksum field yields zero. Independent of the value above, and
+     * it catches a pseudo-header assembled in the wrong order that
+     * happened to hit the same total.
+     */
+    check(icmp6_checksum(V6_A, V6_B, pkt + 40, n - 40) == 0,
+          "and re-summing a valid message gives zero");
+
+    /* The pseudo-header really is covered: change an address only. */
+    {
+        uint8_t other[16];
+        memcpy(other, V6_B, 16);
+        other[15] = 0x03;
+        check(icmp6_checksum(V6_A, other, pkt + 40, n - 40) != 0,
+              "a different destination changes the sum, so the"
+              " pseudo-header is covered");
+    }
+}
+
+static void test_icmp6_echo(void)
+{
+    uint8_t pkt[128];
+    size_t n;
+
+    printf("\nICMPv6 echo request and reply\n");
+
+    n = icmp6_echo_request(pkt, sizeof pkt, V6_A, V6_B, 0x4242, 1);
+
+    check(pkt[0] >> 4 == 6, "version 6");
+    check(get16(pkt + 4) == 30, "payload length excludes the IPv6 header");
+    check(pkt[6] == 58, "next header is ICMPv6");
+    check(pkt[40] == 128, "type 128, echo request");
+    check(memcmp(pkt + 8, V6_A, 16) == 0, "sourced from the first address");
+    check(memcmp(pkt + 24, V6_B, 16) == 0, "sent to the second");
+
+    check(icmp6_is_echo_reply(pkt, n, 0x4242, 1) == 0,
+          "a request is not mistaken for a reply");
+
+    check(icmp6_make_echo_reply(pkt, n) == 1, "it converts to a reply");
+    check(pkt[40] == 129, "type 129, echo reply");
+    check(memcmp(pkt + 8, V6_B, 16) == 0, "the addresses are swapped");
+    check(memcmp(pkt + 24, V6_A, 16) == 0, "both of them");
+    check(get16(pkt + 40 + 2) == 0xF356,
+          "the reply's checksum matches the reference value");
+    check(icmp6_is_echo_reply(pkt, n, 0x4242, 1) == 1,
+          "and it is recognised as the reply to that request");
+    check(icmp6_is_echo_reply(pkt, n, 0x4242, 2) == 0,
+          "but not as a reply to a different sequence");
+    check(icmp6_is_echo_reply(pkt, n, 0x4243, 1) == 0,
+          "nor to a different id");
+
+    /* A corrupted reply is refused, so the round trip proves the sum. */
+    pkt[40 + 9] ^= 0xFF;
+    check(icmp6_is_echo_reply(pkt, n, 0x4242, 1) == 0,
+          "a reply whose checksum does not verify is refused");
+    pkt[40 + 9] ^= 0xFF;
+    check(icmp6_is_echo_reply(pkt, n, 0x4242, 1) == 1,
+          "and accepted again once restored");
+
+    /*
+     * WireGuard pads transport data, so the buffer is routinely longer
+     * than the packet. Summing the padding produces a checksum the peer
+     * rejects -- the same bug the IPv4 conversion had to avoid.
+     */
+    n = icmp6_echo_request(pkt, sizeof pkt, V6_A, V6_B, 0x4242, 1);
+    memset(pkt + n, 0xAA, 16);
+    check(icmp6_make_echo_reply(pkt, n + 16) == 1,
+          "a padded buffer still converts");
+    check(get16(pkt + 40 + 2) == 0xF356,
+          "and the padding is excluded from the checksum");
+
+    check(icmp6_make_echo_reply(pkt, n) == 0,
+          "a reply does not convert again");
+}
+
+static void test_icmp6_too_big(void)
+{
+    uint8_t orig[1500], out[1500];
+    size_t n;
+
+    printf("\nICMPv6 Packet Too Big\n");
+
+    memset(orig, 0, sizeof orig);
+    orig[0] = 0x60;
+    orig[4] = (uint8_t) (1460 >> 8);
+    orig[5] = (uint8_t) (1460 & 0xFF);
+    orig[6] = 59;                       /* no next header */
+    orig[7] = 64;
+    memcpy(orig + 8, V6_A, 16);
+    memcpy(orig + 24, V6_B, 16);
+
+    n = icmp6_packet_too_big(out, sizeof out, V6_B, orig, 1500, 1380);
+
+    check(n == 1280,
+          "the error is built to the minimum IPv6 MTU, so it never"
+          " needs fragmenting");
+    check(out[40] == 2, "type 2, packet too big");
+    check(out[40 + 1] == 0, "code 0");
+    check(((uint32_t) out[44] << 24 | (uint32_t) out[45] << 16 |
+           (uint32_t) out[46] << 8 | out[47]) == 1380,
+          "the MTU is where RFC 4443 says a sender will look");
+    check(memcmp(out + 24, V6_A, 16) == 0,
+          "addressed back to the original's source");
+    check(memcmp(out + 8, V6_B, 16) == 0,
+          "sourced from the hop that could not forward");
+    check(out[7] == 64,
+          "a fresh hop limit, not the original's");
+    check(memcmp(out + 48, orig, 1232) == 0,
+          "and it quotes the original, as much as fits");
+    check(get16(out + 40 + 2) == 0x15BB,
+          "its checksum matches the reference value");
+    /*
+     * Guarded because n is a size_t: a build where this returns 0
+     * would make n - 40 an enormous length and kill the process inside
+     * the checksum, losing the FAIL line that says which check broke.
+     * Found by deliberately breaking the 1280 cap to confirm these
+     * tests can fail -- they can, but the first attempt segfaulted
+     * instead of reporting.
+     */
+    check(n >= 40 && icmp6_checksum(out + 8, out + 24, out + 40, n - 40) == 0,
+          "and re-summing it gives zero");
+
+    /* A short original is quoted whole rather than padded to 1280. */
+    n = icmp6_packet_too_big(out, sizeof out, V6_B, orig, 100, 1380);
+    check(n == 40 + 8 + 100, "a short original is quoted whole");
+    check(n >= 40 && icmp6_checksum(out + 8, out + 24, out + 40, n - 40) == 0,
+          "and that checksum is right too");
+
+    check(icmp6_packet_too_big(out, sizeof out, V6_B, orig, 20, 1380) == 0,
+          "a runt original is refused");
+    orig[0] = 0x45;
+    check(icmp6_packet_too_big(out, sizeof out, V6_B, orig, 1500, 1380) == 0,
+          "and an IPv4 packet is not an IPv6 one");
+    orig[0] = 0x60;
+    check(icmp6_packet_too_big(out, 64, V6_B, orig, 1500, 1380) == 0,
+          "a buffer too small to hold it is refused, not overrun");
+}
+
 int main(void)
 {
     printf("vmsguard ICMP error tests\n");
@@ -335,6 +506,9 @@ int main(void)
     test_rejections();
     test_short_original();
     test_stack_contradiction();
+    test_icmp6_checksum();
+    test_icmp6_echo();
+    test_icmp6_too_big();
 
     printf("\n%s — %d checks, %d failure%s\n",
            failures == 0 ? "PASS" : "FAIL",

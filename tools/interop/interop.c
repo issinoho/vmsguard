@@ -19,6 +19,7 @@
 
 #include "wg_client.h"
 #include "ethip.h"
+#include "icmp.h"
 #include "wg_key.h"
 #include "wg_platform.h"
 #include "wg_proto.h"
@@ -164,6 +165,7 @@ static void usage(const char *argv0)
     fprintf(stderr,
 "usage: %s --key <base64> --peer-key <base64> --endpoint <host:port>\n"
 "          [--psk <base64>] [--listen-port <n>] [--ping <src-ip> <dst-ip>]\n"
+"          [--ping6 <src-ip6> <dst-ip6>]\n"
 "          [--attempts <n>] [--timeout <ms>] [--verbose]\n"
 "\n"
 "  --key           our private key, base64 (as from `wg genkey`)\n"
@@ -173,6 +175,9 @@ static void usage(const char *argv0)
 "  --listen-port   local UDP port (default: any)\n"
 "  --ping          send an ICMP echo through the tunnel from <src-ip>\n"
 "                  to <dst-ip> and wait for the reply\n"
+"  --ping6         the same over IPv6 with ICMPv6, which is the only\n"
+"                  way to exercise the inner-IPv6 path without a peer\n"
+"                  offering an IPv6 prefix\n"
 "  --attempts      handshake attempts (default 3)\n"
 "  --timeout       milliseconds to wait per attempt (default 5000)\n"
 "  --allowed-ips   only accept decrypted packets whose source falls in\n"
@@ -208,11 +213,12 @@ int main(int argc, char **argv)
     uint8_t privkey[WG_KEY_LEN], peerkey[WG_KEY_LEN], psk[WG_KEY_LEN];
     uint8_t *pskp = NULL;
     uint8_t ping_src[4], ping_dst[4];
+    uint8_t ping6_src[16], ping6_dst[16];
     char epbuf[80], b64[WG_KEY_B64_LEN];
     const char *endpoint_arg = NULL;
     char host[128];
     const char *colon;
-    int have_key = 0, have_peer = 0, do_ping = 0, verbose = 0;
+    int have_key = 0, have_peer = 0, do_ping = 0, do_ping6 = 0, verbose = 0;
     int attempts = 3, timeout_ms = 5000;
     unsigned long rekey_after_ms = 0;
     struct ipv4_subnet allowed[8];
@@ -244,6 +250,20 @@ int main(int argc, char **argv)
             attempts = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--timeout") == 0 && i + 1 < argc) {
             timeout_ms = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--ping6") == 0 && i + 2 < argc) {
+            /*
+             * A bare address is a /128 to ethip_parse_cidr6, so the
+             * tested parser is reused rather than a second one written
+             * for the two-address case.
+             */
+            uint8_t plen;
+            if (ethip_parse_cidr6(argv[i + 1], ping6_src, &plen) != 0 ||
+                ethip_parse_cidr6(argv[i + 2], ping6_dst, &plen) != 0) {
+                fprintf(stderr, "error: --ping6 needs two IPv6 addresses\n");
+                return 2;
+            }
+            i += 2;
+            do_ping6 = 1;
         } else if (strcmp(argv[i], "--ping") == 0 && i + 2 < argc) {
             if (parse_ipv4(ping_src, argv[++i]) != 0 ||
                 parse_ipv4(ping_dst, argv[++i]) != 0) {
@@ -405,19 +425,28 @@ int main(int argc, char **argv)
                client.roams, client.roams == 1 ? "" : "s", epbuf);
     }
 
-    if (do_ping) {
+    if (do_ping || do_ping6) {
         uint8_t pkt[256], reply[WG_MAX_PACKET];
         size_t pktlen, replylen;
         uint16_t id = 0x4242, seq = 1;
         int got = 0;
         uint64_t started;
 
-        printf("\nsending ICMP echo request through the tunnel\n");
-        printf("  %u.%u.%u.%u -> %u.%u.%u.%u\n",
-               ping_src[0], ping_src[1], ping_src[2], ping_src[3],
-               ping_dst[0], ping_dst[1], ping_dst[2], ping_dst[3]);
-
-        pktlen = build_ping(pkt, ping_src, ping_dst, id, seq);
+        if (do_ping6) {
+            char s6[46], d6[46];
+            ipv6_format(s6, sizeof s6, ping6_src);
+            ipv6_format(d6, sizeof d6, ping6_dst);
+            printf("\nsending ICMPv6 echo request through the tunnel\n");
+            printf("  %s -> %s\n", s6, d6);
+            pktlen = icmp6_echo_request(pkt, sizeof pkt,
+                                        ping6_src, ping6_dst, id, seq);
+        } else {
+            printf("\nsending ICMP echo request through the tunnel\n");
+            printf("  %u.%u.%u.%u -> %u.%u.%u.%u\n",
+                   ping_src[0], ping_src[1], ping_src[2], ping_src[3],
+                   ping_dst[0], ping_dst[1], ping_dst[2], ping_dst[3]);
+            pktlen = build_ping(pkt, ping_src, ping_dst, id, seq);
+        }
         if (verbose)
             hexdump("echo request", pkt, pktlen);
 
@@ -452,7 +481,7 @@ int main(int argc, char **argv)
              * Cryptokey routing. Decryption proves who sent it; this
              * decides what they were allowed to claim to be.
              */
-            if (nallowed > 0 && replylen >= 20 &&
+            if (nallowed > 0 && replylen >= 20 && (reply[0] >> 4) == 4 &&
                 !ipv4_in_any(allowed, nallowed, ipv4_src(reply))) {
                 char src[16];
                 ipv4_format(src, sizeof src, ipv4_src(reply));
@@ -462,7 +491,9 @@ int main(int argc, char **argv)
                 continue;
             }
 
-            if (is_echo_reply(reply, replylen, id, seq)) {
+            if (do_ping6
+                ? icmp6_is_echo_reply(reply, replylen, id, seq)
+                : is_echo_reply(reply, replylen, id, seq)) {
                 got = 1;
                 break;
             }
@@ -477,13 +508,17 @@ int main(int argc, char **argv)
         if (got) {
             printf("  echo reply received — data path works both ways\n");
         } else {
+            char who[46];
+            if (do_ping6)
+                ipv6_format(who, sizeof who, ping6_src);
+            else
+                sprintf(who, "%u.%u.%u.%u", ping_src[0], ping_src[1],
+                        ping_src[2], ping_src[3]);
             printf("  no echo reply\n");
             printf("\n  The handshake itself succeeded, so key agreement\n"
                    "  and transport framing are working. A missing reply\n"
                    "  usually means the peer's AllowedIPs does not cover\n"
-                   "  %u.%u.%u.%u, or the destination does not answer\n"
-                   "  pings.\n",
-                   ping_src[0], ping_src[1], ping_src[2], ping_src[3]);
+                   "  %s, or the destination does not answer pings.\n", who);
             wg_client_close(&client);
             return 1;
         }

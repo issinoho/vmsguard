@@ -109,4 +109,76 @@ int ipv4_dont_fragment(const uint8_t *pkt, size_t len);
 int icmp_error_from(const uint8_t *pkt, size_t len, uint32_t from_addr,
                     uint32_t *orig_dst, uint8_t *orig_proto);
 
+/* ---- ICMPv6 ---------------------------------------------------------- */
+
+/*
+ * IPv6's equivalents, which are not quite a rename of the above.
+ *
+ * Two differences matter. A router may not fragment an IPv6 packet at
+ * all, so where IPv4 has "fragmentation needed" as advice IPv6 has
+ * "packet too big" as the only way the transfer can proceed: without it
+ * a large flow does not degrade, it stops. And every ICMPv6 checksum
+ * covers a pseudo-header of the addresses, the payload length and the
+ * next-header value, so it cannot be computed from the message alone
+ * the way ICMPv4's can -- which is why these take the addresses even
+ * where the message itself does not need them.
+ */
+
+#define ICMP6_TYPE_PACKET_TOO_BIG   2
+#define ICMP6_TYPE_ECHO_REQUEST   128
+#define ICMP6_TYPE_ECHO_REPLY     129
+
+#define IPV6_NEXT_ICMPV6 58
+
+/*
+ * The ICMPv6 checksum over `msg`, with the pseudo-header RFC 4443
+ * section 2.3 requires: 16-byte source and destination, the message
+ * length as 32 bits, and the next-header value.
+ *
+ * Exposed rather than kept private because the responder converts an
+ * echo request in place and needs the same sum over a buffer it already
+ * holds.
+ */
+uint16_t icmp6_checksum(const uint8_t *src, const uint8_t *dst,
+                        const uint8_t *msg, size_t msglen);
+
+/*
+ * Build an ICMPv6 echo request inside an IPv6 packet, from `src` to
+ * `dst`. Returns the total length written, or 0 if outcap is too small.
+ */
+size_t icmp6_echo_request(uint8_t *out, size_t outcap,
+                          const uint8_t *src, const uint8_t *dst,
+                          uint16_t id, uint16_t seq);
+
+/*
+ * Whether `pkt` is an ICMPv6 echo reply carrying this id and sequence.
+ */
+int icmp6_is_echo_reply(const uint8_t *pkt, size_t len,
+                        uint16_t id, uint16_t seq);
+
+/*
+ * Turn an ICMPv6 echo request into a reply in place: swap the
+ * addresses, change the type, recompute the checksum. Returns 1 if it
+ * was converted, 0 if it was not an echo request.
+ */
+int icmp6_make_echo_reply(uint8_t *pkt, size_t len);
+
+/*
+ * Build an ICMPv6 Packet Too Big about `orig`, addressed back to
+ * whoever sent it, from `src_addr` -- the gateway's own address, since
+ * it is the hop that could not forward.
+ *
+ * `mtu` is the largest packet that would have fitted. RFC 4443 asks
+ * that as much of the original be quoted as fits in 1280 bytes without
+ * exceeding the minimum IPv6 MTU, so that the error itself never needs
+ * fragmenting.
+ *
+ * Returns the length written, or 0 if outcap is too small or the
+ * original is not a usable IPv6 packet.
+ */
+size_t icmp6_packet_too_big(uint8_t *out, size_t outcap,
+                            const uint8_t *src_addr,
+                            const uint8_t *orig, size_t origlen,
+                            uint32_t mtu);
+
 #endif /* VMSGUARD_ICMP_H */

@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "ethip.h"
+#include "icmp.h"
 #include "wg_key.h"
 #include "wg_noise.h"
 #include "wg_platform.h"
@@ -466,8 +467,17 @@ int main(int argc, char **argv)
             /* Send it back, so the client can verify both directions.
                An ICMP echo request becomes a proper reply; anything
                else, including a keepalive, goes back unchanged. */
-            if (make_echo_reply(plain, plainlen))
+            if (make_echo_reply(plain, plainlen)) {
                 printf("  (converted echo request to echo reply)\n");
+            } else if (icmp6_make_echo_reply(plain, plainlen)) {
+                /*
+                 * The IPv6 equivalent. Kept separate rather than folded
+                 * into make_echo_reply because the checksum covers a
+                 * pseudo-header of the addresses, so the two cannot
+                 * share the recompute.
+                 */
+                printf("  (converted ICMPv6 echo request to echo reply)\n");
+            }
 
             /*
              * Claim to be somebody else. A peer that does not check

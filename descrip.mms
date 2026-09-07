@@ -101,6 +101,13 @@ ALL : [.build]vmsguard_key.exe, [.build]vmsguard_interop.exe, -
 [.build]ethip.obj : [.src.tun]ethip.c, [.src.tun]ethip.h
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
 
+! icmp is linked into the same two tools, for --ping6: an ICMPv6
+! checksum covers a pseudo-header of the addresses, so building one
+! cannot live in the tool the way the IPv4 echo does.
+
+[.build]icmp.obj : [.src.tun]icmp.c, [.src.tun]icmp.h
+    $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
+
 ! ==== platform and client ====
 !
 ! The POSIX implementation is used on purpose: VSI TCP/IP Services
@@ -136,17 +143,20 @@ $(OPT)/OPTIONS
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
 
 [.build]vmsguard_interop.exe : [.build]interop.obj, $(PROTO_OBJS), -
-$(PLAT_OBJS), $(CLIENT_OBJS), [.build]ethip.obj, $(OPT)
+$(PLAT_OBJS), $(CLIENT_OBJS), [.build]ethip.obj, -
+[.build]icmp.obj, $(OPT)
     $(LINK)/EXECUTABLE=$(MMS$TARGET) [.build]interop.obj,$(PROTO_OBJS),-
-$(PLAT_OBJS),$(CLIENT_OBJS),[.build]ethip.obj,$(OPT)/OPTIONS
+$(PLAT_OBJS),$(CLIENT_OBJS),[.build]ethip.obj,-
+[.build]icmp.obj,$(OPT)/OPTIONS
 
 [.build]responder.obj : [.tools.interop]responder.c
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
 
 [.build]vmsguard_responder.exe : [.build]responder.obj, $(PROTO_OBJS), -
-$(PLAT_OBJS), [.build]ethip.obj, $(OPT)
+$(PLAT_OBJS), [.build]ethip.obj, [.build]icmp.obj, $(OPT)
     $(LINK)/EXECUTABLE=$(MMS$TARGET) [.build]responder.obj,-
-$(PROTO_OBJS),$(PLAT_OBJS),[.build]ethip.obj,$(OPT)/OPTIONS
+$(PROTO_OBJS),$(PLAT_OBJS),[.build]ethip.obj,-
+[.build]icmp.obj,$(OPT)/OPTIONS
 
 ! ==== tests ====
 
