@@ -150,13 +150,20 @@ path rather than uid, so root does not help.
 have the full reasoning. If reopening any of these, say what new
 information justifies it.
 
-**Open lead (2026-09-07): configured tunnels — and `IT0` is real.**
-`iptunnel create 192.0.2.1` produces a `RUNNING` virtual interface with
-a resolved next hop. It is the first documented virtual interface on
-this platform that actually exists. What is *not* yet known is whether
-the stack decapsulates a packet we inject into it (`probe_encap` asks
-exactly that) and whether the encapsulated output can be captured
-without putting the inner packet on the wire in the clear. See
+**Reopened (2026-09-07): configured tunnels work.** `iptunnel create`
+makes a real virtual interface `ITn`, and the stack **decapsulates a
+packet injected into it** — `probe_encap` took `IT0`'s `Ipkts` from 0 to
+1. So this machine can be *given* a packet and made to process it as
+though it arrived from elsewhere, which is not the same as originating
+one and is enough for an IPv6 gateway's inbound half.
+
+Bring the interface up first: `iptunnel create` leaves it `RUNNING` but
+not `UP`, and `netstat -i` marks that with a `*`. Missing it makes the
+probe read as a flat no.
+
+Still unshown: that the inner packet is *acted upon* (the test's inner
+source looked like a martian), and whether the client shape's outbound
+half can capture the encapsulated frame without leaking it. See
 `docs/research/driver-feasibility.md`.
 
 ## Known gaps, in priority order

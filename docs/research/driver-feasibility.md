@@ -340,6 +340,65 @@ encapsulated packet is a real frame on a real interface, which means
 pcap can capture it. It also means it leaves the machine, which is the
 whole of the caveat below.
 
+### Confirmed to decapsulate (2026-09-07)
+
+With `IT0` up, one injected packet and one counted:
+
+```
+$ ifconfig "IT0" up
+$ ifconfig "IT0"
+IT0: flags=4c3<UP,BROADCAST,RUNNING,NOARP,MULTICAST>
+     192.168.0.80 --> 192.0.2.1
+
+$ netstat -i          (before)
+IT0   1280  <Link>  x86vms   0 ...
+
+$ PENC --tunnel-remote 192.0.2.1 --tunnel-local 192.168.0.80 \
+       --inner-src 192.168.0.218
+  injected 48 bytes
+
+$ netstat -i          (after)
+IT0   1280  <Link>  x86vms   1 ...
+```
+
+`Ipkts` went from 0 to 1. That establishes three things at once, none of
+which was known before:
+
+- a raw socket can hand this stack a packet **addressed to itself**, and
+  it reaches the local input path rather than leaving on the wire;
+- the stack **matches an injected packet to a configured tunnel**;
+- and receives it on that interface, which is decapsulation.
+
+The interface had to be brought up first. `iptunnel create` leaves it
+`RUNNING` but not `UP`, which `netstat -i` marks with a `*` and which
+made an earlier run of this same probe read as a flat no.
+
+**What is not yet shown** is that the inner packet was acted upon.
+Nothing reached `192.168.0.218`, and the likely reason is the inner
+source: `192.168.0.218` is directly connected on `IE0`, so a packet
+claiming to come from it while arriving on `IT0` is spoofed as far as
+the stack is concerned. `Ierrs` stayed 0, so it was discarded quietly
+rather than counted as an error. Delivery needs an inner source that is
+plausibly reachable through the tunnel, which means a route pointing at
+`IT0`.
+
+### What this changes
+
+The client shape was abandoned, and IPv6 forwarding declared impossible,
+for the same reason: this machine cannot originate a packet the stack
+did not address. That is still true. What has changed is that it no
+longer has to — the stack can be *given* a packet and made to process
+it as though it had arrived from elsewhere.
+
+For an IPv6 gateway that is the whole of the missing half. Wrap the
+decrypted IPv6 packet in an IPv4 protocol-41 header addressed to this
+machine, inject it, and the stack unwraps and routes it natively. No
+address is forged, and nothing leaves the box in the clear.
+
+The client shape is a further step and still has the caveat below: its
+*outbound* direction needs the encapsulated packet captured, and
+`gate 192.168.0.1` says that frame goes to the router.
+
 ### What is still unknown
 
 Creation is not operation. Two questions remain, and they are
