@@ -1,0 +1,67 @@
+#!/bin/sh
+#
+# Run the gateway against a config file, on a machine with no libpcap
+# and no privilege, and check what it derived from that file.
+#
+# The gateway is only ever *run* on OpenVMS, so until this existed the
+# first execution of any change to its argument handling happened on a
+# machine that takes a round trip to reach. That is how a config file
+# came to be parsed correctly and then used incorrectly: the values were
+# left pointing into a struct scrubbed on the way out of its scope, and
+# the gateway refused its own config with an empty --tunnel-subnet.
+#
+# Linked against tools/gateway/pcapstub, whose pcap_open_live declines.
+# The gateway therefore prints everything it worked out and exits, which
+# is the part this can check. Packet handling stays on the target.
+
+set -e
+
+BUILD=${BUILD:-./build}
+CONF=${CONF:-tests/data/sample.conf}
+out=$(mktemp)
+trap 'rm -f "$out"' EXIT
+
+# Expected to exit non-zero: the stub opens a capture but the raw socket
+# for injection needs privilege and does not. As root it would instead
+# spend fifteen seconds failing to handshake with an unroutable address,
+# which is slow rather than wrong.
+"$BUILD/vmsguard-gateway-stub" \
+    --config "$CONF" \
+    --interface ie0 \
+    --client 192.168.0.218/32 \
+    --exclude 192.168.0.0/24 > "$out" 2>&1 || true
+
+fail=0
+want() {
+    if grep -q "$1" "$out"; then
+        echo "  ok    $2"
+    else
+        echo "  FAIL  $2"
+        fail=1
+    fi
+}
+
+echo "gateway config smoke test"
+
+want "read $CONF"                        "the file is read"
+want "tunnel subnet  : 0.0.0.0 mask 0.0.0.0" \
+     "AllowedIPs becomes the tunnel subnet"
+want "source NAT to  : 10.13.127.177"    "Address becomes the NAT address"
+want "tunnel MTU     : 1390"             "MTU becomes the tunnel MTU"
+want "forwarding for : 192.168.0.218"    "--client still applies"
+want "excluding      : 192.168.0.0"      "--exclude still applies"
+want "capturing on   : IE0"              "the interface name is case-folded"
+want "note: DNS"                         "DNS is reported as not applied"
+# The endpoint is only reachable through the header the client prints,
+# so check the failure that follows names the stub rather than a bad
+# address: an endpoint that did not survive would fail to resolve first.
+want "our address    : "                 "the local address facing the peer is found"
+want "error: "                            "and it stops at the raw socket, as it should"
+
+if [ "$fail" -ne 0 ]; then
+    echo
+    echo "--- output ---"
+    cat "$out"
+    exit 1
+fi
+echo "PASS"

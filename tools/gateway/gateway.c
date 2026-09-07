@@ -474,6 +474,17 @@ int main(int argc, char **argv)
         char text[8192];
         long n;
 
+        /*
+         * Values taken from the file are copied into these rather than
+         * pointed at inside conf, which is scoped to this loop and
+         * scrubbed at the end of it. Pointing at conf left endpoint_arg
+         * and subnet_arg addressing memory that had been zeroed to
+         * clear the private key, so the gateway refused its own config
+         * with "--tunnel-subnet '' is not valid CIDR".
+         */
+        static char conf_endpoint[WG_CONF_ENDPOINT_LEN];
+        static char conf_subnet[WG_CONF_CIDR_LEN];
+
         if (strcmp(argv[i], "--config") != 0 || i + 1 >= argc)
             continue;
 
@@ -497,10 +508,15 @@ int main(int argc, char **argv)
             memcpy(psk, conf.preshared_key, WG_KEY_LEN);
             pskp = psk;
         }
-        if (conf.have_endpoint)
-            endpoint_arg = conf.endpoint;
-        if (conf.n_allowed > 0)
-            subnet_arg = conf.allowed[0];
+        if (conf.have_endpoint) {
+            snprintf(conf_endpoint, sizeof conf_endpoint, "%s",
+                     conf.endpoint);
+            endpoint_arg = conf_endpoint;
+        }
+        if (conf.n_allowed > 0) {
+            snprintf(conf_subnet, sizeof conf_subnet, "%s", conf.allowed[0]);
+            subnet_arg = conf_subnet;
+        }
         if (conf.mtu > 0)
             tunnel_mtu = conf.mtu;
         if (conf.keepalive > 0)
@@ -542,9 +558,17 @@ int main(int argc, char **argv)
                "        be given, as must --client and --exclude for a\n"
                "        full tunnel\n\n");
 
-        /* Scrub: the private key was in this buffer. */
-        memset(text, 0, sizeof text);
-        memset(&conf, 0, sizeof conf);
+        /*
+         * Scrub: the private key was in both of these.
+         *
+         * wg_zero rather than memset, because a memset over a local
+         * about to go out of scope is a dead store and the compiler is
+         * entitled to remove it — GCC at -O2 does, so this scrub was
+         * not happening at all on the reference build. OPENSSL_cleanse
+         * exists precisely to be unremovable.
+         */
+        wg_zero(text, sizeof text);
+        wg_zero(&conf, sizeof conf);
         i++;
     }
 

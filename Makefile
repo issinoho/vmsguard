@@ -55,9 +55,20 @@ all: $(TESTS) $(TOOLS) gateway-check
 # cannot reach. This compiles it for the diagnostics alone, against a
 # stub <pcap.h> declaring just what it uses, so no libpcap installation
 # is needed. See tools/gateway/pcapstub/pcap.h.
-gateway-check:
-	@$(CC) $(CFLAGS) -Itools/gateway/pcapstub -fsyntax-only \
-	    tools/gateway/gateway.c && echo "  gateway.c: clean"
+gateway-check: build/vmsguard-gateway-stub
+	@sh tools/gateway/config_smoke.sh
+
+# Linked against a stub libpcap whose pcap_open_live declines, so the
+# gateway runs as far as printing what it derived from its arguments and
+# then exits. That is enough to catch the argument- and config-handling
+# mistakes that otherwise surface only on OpenVMS.
+build/vmsguard-gateway-stub: tools/gateway/gateway.c \
+                            tools/gateway/pcapstub/pcap_stub.c \
+                            $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) \
+                            $(TUN_OBJ) | build
+	$(CC) $(CFLAGS) -Itools/gateway/pcapstub -o $@ \
+	    tools/gateway/gateway.c tools/gateway/pcapstub/pcap_stub.c \
+	    $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) $(TUN_OBJ) $(LDLIBS)
 
 build:
 	mkdir -p build
