@@ -406,6 +406,22 @@ nothing between starting and stopping cannot distinguish a working
 gateway from a wedged one, which for an unattended process is the only
 question that matters.
 
+Confirmed on the target (2026-09-07), from a batch job:
+
+```
+12:20:06  ---- vmsguard gateway starting ----
+...
+12:25:07  up, 247 captured / 247 tunnelled / 244 injected, 0 dropped, 2 rekeys, 24 mappings
+```
+
+301 seconds, being the 300-second interval plus the one-second tick it
+is checked on. Two rekeys in five minutes matches the 120-second
+interval, and matches what an interactive run reported over the same
+period through an entirely separate path.
+
+The log was read with `TYPE` while the gateway held it, which is the
+thing the append-and-close design exists for.
+
 `--stop-file` names a file the gateway checks for once a second. When it
 appears, the gateway shuts down through its ordinary path and writes its
 summary — then removes the file, so its disappearance is the
