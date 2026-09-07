@@ -41,7 +41,7 @@ TUN_OBJ = $(TUN_SRC:.c=.o)
 
 TESTS   = build/test_proto build/test_slip build/test_hdlc \
           build/test_ethip build/test_nat \
-          build/test_icmp build/test_conf
+          build/test_icmp build/test_conf build/test_platform
 TOOLS   = build/vmsguard-interop build/vmsguard-responder \
           build/vmsguard-key
 
@@ -79,6 +79,9 @@ build/test_proto: tests/test_proto.c $(PROTO_OBJ) | build
 build/test_conf: tests/test_conf.c $(PROTO_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tests/test_conf.c $(PROTO_OBJ) $(LDLIBS)
 
+build/test_platform: tests/test_platform.c $(PLATFORM_OBJ) | build
+	$(CC) $(CFLAGS) -o $@ tests/test_platform.c $(PLATFORM_OBJ) $(LDLIBS)
+
 build/vmsguard-interop: tools/interop/interop.c $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tools/interop/interop.c \
 	    $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) $(LDLIBS)
@@ -113,6 +116,7 @@ test: $(TESTS)
 	@./build/test_nat
 	@./build/test_icmp
 	@./build/test_conf
+	@./build/test_platform
 
 loopback: $(TOOLS)
 	@sh tools/interop/loopback.sh

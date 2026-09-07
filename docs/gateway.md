@@ -307,11 +307,21 @@ The summary says so when it happened:
 peer roamed 1 time; last seen at 64.20.211.140:1443
 ```
 
-Not covered: an endpoint given as a hostname is resolved once, at
-startup. If a provider moves a server *and* stops answering at the old
-address before sending anything from the new one, there is nothing
-authenticated to learn from and the DNS name would have to be resolved
-again. No provider tested has done this.
+Roaming cannot cover a peer that goes *silent* and reappears elsewhere,
+because nothing authenticated ever arrives from the new address to learn
+from — which is exactly what a provider retiring a server looks like.
+For that, an endpoint given as a name is looked up again once every
+handshake attempt has failed, and the handshake retried at wherever it
+now points.
+
+Only then, never on each attempt: a DNS lookup in the path of an
+ordinary retransmission would add a stall to the common case for the
+sake of a rare one. A lookup that fails leaves the endpoint alone, since
+an unreachable DNS server is not evidence that the peer has moved, and
+discarding a working address on that basis would turn a brief outage
+into a permanent one. A name that has moved to another address family is
+also declined: the socket was opened in the old family and rebuilding it
+is not something to do halfway through a handshake.
 
 ### Using the provider's config file directly
 

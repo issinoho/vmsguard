@@ -726,6 +726,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /*
+     * Remember the endpoint as written, so that if the peer stops
+     * answering the name can be looked up again. Roaming handles a peer
+     * that moves and keeps talking; only this handles one that goes
+     * quiet and comes back somewhere else, which is what a provider
+     * retiring a server looks like.
+     */
+    wg_client_set_endpoint_name(&client, host, peer_port);
+
     wg_key_to_base64(b64, client.local.static_public);
     printf("  our public key : %s\n", b64);
     ipv4_format(abuf, sizeof abuf, tun_net);

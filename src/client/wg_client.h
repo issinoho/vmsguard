@@ -100,6 +100,26 @@ struct wg_client {
     unsigned long        roams;
     int                  roaming_enabled;
 
+    /*
+     * The endpoint as a name, when it was given as one.
+     *
+     * Roaming covers a peer that moves and keeps talking, because
+     * something authenticated arrives from the new address. It cannot
+     * cover one that goes silent and reappears elsewhere — there is
+     * nothing to learn from — and that is exactly what happens when a
+     * provider retires a server and points its DNS somewhere else.
+     *
+     * So when every handshake attempt has failed and the endpoint was
+     * a name, it is looked up again. Only then: a resolution on every
+     * attempt would put a DNS lookup in the path of an ordinary
+     * retransmission, and a name that resolves to the same address is
+     * a wasted round trip repeated forever.
+     */
+    char                 endpoint_host[128];
+    uint16_t             endpoint_port;
+    int                  have_host;
+    unsigned long        reresolves;
+
     char                 error[160];
 };
 
@@ -115,6 +135,17 @@ int wg_client_init(struct wg_client *c,
                    const uint8_t *psk,
                    const struct wg_endpoint *endpoint,
                    uint16_t listen_port);
+
+/*
+ * Record the name the endpoint was given as, so it can be looked up
+ * again if the peer stops answering. Optional: without it the endpoint
+ * is whatever wg_client_init was handed, for the life of the client.
+ *
+ * A literal address may be passed and costs nothing — re-resolving it
+ * simply yields the same answer — so callers need not distinguish.
+ */
+void wg_client_set_endpoint_name(struct wg_client *c, const char *host,
+                                 uint16_t port);
 
 void wg_client_close(struct wg_client *c);
 

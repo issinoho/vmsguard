@@ -285,6 +285,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /*
+     * Remember the endpoint as written, so that if the peer stops
+     * answering the name can be looked up again. Roaming handles a peer
+     * that moves and keeps talking; only this handles one that goes
+     * quiet and comes back somewhere else, which is what a provider
+     * retiring a server looks like.
+     */
+    wg_client_set_endpoint_name(&client, host, peer_port);
+
     if (keepalive_s > 0)
         client.keepalive_interval_ms = (uint64_t) keepalive_s * 1000;
 

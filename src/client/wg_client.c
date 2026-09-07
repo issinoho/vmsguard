@@ -52,6 +52,48 @@ int wg_client_init(struct wg_client *c,
     return 0;
 }
 
+void wg_client_set_endpoint_name(struct wg_client *c, const char *host,
+                                 uint16_t port)
+{
+    snprintf(c->endpoint_host, sizeof c->endpoint_host, "%s", host);
+    c->endpoint_port = port;
+    c->have_host = 1;
+}
+
+/*
+ * Look the endpoint name up again. Returns 1 if it now resolves
+ * somewhere else, 0 if it does not or there is nothing to look up.
+ *
+ * A failed lookup leaves the endpoint alone deliberately: a DNS server
+ * that is briefly unreachable is not evidence that the peer has moved,
+ * and discarding a working address on that basis would turn a momentary
+ * outage into a permanent one.
+ */
+static int reresolve_endpoint(struct wg_client *c)
+{
+    struct wg_endpoint fresh;
+
+    if (!c->have_host)
+        return 0;
+    if (wg_endpoint_resolve(&fresh, c->endpoint_host,
+                            c->endpoint_port) != 0)
+        return 0;
+    if (wg_endpoint_equal(&fresh, &c->endpoint))
+        return 0;
+
+    /*
+     * A peer that has moved to another address family would need a
+     * socket in that family, which means tearing down and rebuilding
+     * this one. Refused rather than half-done.
+     */
+    if (fresh.family != c->endpoint.family)
+        return 0;
+
+    c->endpoint = fresh;
+    c->reresolves++;
+    return 1;
+}
+
 void wg_client_close(struct wg_client *c)
 {
     if (c->sock != NULL) {
@@ -122,8 +164,15 @@ static void maybe_roam(struct wg_client *c, const struct wg_endpoint *from)
     c->roams++;
 }
 
-static int do_handshake(struct wg_client *c, struct wg_keypair *out,
-                        int attempts, int timeout_ms)
+/*
+ * One sequence of handshake attempts against the endpoint as it stands.
+ *
+ * Returns 0 on success, 1 if nothing answered (which is worth trying
+ * again elsewhere), and -1 for a failure that retrying cannot help,
+ * with c->error already set.
+ */
+static int handshake_round(struct wg_client *c, struct wg_keypair *out,
+                           int attempts, int timeout_ms)
 {
     uint8_t init_msg[WG_INIT_LEN];
     uint8_t buf[WG_MAX_PACKET];
@@ -253,10 +302,45 @@ static int do_handshake(struct wg_client *c, struct wg_keypair *out,
     }
 
     wg_handshake_clear(&hs);
-    set_error(c, "no handshake response received");
-    return -1;
+    return 1;
 
 #undef COOKIE_RETRIES_MAX
+}
+
+static int do_handshake(struct wg_client *c, struct wg_keypair *out,
+                        int attempts, int timeout_ms)
+{
+    int rc = handshake_round(c, out, attempts, timeout_ms);
+
+    if (rc <= 0)
+        return rc;          /* success, or a failure retrying cannot fix */
+
+    /*
+     * Nothing answered. If the endpoint came from a name, the peer may
+     * not be there any more — a provider retiring a server moves its
+     * DNS, and roaming cannot help with that because nothing
+     * authenticated ever arrives from the new address to learn from.
+     *
+     * Looked up only now, never on each attempt: a lookup in the path
+     * of an ordinary retransmission would add a stall to the common
+     * case for the sake of a rare one.
+     */
+    if (reresolve_endpoint(c)) {
+        char epbuf[80];
+
+        rc = handshake_round(c, out, attempts, timeout_ms);
+        if (rc <= 0)
+            return rc;
+
+        wg_endpoint_format(epbuf, sizeof epbuf, &c->endpoint);
+        snprintf(c->error, sizeof c->error,
+                 "no handshake response, nor at %.70s where the name now"
+                 " points", epbuf);
+        return -1;
+    }
+
+    set_error(c, "no handshake response received");
+    return -1;
 }
 
 /* Install a freshly negotiated keypair, retiring the current one. */
