@@ -285,6 +285,20 @@ static void print_summary(void)
         printf("peer roamed %lu time%s; last seen at %s\n",
                client.roams, client.roams == 1 ? "" : "s", epbuf);
     }
+    /*
+     * Always printed, even at zero. A run shorter than the rekey
+     * interval and a run whose rekeys silently failed look identical
+     * otherwise, and the difference is the whole question when a
+     * session dies after a few minutes.
+     */
+    printf("rekeys: %lu succeeded, %lu failed",
+           client.rekeys, client.rekeys_failed);
+    if (client.peer_handshakes > 0)
+        printf("; the peer started %lu handshake%s of its own",
+               client.peer_handshakes,
+               client.peer_handshakes == 1 ? "" : "s");
+    printf("\n");
+
     if (client.cookies_received > 0)
         printf("answered %lu cookie challenge%s from a loaded peer\n",
                client.cookies_received,

@@ -406,6 +406,9 @@ static void maybe_rekey(struct wg_client *c)
     if (do_handshake(c, &kp, 1, (int) WG_REKEY_TIMEOUT_MS) == 0) {
         install_keypair(c, &kp);
         c->last_rekey_attempt_ms = 0;
+        c->rekeys++;
+    } else {
+        c->rekeys_failed++;
     }
     wg_keypair_clear(&kp);
 }

@@ -56,6 +56,15 @@ struct wg_client {
     uint64_t             rekey_started_ms;
 
     /*
+     * Rekeys, counted so a run can be judged. A session is replaced
+     * every two minutes and the replacement is invisible when it works,
+     * which means a run that never reports one is indistinguishable
+     * from a run too short to have needed one.
+     */
+    unsigned long        rekeys;
+    unsigned long        rekeys_failed;
+
+    /*
      * Overridable so tests need not wait two minutes. Both default to
      * the whitepaper's figures in wg_client_init.
      */
