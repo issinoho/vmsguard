@@ -150,6 +150,15 @@ path rather than uid, so root does not help.
 have the full reasoning. If reopening any of these, say what new
 information justifies it.
 
+**Open lead (2026-09-07): configured tunnels.** The VSI *Guide to IPv6*
+documents `iptunnel create`, which makes a virtual interface `ITn` that
+encapsulates IPv4 or IPv6 in IPv4 (RFC 2003). If it exists, injecting a
+protocol-41 packet with `IP_HDRINCL` — already proven — would let the
+stack decapsulate and forward IPv6, which is the one thing missing for
+an IPv6 gateway. It may also bear on the client shape. Unverified: this
+platform has documented two facilities that turned out not to exist.
+See `docs/research/driver-feasibility.md`.
+
 ## Known gaps, in priority order
 
 Nothing outstanding is known to block ordinary use. The nearest things

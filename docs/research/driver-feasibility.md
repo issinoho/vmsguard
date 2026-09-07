@@ -247,3 +247,88 @@ options occasionally do. Guessing a value was deliberately not
 attempted: setting an unknown socket option is not a probe, it is
 setting an unknown socket option. That question belongs to VSI, who know
 what the number is.
+
+
+## A lead worth probing: configured tunnels (ITn)
+
+Found in the VSI *Guide to IPv6*, section 4.1.2, while confirming the
+absence of `IPV6_HDRINCL`. **Not verified on the target.** Recorded here
+because it may reopen more than one settled question, and because a
+documented facility on this platform has twice turned out not to exist.
+
+VSI TCP/IP Services documents an `iptunnel` command that creates a
+**virtual interface, `ITn`**:
+
+```
+$ iptunnel create [-I int-name] [v4-dest] [v4-src]
+$ ifconfig "IT0" ipv6 up
+$ iptunnel show tunnel
+$ iptunnel delete tunnel
+```
+
+"A configured tunnel is created as a virtual interface (ITn)... an IPv4
+configured tunnel encapsulates IPv4 **or IPv6** packets in an IPv4
+packet." The reference given is RFC 2003, IP-in-IP encapsulation.
+
+### Why it matters for IPv6 through the gateway
+
+The blocker is the *return* direction. An IPv6 packet arriving through
+the WireGuard tunnel has to be put on the LAN addressed to the client,
+and there is no way to originate IPv6 with a source we do not own.
+
+A configured tunnel could supply one, without needing to forge anything:
+
+1. Wrap the decrypted IPv6 packet in an IPv4 header, protocol 41, from
+   the tunnel's remote endpoint to its local one.
+2. Inject that with `IP_HDRINCL`, **which is proven working here**.
+3. The stack receives it on `ITn`, decapsulates, and forwards the IPv6
+   packet to the client natively.
+
+Every primitive in that chain is already demonstrated except the
+existence of `ITn` itself. Outbound needs no tunnel at all — an IPv6
+frame from the client is captured by pcap the same way an IPv4 one is.
+
+Nothing is forged and nothing leaks: the injection is addressed to this
+machine, and what leaves the box afterwards is the stack's own natively
+routed IPv6.
+
+### Why it might matter more than that
+
+The client shape was abandoned because a packet originating on this
+machine cannot be suppressed — the stack sends it in the clear while we
+separately tunnel a copy. Routing traffic at an `ITn` interface would
+mean the stack *encapsulates* it instead, and there is then no plaintext
+original: only an encapsulated one addressed to the tunnel endpoint,
+which we capture.
+
+**With a serious caveat.** RFC 2003 encapsulation is not encryption. The
+encapsulated packet still goes out on the wire to the tunnel
+destination, so unless that destination is this machine, the inner
+packet is readable by anything on the segment. Whether it can be pointed
+at the local box, and whether pcap can then capture it, is unknown and
+is the question to settle before treating this as a route to the client
+shape at all.
+
+### Probing it
+
+The command's existence is the first question, and DCL answers it:
+
+```
+$ ifconfig -a
+$ iptunnel create 192.0.2.1
+$ ifconfig -a
+$ iptunnel show tunnel
+```
+
+`192.0.2.1` is TEST-NET-1 and routes nowhere, so a tunnel to it moves no
+traffic. If `IT0` appears in the second `ifconfig -a`, the facility is
+real and worth pursuing. If `iptunnel` is not a command, or it succeeds
+and creates nothing, this joins SLIP in the settled list — `SET
+INTERFACE SL0` also returned success and created nothing.
+
+To undo:
+
+```
+$ ifconfig "IT0" down
+$ iptunnel delete tunnel
+```
