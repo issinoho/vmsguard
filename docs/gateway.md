@@ -341,6 +341,17 @@ Any flag given as well overrides the file, wherever it appears on the
 command line — a flag the operator typed beats a file they may not have
 written.
 
+Confirmed on the target (2026-09-07) against a real TorGuard config. The
+public key the gateway derived matched every earlier run made with the
+key typed by hand, which is what shows the file was read correctly
+rather than merely read.
+
+That run also gives the first sight of the NAT table's headroom: 197
+flows in 15.7 seconds, 749 per minute. At that rate sustained, the
+30-second UDP timeout holds roughly 375 mappings — about three quarters
+of the 512 entries. Nothing was dropped or evicted, but somewhere near
+1000 flows per minute is where NAT_ENTRIES would need raising.
+
 Three things are not in a config file and must still be given:
 `--interface`, and for a full tunnel `--client` and `--exclude`. The
 gateway says so when it reads a file, along with anything in it that was
