@@ -27,6 +27,9 @@ module and against a commercial VPN provider over the public internet.
 | Roaming | Follows the peer, on authenticated packets only |
 | Provider configs | Reads a `wg-quick` `.conf` directly |
 | Gateway | Forwards a subnet through the tunnel, end to end |
+| Several peers | Routed by longest-prefix `AllowedIPs` |
+| Cryptokey routing | Enforced in both directions |
+| Unattended operation | Batch job, live-readable log, graceful stop |
 | Key tooling | `genkey`/`pubkey` agree with `wg(8)` on 100/100 keys |
 
 ### Endpoint
@@ -115,7 +118,7 @@ Nothing known blocks ordinary use of the gateway. The nearest things:
 
 ```sh
 make          # protocol core, tools, tests, and runs the gateway
-make test     # 375 checks across eight binaries
+make test     # 402 checks across eight binaries
 make loopback # end-to-end self-test over real UDP: handshake,
               # cookie challenge, roaming and data path
 ```
