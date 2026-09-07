@@ -15,7 +15,7 @@ module and against a commercial VPN provider over the public internet.
 
 | | |
 | --- | --- |
-| Protocol core | 113 self-tests pass natively on OpenVMS |
+| Protocol core | 131 self-tests pass natively on OpenVMS |
 | Handshake and transport | Wire-compatible with upstream WireGuard |
 | Rekeying | Verified against real WireGuard |
 | Replay window | 64-bit sliding window, RFC-style |
@@ -29,6 +29,7 @@ module and against a commercial VPN provider over the public internet.
 | Gateway | Forwards a subnet through the tunnel, end to end |
 | Several peers | Routed by longest-prefix `AllowedIPs` |
 | Cryptokey routing | Enforced in both directions |
+| IPv6 forwarding | Returned through a configured tunnel, protocol 41 |
 | Unattended operation | Batch job, live-readable log, graceful stop |
 | Key tooling | `genkey`/`pubkey` agree with `wg(8)` on 100/100 keys |
 
@@ -105,11 +106,11 @@ Nothing known blocks ordinary use of the gateway. The nearest things:
   inherit their first fragment's mapping, and inbound ones that arrive
   early are held until it does. Nothing puts the pieces back together,
   and for a forwarder nothing needs to.
-- **IPv6 does not traverse the gateway**, and cannot with what the
-  platform offers. Probed rather than assumed: no `IPV6_HDRINCL`, and
-  binding a source we do not own is refused, which are the only two
-  ways to originate the return packet. Blocked by the same missing
-  facility as the transparent client shape.
+- **No ICMPv6 Packet Too Big.** IPv6 does traverse the gateway, but a
+  packet larger than the tunnel MTU is refused and counted without
+  telling the sender, so large IPv6 flows stall where IPv4 ones adapt.
+  The IPv4 side sends the RFC 1191 equivalent; the IPv6 side does not
+  yet.
 - **ICMP unreachables from the local stack** cannot be suppressed —
   there is no packet filter on the platform that drops by rule. The
   gateway detects and reports them instead; the fix is `TCPIP SET
@@ -123,7 +124,7 @@ Nothing known blocks ordinary use of the gateway. The nearest things:
 
 ```sh
 make          # protocol core, tools, tests, and runs the gateway
-make test     # 402 checks across eight binaries
+make test     # 469 checks across nine binaries
 make loopback # end-to-end self-test over real UDP: handshake,
               # cookie challenge, roaming and data path
 ```

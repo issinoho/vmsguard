@@ -139,14 +139,17 @@ path rather than uid, so root does not help.
   cannot be given (`SYSTEM-E-UNSUPPORTED`).
 - **pcap cannot inject.** `pcap_sendpacket` is declared and returns
   "socket is not connected". Capture works. Injection uses a raw socket.
-- **IPv6 cannot be injected at all.** Confirmed 2026-09-07 with
+- **IPv6 cannot be injected directly.** Confirmed 2026-09-07 with
   `probe_inject6`: a raw IPv6 socket opens, but `IPV6_HDRINCL` is not
   declared and binding to an address we do not own is refused
-  (`EADDRNOTAVAIL`). Those are the only two portable mechanisms. An IPv6
-  gateway needs to put a packet on the LAN sourced from the far end, so
-  it is blocked — by the same missing facility as the client shape.
+  (`EADDRNOTAVAIL`). Those are the only two portable mechanisms. **This
+  no longer blocks an IPv6 gateway** — see the configured-tunnel finding
+  below; the return packet goes in wrapped in IPv4 protocol 41 and the
+  stack unwraps it.
 - **There is no packet-filter facility** that can drop by rule, which is
-  why the client shape is impossible and the gateway shape is not.
+  why the gateway shape works and a capture-and-suppress client does
+  not. A tunnel-routed client would not need suppression at all; what
+  stops that one is capture, not suppression — see below.
 
 `docs/research/slip-tunnel.md` and `docs/research/driver-feasibility.md`
 have the full reasoning. If reopening any of these, say what new
