@@ -74,11 +74,6 @@
 /* Plenty for a gateway serving a handful of hosts. */
 #define MAX_CLIENTS 16
 
-struct client_filter {
-    uint32_t net;
-    uint32_t mask;
-};
-
 struct stats {
     unsigned long captured;
     unsigned long tunnelled;
@@ -96,6 +91,7 @@ struct stats {
     unsigned long drop_inject;
     unsigned long drop_malformed;
     unsigned long drop_oversize;
+    unsigned long drop_not_allowed;
 
     /*
      * The longest a single pass of the forwarding loop has taken.
@@ -201,11 +197,9 @@ static void on_interrupt(int sig)
  * about an address it has read out of a quoted header rather than off
  * a captured packet.
  */
-static int would_tunnel_to(uint32_t d, const struct client_filter *excludes,
+static int would_tunnel_to(uint32_t d, const struct ipv4_subnet *excludes,
                            int nexcludes, const struct wg_endpoint *peer)
 {
-    int j;
-
     if ((d & 0xF0000000UL) == 0xE0000000UL || d == 0xFFFFFFFFUL || d == 0)
         return 0;
 
@@ -218,27 +212,16 @@ static int would_tunnel_to(uint32_t d, const struct client_filter *excludes,
             return 0;
     }
 
-    for (j = 0; j < nexcludes; j++) {
-        if (ipv4_in_subnet(d, excludes[j].net, excludes[j].mask))
-            return 0;
-    }
-    return 1;
+    return !ipv4_in_any(excludes, nexcludes, d);
 }
 
 /* Whether an address is one of the sources we forward for. With no
    --client given the gateway serves any source, so anything counts. */
-static int is_a_client(uint32_t a, const struct client_filter *clients,
+static int is_a_client(uint32_t a, const struct ipv4_subnet *clients,
                        int nclients)
 {
-    int j;
-
-    if (nclients == 0)
-        return 1;
-    for (j = 0; j < nclients; j++) {
-        if (ipv4_in_subnet(a, clients[j].net, clients[j].mask))
-            return 1;
-    }
-    return 0;
+    /* No --client given means the gateway serves any source. */
+    return nclients == 0 || ipv4_in_any(clients, nclients, a);
 }
 
 /*
@@ -351,6 +334,8 @@ static void emit_drop_causes(void)
         emit("malformed %lu ", st.drop_malformed);
     if (st.drop_oversize > 0)
         emit("too-big-to-translate %lu ", st.drop_oversize);
+    if (st.drop_not_allowed > 0)
+        emit("outside-allowedips %lu ", st.drop_not_allowed);
     emit(")");
 }
 
@@ -727,10 +712,11 @@ int main(int argc, char **argv)
     char errbuf[PCAP_ERRBUF_SIZE];
     uint8_t privkey[WG_KEY_LEN], peerkey[WG_KEY_LEN], psk[WG_KEY_LEN];
     uint8_t *pskp = NULL;
-    uint32_t tun_net = 0, tun_mask = 0;
-    struct client_filter clients[MAX_CLIENTS];
+    struct ipv4_subnet allowed[MAX_CLIENTS];
+    int nallowed = 0;
+    struct ipv4_subnet clients[MAX_CLIENTS];
     int nclients = 0;
-    struct client_filter excludes[MAX_CLIENTS];
+    struct ipv4_subnet excludes[MAX_CLIENTS];
     int nexcludes = 0;
     uint32_t tunnel_addr = 0, tunnel_addr_mask = 0;
     const char *endpoint_arg = NULL, *ifname = NULL, *subnet_arg = NULL;
@@ -836,8 +822,26 @@ int main(int argc, char **argv)
             endpoint_arg = conf_endpoint;
         }
         if (conf.n_allowed > 0) {
+            int k;
+
+            /*
+             * Every entry, not just the first. AllowedIPs is a list in
+             * WireGuard and it means two things at once: what may be
+             * sent to this peer, and what it may claim to be. Using one
+             * of several would quietly narrow both.
+             */
             snprintf(conf_subnet, sizeof conf_subnet, "%s", conf.allowed[0]);
             subnet_arg = conf_subnet;
+            nallowed = 0;
+            for (k = 0; k < conf.n_allowed && nallowed < MAX_CLIENTS; k++) {
+                if (ethip_parse_cidr(conf.allowed[k], &allowed[nallowed].net,
+                                     &allowed[nallowed].mask) != 0) {
+                    emit("error: %s: AllowedIPs '%s' is not valid CIDR\n",
+                         argv[i + 1], conf.allowed[k]);
+                    return 2;
+                }
+                nallowed++;
+            }
         }
         if (conf.mtu > 0)
             tunnel_mtu = conf.mtu;
@@ -868,14 +872,7 @@ int main(int argc, char **argv)
         if (conf.saw_dns)
             emit("  note: DNS is for the machines behind the gateway to\n"
                    "        set for themselves; it is not applied here\n");
-        if (conf.n_allowed > 1) {
-            int k;
-            emit("  note: only the first AllowedIPs entry is used as the\n"
-                   "        tunnel subnet; ignoring");
-            for (k = 1; k < conf.n_allowed; k++)
-                emit(" %s", conf.allowed[k]);
-            emit("\n");
-        }
+
         emit("  note: --interface is not in a config file and must still\n"
                "        be given, as must --client and --exclude for a\n"
                "        full tunnel\n\n");
@@ -915,6 +912,7 @@ int main(int argc, char **argv)
             ifname = argv[++i];
         } else if (strcmp(argv[i], "--tunnel-subnet") == 0 && i + 1 < argc) {
             subnet_arg = argv[++i];
+            nallowed = 0;       /* a flag replaces the file's list */
         } else if (strcmp(argv[i], "--tunnel-address") == 0 && i + 1 < argc) {
             if (ethip_parse_cidr(argv[++i], &tunnel_addr,
                                  &tunnel_addr_mask) != 0 ||
@@ -987,7 +985,12 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    if (ethip_parse_cidr(subnet_arg, &tun_net, &tun_mask) != 0) {
+    if (nallowed == 0 &&
+        ethip_parse_cidr(subnet_arg, &allowed[0].net,
+                         &allowed[0].mask) == 0)
+        nallowed = 1;
+
+    if (nallowed == 0) {
         emit("error: --tunnel-subnet '%s' is not valid CIDR\n",
                 subnet_arg);
         return 2;
@@ -1004,7 +1007,7 @@ int main(int argc, char **argv)
      * for. /8 is the cut-off: anything broader is almost certainly a
      * full tunnel, where this matters most.
      */
-    if (tun_mask < 0xFF000000UL && nclients == 0) {
+    if (allowed[0].mask < 0xFF000000UL && nclients == 0) {
         emit("error: --tunnel-subnet %s is wider than /8, so --client is\n"
             "       required. Capture is promiscuous, and without a source\n"
             "       filter this would tunnel other machines' traffic.\n",
@@ -1021,7 +1024,7 @@ int main(int argc, char **argv)
      * local subnet; there is no equivalent here, so it has to be said
      * explicitly.
      */
-    if (tun_mask < 0xFF000000UL && nexcludes == 0) {
+    if (allowed[0].mask < 0xFF000000UL && nexcludes == 0) {
         emit("error: --tunnel-subnet %s is wider than /8, so --exclude is\n"
             "       required. Without it, traffic to local destinations is\n"
             "       tunnelled too — including conversations with this\n"
@@ -1069,9 +1072,22 @@ int main(int argc, char **argv)
 
     wg_key_to_base64(b64, client.local.static_public);
     emit("  our public key : %s\n", b64);
-    ipv4_format(abuf, sizeof abuf, tun_net);
-    ipv4_format(bbuf, sizeof bbuf, tun_mask);
-    emit("  tunnel subnet  : %s mask %s\n", abuf, bbuf);
+    /*
+     * Named AllowedIPs rather than "tunnel subnet", because it is both:
+     * what gets sent to the peer, and what the peer is permitted to
+     * claim as a source.
+     */
+    {
+        int k;
+
+        for (k = 0; k < nallowed; k++) {
+            ipv4_format(abuf, sizeof abuf, allowed[k].net);
+            ipv4_format(bbuf, sizeof bbuf, allowed[k].mask);
+            emit("  %s: %s mask %s\n",
+                 k == 0 ? "allowed-ips    " : "               ",
+                 abuf, bbuf);
+        }
+    }
     if (use_nat) {
         ipv4_format(abuf, sizeof abuf, tunnel_addr);
         emit("  source NAT to  : %s\n", abuf);
@@ -1288,7 +1304,7 @@ int main(int argc, char **argv)
                  */
                 if (icmp_error_from(ip, iplen, gw_addr, &orig_dst,
                                     &orig_proto) &&
-                    ipv4_in_subnet(orig_dst, tun_net, tun_mask) &&
+                    ipv4_in_any(allowed, nallowed, orig_dst) &&
                     would_tunnel_to(orig_dst, excludes, nexcludes,
                                     &endpoint) &&
                     is_a_client(ipv4_dst(ip), clients, nclients)) {
@@ -1346,8 +1362,8 @@ int main(int argc, char **argv)
                     ip = NULL;
             }
 
-            if (ip != NULL && ipv4_in_subnet(ipv4_dst(ip),
-                                             tun_net, tun_mask)) {
+            if (ip != NULL && ipv4_in_any(allowed, nallowed,
+                                         ipv4_dst(ip))) {
                 st.captured++;
 
                 /*
@@ -1464,6 +1480,35 @@ after_out:
              */
             if (iplen >= IPV4_MIN_HDR && iplen <= plainlen) {
                 int nrc = NAT_OK;
+
+                /*
+                 * Cryptokey routing, the inbound half.
+                 *
+                 * Decryption proves the packet came from the peer. It
+                 * says nothing about what the peer may claim to *be*,
+                 * and WireGuard's central idea is that those are the
+                 * same question: a peer may only source addresses
+                 * inside its AllowedIPs. Without this a peer -- or
+                 * anyone who has taken it over -- could inject packets
+                 * onto the LAN bearing any source address at all.
+                 *
+                 * Checked on the packet as decrypted, before NAT
+                 * rewrites anything: what is being validated is what
+                 * the peer sent, not what we made of it.
+                 *
+                 * With a full tunnel the list is 0.0.0.0/0 and this
+                 * permits everything, which is correct rather than
+                 * pointless -- that configuration really does authorise
+                 * the peer to send as anyone.
+                 */
+                if (!ipv4_in_any(allowed, nallowed, ipv4_src(plain))) {
+                    st.dropped++;
+                    st.drop_not_allowed++;
+                    if (verbose)
+                        log_drop("in ", plain, iplen,
+                                 "source outside the peer's AllowedIPs");
+                    continue;
+                }
 
                 if (use_nat)
                     nrc = nat_inbound(&nat, plain, iplen, wg_time_ms());

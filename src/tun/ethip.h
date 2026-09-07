@@ -50,6 +50,22 @@ uint8_t ipv4_proto(const uint8_t *ip);
 int ipv4_in_subnet(uint32_t addr, uint32_t network, uint32_t mask);
 
 /*
+ * A list of subnets, and whether an address falls in any of them.
+ *
+ * WireGuard's AllowedIPs is a list, and so are the gateway's --client
+ * and --exclude. All three were being walked by hand, in near-identical
+ * loops, none of them tested. An empty list matches nothing, which is
+ * the right answer for "is this address permitted" and the reason
+ * callers that mean "no restriction" have to say so themselves.
+ */
+struct ipv4_subnet {
+    uint32_t net;
+    uint32_t mask;
+};
+
+int ipv4_in_any(const struct ipv4_subnet *list, int n, uint32_t addr);
+
+/*
  * Parse "10.9.0.0/24" into a network address and mask, both in network
  * order. A missing prefix length is treated as /32.
  *

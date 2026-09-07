@@ -480,6 +480,36 @@ read timeout of 50 ms and never approach a handshake timeout:
 14:10:18  up, 11325 captured / ... 54 rekeys, worst pass 51ms
 ```
 
+### Cryptokey routing
+
+`AllowedIPs` is enforced in both directions, which is the whole idea it
+carries in WireGuard: it says both what may be *sent* to a peer and what
+that peer may claim to *be*.
+
+The outbound half was always there — a packet is tunnelled only if its
+destination falls inside the list. The inbound half was missing.
+Decryption proves a packet came from the peer and says nothing about
+what address the peer may put in it, so without a check a peer — or
+whoever has taken it over — could inject packets bearing any source
+address at all onto the LAN behind the gateway.
+
+Now a decrypted packet whose source is outside `AllowedIPs` is dropped
+and counted as `outside-allowedips`. The check runs on the packet as
+decrypted, before NAT rewrites anything, because what is being validated
+is what the peer sent rather than what we made of it.
+
+With a full tunnel the list is `0.0.0.0/0` and this permits everything.
+That is correct rather than pointless: such a configuration really does
+authorise the peer to send as anyone, and the operator chose it.
+
+All the `AllowedIPs` entries in a config are used, not just the first.
+They appear in the startup header:
+
+```
+  allowed-ips    : 10.9.0.0 mask 255.255.255.0
+                 : 192.168.7.0 mask 255.255.255.0
+```
+
 ### Drops, by cause
 
 The total on its own says a run lost something without saying what,

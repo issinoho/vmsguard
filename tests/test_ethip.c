@@ -201,6 +201,52 @@ static void test_subnet(void)
           "everything is inside 0.0.0.0/0");
 }
 
+/*
+ * Matching an address against a list of subnets, which is what
+ * AllowedIPs, --client and --exclude all are.
+ */
+static void test_in_any(void)
+{
+    struct ipv4_subnet list[3];
+
+    printf("\naddress against a list of subnets\n");
+
+    check(ipv4_in_any(list, 0, 0x0A000001UL) == 0,
+          "an empty list matches nothing, not everything");
+
+    list[0].net  = 0x0A090000UL;   /* 10.9.0.0/24  */
+    list[0].mask = 0xFFFFFF00UL;
+    list[1].net  = 0xC0A80000UL;   /* 192.168.0.0/16 */
+    list[1].mask = 0xFFFF0000UL;
+
+    check(ipv4_in_any(list, 2, 0x0A090005UL), "an address in the first");
+    check(ipv4_in_any(list, 2, 0xC0A8007BUL), "an address in the second");
+    check(!ipv4_in_any(list, 2, 0x08080808UL), "and one in neither");
+
+    /* The boundary either side of a /24. */
+    check(ipv4_in_any(list, 2, 0x0A0900FFUL), "the top of a /24 is inside");
+    check(!ipv4_in_any(list, 2, 0x0A090100UL),
+          "and the address after it is not");
+
+    /*
+     * The default route matches everything, which is what a full
+     * tunnel's AllowedIPs is and why it makes the check a formality
+     * rather than a restriction.
+     */
+    list[2].net  = 0;
+    list[2].mask = 0;
+    check(ipv4_in_any(&list[2], 1, 0x08080808UL),
+          "0.0.0.0/0 matches any address");
+    check(ipv4_in_any(&list[2], 1, 0),
+          "including 0.0.0.0 itself");
+
+    /* A single host. */
+    list[0].net  = 0xC0A800DAUL;   /* 192.168.0.218/32 */
+    list[0].mask = 0xFFFFFFFFUL;
+    check(ipv4_in_any(list, 1, 0xC0A800DAUL), "a /32 matches its own host");
+    check(!ipv4_in_any(list, 1, 0xC0A800DBUL), "and not its neighbour");
+}
+
 int main(void)
 {
     printf("vmsguard Ethernet/IPv4 inspection tests\n");
@@ -209,7 +255,8 @@ int main(void)
     test_padding();
     test_addresses();
     test_cidr();
-    test_subnet();
+    test_subnet();    test_in_any();
+
 
     printf("\n%s — %d checks, %d failure%s\n",
            failures == 0 ? "PASS" : "FAIL",

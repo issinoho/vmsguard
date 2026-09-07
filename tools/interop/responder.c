@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ethip.h"
 #include "wg_key.h"
 #include "wg_noise.h"
 #include "wg_platform.h"
@@ -100,6 +101,30 @@ static int make_echo_reply(uint8_t *pkt, size_t len)
  * long as the same one is used to mint and to verify; this is address
  * bytes then port, big-endian. Returns the length written.
  */
+static void put32_be(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t) (v >> 24);
+    p[1] = (uint8_t) (v >> 16);
+    p[2] = (uint8_t) (v >> 8);
+    p[3] = (uint8_t) v;
+}
+
+static void fix_ip_checksum(uint8_t *ip, size_t ihl)
+{
+    uint32_t sum = 0;
+    size_t i;
+
+    ip[10] = 0;
+    ip[11] = 0;
+    for (i = 0; i + 1 < ihl; i += 2)
+        sum += ((uint32_t) ip[i] << 8) | ip[i + 1];
+    while (sum >> 16)
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    sum = ~sum & 0xFFFF;
+    ip[10] = (uint8_t) (sum >> 8);
+    ip[11] = (uint8_t) (sum & 0xFF);
+}
+
 static size_t encode_endpoint(uint8_t out[18], const struct wg_endpoint *ep)
 {
     size_t n = (ep->family == WG_AF_INET6) ? 16u : 4u;
@@ -133,6 +158,9 @@ static void usage(const char *argv0)
 "             responses, as if they had been lost. The client is then\n"
 "             holding a keypair we never derived, and must keep sending\n"
 "             on the previous one or its traffic stops decrypting\n"
+"  --spoof-source  echo packets back with this source address instead\n"
+"             of the real one, to see whether the far end enforces\n"
+"             AllowedIPs on what it decrypts\n"
 "  --ignore-rekey  answer the first handshake and then ignore every\n"
 "             later initiation, as an unresponsive peer does. A client\n"
 "             that waits for the answer stops doing anything else while\n"
@@ -171,6 +199,8 @@ int main(int argc, char **argv)
     int responses_seen = 0;
     int drop_response = 0;
     int ignore_rekey = 0;
+    uint32_t spoof_src = 0;
+    int spoofing = 0;
     struct wg_keypair prev_kp;
     int have_prev = 0;
     struct wg_handshake init_hs;
@@ -214,6 +244,13 @@ int main(int argc, char **argv)
             drop_response = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--ignore-rekey") == 0) {
             ignore_rekey = 1;
+        } else if (strcmp(argv[i], "--spoof-source") == 0 && i + 1 < argc) {
+            uint32_t m;
+            if (ethip_parse_cidr(argv[++i], &spoof_src, &m) != 0) {
+                fprintf(stderr, "bad --spoof-source\n");
+                return 2;
+            }
+            spoofing = 1;
         } else if (strcmp(argv[i], "--ipv6") == 0) {
             family = WG_AF_INET6;
         } else {
@@ -431,6 +468,17 @@ int main(int argc, char **argv)
                else, including a keepalive, goes back unchanged. */
             if (make_echo_reply(plain, plainlen))
                 printf("  (converted echo request to echo reply)\n");
+
+            /*
+             * Claim to be somebody else. A peer that does not check
+             * what it decrypts against AllowedIPs will accept this and
+             * put it on its LAN.
+             */
+            if (spoofing && plainlen >= 20) {
+                put32_be(plain + 12, spoof_src);
+                fix_ip_checksum(plain, (size_t) (plain[0] & 0x0F) * 4);
+                printf("  echoing it back sourced from elsewhere\n");
+            }
 
             /*
              * Move before answering, so the reply itself comes from the

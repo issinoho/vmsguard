@@ -107,3 +107,14 @@ void ipv4_format(char *out, size_t cap, uint32_t addr)
              (unsigned) ((addr >> 8) & 0xFF),
              (unsigned) (addr & 0xFF));
 }
+
+int ipv4_in_any(const struct ipv4_subnet *list, int n, uint32_t addr)
+{
+    int i;
+
+    for (i = 0; i < n; i++) {
+        if (ipv4_in_subnet(addr, list[i].net, list[i].mask))
+            return 1;
+    }
+    return 0;
+}

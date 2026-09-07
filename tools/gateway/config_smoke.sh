@@ -44,8 +44,8 @@ want() {
 echo "gateway config smoke test"
 
 want "read $CONF"                        "the file is read"
-want "tunnel subnet  : 0.0.0.0 mask 0.0.0.0" \
-     "AllowedIPs becomes the tunnel subnet"
+want "allowed-ips    : 0.0.0.0 mask 0.0.0.0" \
+     "AllowedIPs is read and enforced in both directions"
 want "source NAT to  : 10.13.127.177"    "Address becomes the NAT address"
 want "tunnel MTU     : 1390"             "MTU becomes the tunnel MTU"
 want "forwarding for : 192.168.0.218"    "--client still applies"

@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "wg_client.h"
+#include "ethip.h"
 #include "wg_key.h"
 #include "wg_platform.h"
 #include "wg_proto.h"
@@ -174,6 +175,10 @@ static void usage(const char *argv0)
 "                  to <dst-ip> and wait for the reply\n"
 "  --attempts      handshake attempts (default 3)\n"
 "  --timeout       milliseconds to wait per attempt (default 5000)\n"
+"  --allowed-ips   only accept decrypted packets whose source falls in\n"
+"                  this CIDR, as cryptokey routing requires. Repeatable.\n"
+"                  Without it any source is accepted, which is what\n"
+"                  AllowedIPs = 0.0.0.0/0 means anyway\n"
 "  --rekey-after   override the rekey interval, ms (default 120000).\n"
 "  --reject-after  override when a session becomes unusable, ms.\n"
 "                  Defaults to one and a half times --rekey-after,\n"
@@ -210,6 +215,9 @@ int main(int argc, char **argv)
     int have_key = 0, have_peer = 0, do_ping = 0, verbose = 0;
     int attempts = 3, timeout_ms = 5000;
     unsigned long rekey_after_ms = 0;
+    struct ipv4_subnet allowed[8];
+    int nallowed = 0;
+    unsigned long refused_src = 0;
     unsigned long reject_after_ms = 0;
     int duration_s = 0, keepalive_s = 0, idle_s = 0;
     uint16_t listen_port = 0, peer_port;
@@ -245,6 +253,14 @@ int main(int argc, char **argv)
             do_ping = 1;
         } else if (strcmp(argv[i], "--rekey-after") == 0 && i + 1 < argc) {
             rekey_after_ms = strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "--allowed-ips") == 0 && i + 1 < argc) {
+            if (nallowed >= 8 ||
+                ethip_parse_cidr(argv[++i], &allowed[nallowed].net,
+                                 &allowed[nallowed].mask) != 0) {
+                fprintf(stderr, "error: bad --allowed-ips\n");
+                return 2;
+            }
+            nallowed++;
         } else if (strcmp(argv[i], "--reject-after") == 0 && i + 1 < argc) {
             reject_after_ms = strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--duration") == 0 && i + 1 < argc) {
@@ -431,12 +447,32 @@ int main(int argc, char **argv)
             }
             if (verbose)
                 hexdump("decrypted", reply, replylen);
+
+            /*
+             * Cryptokey routing. Decryption proves who sent it; this
+             * decides what they were allowed to claim to be.
+             */
+            if (nallowed > 0 && replylen >= 20 &&
+                !ipv4_in_any(allowed, nallowed, ipv4_src(reply))) {
+                char src[16];
+                ipv4_format(src, sizeof src, ipv4_src(reply));
+                printf("  refused a packet sourced %s: outside AllowedIPs\n",
+                       src);
+                refused_src++;
+                continue;
+            }
+
             if (is_echo_reply(reply, replylen, id, seq)) {
                 got = 1;
                 break;
             }
             /* Padding or an unrelated packet; keep waiting. */
         }
+
+        if (refused_src > 0)
+            printf("  %lu packet%s refused for a source outside"
+                   " AllowedIPs\n", refused_src,
+                   refused_src == 1 ? "" : "s");
 
         if (got) {
             printf("  echo reply received — data path works both ways\n");

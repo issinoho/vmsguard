@@ -82,13 +82,13 @@ build/test_conf: tests/test_conf.c $(PROTO_OBJ) | build
 build/test_platform: tests/test_platform.c $(PLATFORM_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tests/test_platform.c $(PLATFORM_OBJ) $(LDLIBS)
 
-build/vmsguard-interop: tools/interop/interop.c $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) | build
+build/vmsguard-interop: tools/interop/interop.c $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) $(TUN_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tools/interop/interop.c \
-	    $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) $(LDLIBS)
+	    $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) $(TUN_OBJ) $(LDLIBS)
 
-build/vmsguard-responder: tools/interop/responder.c $(PROTO_OBJ) $(PLATFORM_OBJ) | build
+build/vmsguard-responder: tools/interop/responder.c $(PROTO_OBJ) $(PLATFORM_OBJ) $(TUN_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tools/interop/responder.c \
-	    $(PROTO_OBJ) $(PLATFORM_OBJ) $(LDLIBS)
+	    $(PROTO_OBJ) $(PLATFORM_OBJ) $(TUN_OBJ) $(LDLIBS)
 
 build/vmsguard-key: tools/keys/keys.c $(PROTO_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tools/keys/keys.c $(PROTO_OBJ) $(LDLIBS)

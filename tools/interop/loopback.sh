@@ -229,7 +229,7 @@ sleep 1
     --endpoint "127.0.0.1:$PORT3" \
     --rekey-after 1500 --reject-after 60000 --duration 8 > "$out3" 2>&1 || true
 
-kill "$rpid3" 2>/dev/null
+kill "$rpid3" 2>/dev/null || true
 rpid3=
 
 if ! grep -q "ignoring a rekey initiation" "$log3"; then
@@ -255,3 +255,51 @@ if [ "$ka" -lt 7 ] || [ "$bad" -ne 0 ]; then
     exit 1
 fi
 echo "an unanswered rekey did not stall the client ($ka keepalives in 8s)"
+
+# ---------------------------------------------------------------------
+# Scenario 4: cryptokey routing.
+#
+# The responder echoes the ping back with its source rewritten to
+# 8.8.8.8. Decryption still succeeds -- it really is the peer, using the
+# right keys -- so nothing about the crypto rejects it. What must reject
+# it is AllowedIPs: a peer may only source addresses it was permitted
+# to. Without that check a peer, or whoever has taken it over, can put a
+# packet bearing any source address at all onto the far end's network.
+# ---------------------------------------------------------------------
+
+PORT4=$((PORT + 3))
+log4=$(mktemp)
+out4=$(mktemp)
+cleanup4() { [ -n "$rpid4" ] && kill "$rpid4" 2>/dev/null; rm -f "$log4" "$out4"; }
+trap 'cleanup; cleanup2; cleanup3; cleanup4' EXIT
+
+"$BUILD/vmsguard-responder" \
+    --key "$sk" --peer-key "$cp" \
+    --listen-port "$PORT4" --packets 2 \
+    --spoof-source 8.8.8.8 > "$log4" 2>&1 &
+rpid4=$!
+sleep 1
+
+# Non-zero by design: the echo reply is refused, so none arrives.
+"$BUILD/vmsguard-interop" \
+    --key "$ck" --peer-key "$sp" \
+    --endpoint "127.0.0.1:$PORT4" \
+    --ping 10.9.0.2 10.9.0.1 \
+    --allowed-ips 10.9.0.0/24 \
+    --timeout 2000 > "$out4" 2>&1 || true
+
+kill "$rpid4" 2>/dev/null || true
+rpid4=
+
+if ! grep -q "echoing it back sourced from elsewhere" "$log4"; then
+    echo
+    echo "FAILED: the responder never spoofed a source"
+    exit 1
+fi
+if ! grep -q "refused a packet sourced 8.8.8.8" "$out4"; then
+    cat "$out4"
+    echo
+    echo "FAILED: a packet sourced outside AllowedIPs was accepted"
+    exit 1
+fi
+echo "a peer claiming an address outside AllowedIPs was refused"
