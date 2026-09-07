@@ -373,14 +373,28 @@ The interface had to be brought up first. `iptunnel create` leaves it
 `RUNNING` but not `UP`, which `netstat -i` marks with a `*` and which
 made an earlier run of this same probe read as a flat no.
 
-**What is not yet shown** is that the inner packet was acted upon.
-Nothing reached `192.168.0.218`, and the likely reason is the inner
-source: `192.168.0.218` is directly connected on `IE0`, so a packet
-claiming to come from it while arriving on `IT0` is spoofed as far as
-the stack is concerned. `Ierrs` stayed 0, so it was discarded quietly
-rather than counted as an error. Delivery needs an inner source that is
-plausibly reachable through the tunnel, which means a route pointing at
-`IT0`.
+And the inner packet was **acted upon**. On 192.168.0.218:
+
+```
+16:59:24.944270 enp0s25 In  IP 192.168.0.80 > 192.168.0.218:
+                              ICMP echo reply, id 16962, seq 1, length 8
+```
+
+`id 16962` is `0x4242`, the identifier `probe_encap` writes, so this is
+that packet and not a coincidence. `.218` never sent a request: the only
+way an echo *reply* reaches it is that the OpenVMS stack unwrapped what
+we injected, treated the ICMP inside as an arriving packet, answered it,
+and routed the answer out `IE0`.
+
+The complete chain, then, is proven end to end: inject to ourselves →
+local input path → matched to the tunnel → decapsulated → **inner packet
+delivered to the stack** → answered → routed out.
+
+Worth recording that the expected obstacle did not appear. The inner
+source, `192.168.0.218`, is directly connected on `IE0`, and a packet
+bearing it while arriving on `IT0` looks spoofed; a reverse-path check
+would have dropped it. There is evidently no such check here, which is
+convenient and worth knowing rather than relying on.
 
 ### What this changes
 
@@ -398,6 +412,11 @@ address is forged, and nothing leaves the box in the clear.
 The client shape is a further step and still has the caveat below: its
 *outbound* direction needs the encapsulated packet captured, and
 `gate 192.168.0.1` says that frame goes to the router.
+
+But the inbound half of the client shape is the same mechanism just
+demonstrated, and it is the half that was thought impossible. What
+remains is a question about capture and leakage, not about whether the
+stack will accept what we give it.
 
 ### What is still unknown
 

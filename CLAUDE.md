@@ -161,9 +161,14 @@ Bring the interface up first: `iptunnel create` leaves it `RUNNING` but
 not `UP`, and `netstat -i` marks that with a `*`. Missing it makes the
 probe read as a flat no.
 
-Still unshown: that the inner packet is *acted upon* (the test's inner
-source looked like a martian), and whether the client shape's outbound
-half can capture the encapsulated frame without leaking it. See
+The inner packet is also **acted upon**: the injected ICMP echo request
+was answered and the reply routed out to the address it claimed to come
+from, `id 16962` matching the probe's own. No reverse-path check
+intervened, though the inner source was an address directly connected on
+another interface.
+
+Still unshown: whether the client shape's outbound half can capture the
+encapsulated frame without leaking the inner packet to the segment. See
 `docs/research/driver-feasibility.md`.
 
 ## Known gaps, in priority order
