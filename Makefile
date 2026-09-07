@@ -43,7 +43,7 @@ TESTS   = build/test_proto build/test_slip build/test_hdlc \
           build/test_ethip build/test_nat \
           build/test_icmp build/test_conf build/test_platform
 TOOLS   = build/vmsguard-interop build/vmsguard-responder \
-          build/vmsguard-key
+          build/vmsguard-key build/probe-inject6
 
 .PHONY: all test loopback gateway-check clean
 
@@ -81,6 +81,9 @@ build/test_conf: tests/test_conf.c $(PROTO_OBJ) | build
 
 build/test_platform: tests/test_platform.c $(PLATFORM_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tests/test_platform.c $(PLATFORM_OBJ) $(LDLIBS)
+
+build/probe-inject6: tools/probes/probe_inject6.c | build
+	$(CC) $(CFLAGS) -o $@ tools/probes/probe_inject6.c
 
 build/vmsguard-interop: tools/interop/interop.c $(PROTO_OBJ) $(PLATFORM_OBJ) $(CLIENT_OBJ) $(TUN_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tools/interop/interop.c \

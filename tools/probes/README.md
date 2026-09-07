@@ -119,3 +119,34 @@ work. It does **not** mean a transparent tunnel is feasible: pcap sees
 copies of packets rather than claiming them, so suppressing the plaintext
 original on the outbound path remains unsolved. See
 `docs/research/driver-feasibility.md`.
+
+## probe_inject6 — can we forge an IPv6 source?
+
+Asks the one question an IPv6 gateway depends on, before anything is
+built on the answer.
+
+Injecting a packet that arrived through the tunnel means writing a
+header whose source we do not own. For IPv4 that is `IP_HDRINCL`, and
+`probe_inject` proved it works here. IPv6 has no portable equivalent:
+Linux has no `IPV6_HDRINCL` at all, the BSDs mostly removed theirs, and
+what VSI TCP/IP Services does is unknown. A declaration would settle
+nothing either way — `pcap_sendpacket` is declared on this system and
+returns "socket is not connected".
+
+```
+$ pinj6 := $sys$disk:[.build]probe_inject6.exe
+$ pinj6 --src fd00::1 --dst fd00::2
+```
+
+`--src` must be an address this machine does **not** own; forging it is
+the whole question. Watch the destination:
+
+```
+tcpdump -ni any icmp6 and host fd00::1
+```
+
+The packet it builds was checked byte for byte against an independent
+implementation, checksum included, so a packet that fails to arrive is
+the stack's answer rather than a malformed datagram. That distinction is
+the entire value of the probe: a send that returns success and delivers
+nothing is what cost this project a week over SLIP.

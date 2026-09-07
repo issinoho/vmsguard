@@ -271,6 +271,10 @@ $ cc 'cc_flags'/OBJECT=[.build]probe_inject.obj [.tools.probes]probe_inject.c
 $ link/executable=[.build]probe_inject.exe -
       [.build]probe_inject.obj,[.build]ethip.obj,[.build]rawinject.obj
 $ if $severity .ne. 1 then goto linkfail
+$ cc 'cc_flags'/OBJECT=[.build]probe_inject6.obj [.tools.probes]probe_inject6.c
+$ link/executable=[.build]probe_inject6.exe -
+      [.build]probe_inject6.obj
+$ if $severity .ne. 1 then goto linkfail
 $!
 $ pcap_image = ""
 $ if f$search("SYS$LIBRARY:TCPIP$LIBPCAP_SHR.EXE") .nes. "" then -
@@ -314,6 +318,8 @@ $ say "  $ run [.build]probe_sockets       sockets, poll, SOCK_RAW"
 $ say "  $ run [.build]probe_pcap          libpcap capture and injection"
 $ say "  $ pinj := $sys$disk:[.build]probe_inject.exe"
 $ say "  $ pinj --src <ip> --dst <ip>      raw-socket injection"
+$ say "  $ pinj6 := $sys$disk:[.build]probe_inject6.exe"
+$ say "  $ pinj6 --src <ipv6> --dst <ipv6>  IPv6 injection: can we forge a source?"
 $ say ""
 $ say "  $ spike := $sys$disk:[.build]slip_spike.exe"
 $ say "  $ spike --raw                     SLIP/PPP over-pty spike"
