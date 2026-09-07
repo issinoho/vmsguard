@@ -128,7 +128,9 @@ path rather than uid, so root does not help.
 ## Settled questions — do not reopen without new information
 
 - **There is no TUN/TAP on OpenVMS.** Confirmed from the header
-  inventory, not inferred.
+  inventory, not inferred. **But see the configured-tunnel finding
+  below**: `ITn` is not a TUN device, and for handing the stack a packet
+  it turns out to do the same job.
 - **SLIP is unusable**: the management layer knows the controller, but
   no driver exists. `SET INTERFACE SL0` returns success and creates
   nothing.
@@ -167,13 +169,16 @@ from, `id 16962` matching the probe's own. No reverse-path check
 intervened, though the inner source was an address directly connected on
 another interface.
 
-Protocol 41 is accepted too, with IPv6 not configured at all: the
-tunnel matches on the outer header before anything reads the payload.
+The **IPv6 round trip completes**: `ifconfig "IT0" ipv6 up` needs no
+system reconfiguration, and an injected protocol-41 packet carrying an
+ICMPv6 echo request to the tunnel's own address moved both `Ipkts` and
+`Opkts` — received, decapsulated, answered, and the answer
+re-encapsulated on the way out. Every element of an IPv6 gateway's
+inbound path is therefore demonstrated, with nothing forged.
 
-Still unshown: delivery of an inner *IPv6* packet, which needs IPv6
-running and is a configuration question rather than a capability one;
-and whether the client shape's outbound half can capture the
-encapsulated frame without leaking the inner packet to the segment. See
+Still unshown: whether the client shape's outbound half can capture the
+encapsulated frame without leaking the inner packet to the segment —
+`gate 192.168.0.1` says that frame goes to the router. See
 `docs/research/driver-feasibility.md`.
 
 ## Known gaps, in priority order

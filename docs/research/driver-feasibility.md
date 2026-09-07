@@ -413,11 +413,50 @@ the outer IPv4 header and receives the packet before anything looks at
 what is inside, so the encapsulation path is protocol-agnostic: IPv4 in
 IPv4 and IPv6 in IPv4 are accepted alike.
 
-What that leaves unproven is only *delivery* of the inner IPv6 packet,
-and that is a configuration question rather than a capability one — the
-IPv4 case has already shown the stack acts on what it unwraps. Proving
-it needs IPv6 running, via `@SYS$MANAGER:TCPIP$IP6_SETUP`, which
-restarts TCP/IP Services.
+### And the IPv6 round trip completes (2026-09-07)
+
+IPv6 needed no system reconfiguration at all. One line brings it up on
+the tunnel:
+
+```
+$ ifconfig "IT0" ipv6 up
+%TCPIP-I-FSIPADDRUP, IT0 :C2A8:00FF:FE50:0000 primary active
+
+$ ifconfig "IT0"
+IT0: flags=4c3<UP,BROADCAST,RUNNING,NOARP,MULTICAST>
+    *inet6 fe80::c2a8:ff:fe50:0
+     192.168.0.80 --> 192.0.2.1
+```
+
+Then an ICMPv6 echo request **to that address**, from a link-local peer
+reachable only through the tunnel:
+
+```
+$ netstat -i          IT0 ... Ipkts 2   Opkts 3
+$ PENC --tunnel-remote 192.0.2.1 --tunnel-local 192.168.0.80 \
+       --inner-proto 41 --inner-src6 fe80::1 \
+       --inner-dst6 fe80::c2a8:ff:fe50:0
+$ netstat -i          IT0 ... Ipkts 3   Opkts 4
+```
+
+**Both counters moved.** `fe80::1` is on-link only via `IT0`, so a reply
+can leave by no other route. The stack therefore received our injected
+packet, decapsulated it, processed the IPv6 packet inside, generated a
+reply, and re-encapsulated that reply in IPv4 on the way out.
+
+That is every element of an IPv6 gateway's inbound path, demonstrated:
+
+| | |
+| --- | --- |
+| A virtual interface exists | `IT0`, `RUNNING` |
+| An injected packet reaches our own input path | yes |
+| The stack matches it to the tunnel | protocol 4 and 41 alike |
+| It decapsulates | `Ipkts` |
+| It acts on the inner packet | the IPv4 echo reply, and this |
+| It routes the result back out | `Opkts` |
+
+Nothing in the chain is forged. The injection is addressed to this
+machine, and what leaves afterwards is the stack's own routing.
 
 ### What this changes
 
