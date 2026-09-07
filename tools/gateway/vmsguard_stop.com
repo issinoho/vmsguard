@@ -30,4 +30,8 @@ $   IF count .LT. 10 THEN GOTO wait_loop
 $!
 $ WRITE SYS$OUTPUT "no acknowledgement after 10 seconds."
 $ WRITE SYS$OUTPUT "Is it running?  SHOW QUEUE/BATCH/ALL"
+$ WRITE SYS$OUTPUT "The stop file is left in place; it will be seen"
+$ WRITE SYS$OUTPUT "whenever the gateway next runs, so delete it if"
+$ WRITE SYS$OUTPUT "that is not what you want:"
+$ WRITE SYS$OUTPUT "  DELETE ''vg_root'VMSGUARD.STOP;*"
 $ EXIT

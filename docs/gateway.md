@@ -423,6 +423,19 @@ Three DCL procedures in `tools/gateway/` do this:
 | `vmsguard_start.com` | submits it as a batch job |
 | `vmsguard_stop.com` | creates the stop file and waits for the acknowledgement |
 
+```
+$ SET DEFAULT DISK$TOOLS:[CODE.VMSGUARD]
+$ @[.TOOLS.GATEWAY]VMSGUARD_START
+```
+
+`vmsguard_start.com` finds `vmsguard_run.com` beside itself, through
+`F$ENVIRONMENT("PROCEDURE")`, rather than assuming it sits in the
+repository root two directories up — which is what the first version
+did, and `SUBMIT` failed with `RMS-E-FNF`. It also checks `$STATUS`
+afterwards: `SET NOON` means a failed `SUBMIT` does not stop the
+procedure, so without that check it printed "vmsguard submitted"
+directly beneath the error saying it had not been.
+
 Batch rather than `RUN/DETACHED`, because a batch job inherits the
 submitting account's privileges — which is what packet capture and the
 raw socket need. `RUN/DETACHED` would mean naming every privilege on the
