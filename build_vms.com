@@ -168,6 +168,7 @@ $ cc 'cc_flags'/OBJECT=[.build]ethip.obj [.src.tun]ethip.c
 $ cc 'cc_flags'/OBJECT=[.build]rawinject.obj [.src.tun]rawinject.c
 $ cc 'cc_flags'/OBJECT=[.build]nat.obj [.src.tun]nat.c
 $ cc 'cc_flags'/OBJECT=[.build]icmp.obj [.src.tun]icmp.c
+$ cc 'cc_flags'/OBJECT=[.build]encap.obj [.src.tun]encap.c
 $!
 $!---------------------------------------------------------------------
 $! Linker options file for the OpenSSL shareable image
@@ -237,6 +238,12 @@ $ say "building test_nat"
 $ cc 'cc_flags'/OBJECT=[.build]test_nat.obj [.tests]test_nat.c
 $ link/executable=[.build]test_nat.exe -
       [.build]test_nat.obj,[.build]nat.obj,[.build]ethip.obj
+$ if $severity .ne. 1 then goto linkfail
+$!
+$ say "building test_encap"
+$ cc 'cc_flags'/OBJECT=[.build]test_encap.obj [.tests]test_encap.c
+$ link/executable=[.build]test_encap.exe -
+      [.build]test_encap.obj,[.build]encap.obj
 $ if $severity .ne. 1 then goto linkfail
 $!
 $ say "building test_ethip"
@@ -348,6 +355,8 @@ $     say ""
 $     run [.build]test_hdlc
 $     say ""
 $     run [.build]test_ethip
+$     say ""
+$     run [.build]test_encap
 $     say ""
 $     run [.build]test_nat
 $     say ""

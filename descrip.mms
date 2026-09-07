@@ -89,6 +89,9 @@ ALL : [.build]vmsguard_key.exe, [.build]vmsguard_interop.exe, -
 [.build]wg_conf.obj : [.src.proto]wg_conf.c, [.src.proto]wg_conf.h
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
 
+[.build]encap.obj : [.src.tun]encap.c, [.src.tun]encap.h
+    $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
+
 ! ==== platform and client ====
 !
 ! The POSIX implementation is used on purpose: VSI TCP/IP Services

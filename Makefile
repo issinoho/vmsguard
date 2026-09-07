@@ -36,12 +36,13 @@ CLIENT_OBJ   = $(CLIENT_SRC:.c=.o)
 
 TUN_SRC = src/tun/slip.c src/tun/hdlc.c src/tun/ethip.c \
           src/tun/rawinject.c src/tun/nat.c \
-          src/tun/icmp.c
+          src/tun/icmp.c src/tun/encap.c
 TUN_OBJ = $(TUN_SRC:.c=.o)
 
 TESTS   = build/test_proto build/test_slip build/test_hdlc \
           build/test_ethip build/test_nat \
-          build/test_icmp build/test_conf build/test_platform
+          build/test_icmp build/test_conf build/test_platform \
+          build/test_encap
 TOOLS   = build/vmsguard-interop build/vmsguard-responder \
           build/vmsguard-key build/probe-inject6 build/probe-encap
 
@@ -78,6 +79,9 @@ build/test_proto: tests/test_proto.c $(PROTO_OBJ) | build
 
 build/test_conf: tests/test_conf.c $(PROTO_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tests/test_conf.c $(PROTO_OBJ) $(LDLIBS)
+
+build/test_encap: tests/test_encap.c src/tun/encap.o | build
+	$(CC) $(CFLAGS) -o $@ tests/test_encap.c src/tun/encap.o
 
 build/test_platform: tests/test_platform.c $(PLATFORM_OBJ) | build
 	$(CC) $(CFLAGS) -o $@ tests/test_platform.c $(PLATFORM_OBJ) $(LDLIBS)
@@ -123,6 +127,7 @@ test: $(TESTS)
 	@./build/test_icmp
 	@./build/test_conf
 	@./build/test_platform
+	@./build/test_encap
 
 loopback: $(TOOLS)
 	@sh tools/interop/loopback.sh
