@@ -100,10 +100,12 @@ That makes a round trip expensive, so:
 - **A new dependency has three build files, not one.** `Makefile`,
   `build_vms.com` and `descrip.mms`. Only the first is exercised here,
   so the other two fail on the machine you cannot reach — and on VMS
-  they fail *quietly*. This has already happened once: `ethip.obj`
-  became a dependency of interop and responder, was added to the first
-  two files, and left `descrip.mms` naming a target it had no rule to
-  build. Nothing here could see it, because nothing here runs MMS.
+  they fail *quietly*. This happened three times in two days, all in
+  `descrip.mms` and all found only when the user ran `MMS`: a rule it
+  lacked (`ethip.obj`), an object it did not link (`icmp.obj`), and an
+  include directory it did not name (`[.src.tun]`). Nothing here can see
+  any of them, because nothing here runs MMS. If you touch what a tool
+  links or includes, open all three files in the same edit.
   Note the scope difference too — `descrip.mms` builds the protocol
   core, tools and protocol tests, but *not* the gateway, which needs
   pcap.

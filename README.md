@@ -156,11 +156,11 @@ $ set default [.vmsguard]
 $ @build_vms TEST
 ```
 
-`build_vms.com` uses only `CC` and `LINK`, and is the exercised path —
-every run on the target has gone through it. There is also a
-`descrip.mms` for MMS, which builds the protocol core, the tools and the
-protocol tests but *not* the gateway, since that needs pcap. Full detail
-in [`docs/building-vms.md`](docs/building-vms.md).
+`build_vms.com` uses only `CC` and `LINK` and builds everything. There
+is also a `descrip.mms` for MMS, confirmed working on 2026-09-07, which
+builds the protocol core, the tools and the protocol tests but *not* the
+gateway, since that needs pcap. Full detail in
+[`docs/building-vms.md`](docs/building-vms.md).
 
 ---
 

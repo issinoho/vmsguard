@@ -4,8 +4,9 @@
 # iteration is fast and diagnostics are good.
 #
 # The OpenVMS build uses build_vms.com (or descrip.mms) against these
-# same sources — see docs/building-vms.md. Neither has been run on a
-# real system yet.
+# same sources — see docs/building-vms.md. Both are confirmed working on
+# OpenVMS V9.2-3 x86-64; build_vms.com is the one that builds the
+# gateway, since descrip.mms does not cover it.
 #
 # -std=c99 -pedantic is deliberate: the OpenVMS C compiler is VSI C
 # V7.7-3 (GEM-based, not Clang), so C11 constructs must not creep in.

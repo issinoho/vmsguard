@@ -1,8 +1,13 @@
 ! descrip.mms : MMS description file for vmsguard on OpenVMS x86-64
 !
-! Syntax verified against the VSI DECset Guide to the Module Management
-! System, but not yet run on a real system. build_vms.com remains the
-! lower-risk option since it uses only CC and LINK.
+! Confirmed working on OpenVMS V9.2-3 x86-64, 2026-09-07. Getting there
+! took three fixes, all of the same kind: a rule this file lacked, an
+! object it did not link, and an include directory it did not name --
+! each present in Makefile and build_vms.com, each missed here, and none
+! visible on the Linux side because nothing there runs MMS.
+!
+! build_vms.com remains the path that builds everything: this file does
+! not build the gateway, which needs pcap.
 !
 ! Usage:
 !     $ MMS                build everything
@@ -141,9 +146,17 @@ $(OPT) :
 [.build]keys.obj : [.tools.keys]keys.c
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
 
+! Every link is followed by a severity test, because on VMS an
+! undefined symbol is a *warning*: the linker writes an image, reports
+! success, and the program dies when execution reaches the unresolved
+! reference. build_vms.com learned this the hard way and stops on it;
+! MMS would otherwise carry on and print "build complete" over a broken
+! image. %X10000002 is a plain error status, which aborts the build.
+
 [.build]vmsguard_key.exe : [.build]keys.obj, $(PROTO_OBJS), $(OPT)
     $(LINK)/EXECUTABLE=$(MMS$TARGET) [.build]keys.obj,$(PROTO_OBJS),-
 $(OPT)/OPTIONS
+    @ IF $SEVERITY .NE. 1 THEN EXIT %X10000002
 
 [.build]interop.obj : [.tools.interop]interop.c
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
@@ -154,6 +167,7 @@ $(PLAT_OBJS), $(CLIENT_OBJS), [.build]ethip.obj, -
     $(LINK)/EXECUTABLE=$(MMS$TARGET) [.build]interop.obj,$(PROTO_OBJS),-
 $(PLAT_OBJS),$(CLIENT_OBJS),[.build]ethip.obj,-
 [.build]icmp.obj,$(OPT)/OPTIONS
+    @ IF $SEVERITY .NE. 1 THEN EXIT %X10000002
 
 [.build]responder.obj : [.tools.interop]responder.c
     $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
@@ -163,6 +177,7 @@ $(PLAT_OBJS), [.build]ethip.obj, [.build]icmp.obj, $(OPT)
     $(LINK)/EXECUTABLE=$(MMS$TARGET) [.build]responder.obj,-
 $(PROTO_OBJS),$(PLAT_OBJS),[.build]ethip.obj,-
 [.build]icmp.obj,$(OPT)/OPTIONS
+    @ IF $SEVERITY .NE. 1 THEN EXIT %X10000002
 
 ! ==== tests ====
 
@@ -172,6 +187,7 @@ $(PROTO_OBJS),$(PLAT_OBJS),[.build]ethip.obj,-
 [.build]test_proto.exe : [.build]test_proto.obj, $(PROTO_OBJS), $(OPT)
     $(LINK)/EXECUTABLE=$(MMS$TARGET) [.build]test_proto.obj,-
 $(PROTO_OBJS),$(OPT)/OPTIONS
+    @ IF $SEVERITY .NE. 1 THEN EXIT %X10000002
 
 TEST : [.build]test_proto.exe
     RUN [.build]test_proto.exe
