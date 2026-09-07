@@ -124,6 +124,15 @@ static void usage(const char *argv0)
 "  --roam-after  after this many data packets, move to a fresh port and\n"
 "             answer from there, abandoning the old socket. The client\n"
 "             must follow or the exchange stops dead\n"
+"  --reinitiate-after  after this many data packets, start a handshake\n"
+"             of our own, the way a peer with queued data on an ageing\n"
+"             session does. The client must answer it or the session\n"
+"             dies; the old keypair is kept so its in-flight packets\n"
+"             still decrypt\n"
+"  --drop-response  ignore this many of the client's handshake\n"
+"             responses, as if they had been lost. The client is then\n"
+"             holding a keypair we never derived, and must keep sending\n"
+"             on the previous one or its traffic stops decrypting\n"
 "  --ipv6     listen on IPv6 instead of IPv4\n", argv0);
 }
 
@@ -151,6 +160,16 @@ int main(int argc, char **argv)
     int challenged = 0;
     int roam_after = -1;
     int roamed = 0;
+    int reinit_after = -1;
+    int reinitiated = 0;
+    int awaiting_response = 0;
+    int initiations_sent = 0;
+    int responses_seen = 0;
+    int drop_response = 0;
+    struct wg_keypair prev_kp;
+    int have_prev = 0;
+    struct wg_handshake init_hs;
+    uint8_t init_msg[WG_INIT_LEN];
     uint8_t cookie_key[WG_KEY_LEN], cookie_secret[WG_KEY_LEN];
     uint8_t family = WG_AF_INET;
     uint16_t port = 0;
@@ -183,6 +202,11 @@ int main(int argc, char **argv)
             cookie_challenges = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--roam-after") == 0 && i + 1 < argc) {
             roam_after = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--reinitiate-after") == 0 &&
+                   i + 1 < argc) {
+            reinit_after = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--drop-response") == 0 && i + 1 < argc) {
+            drop_response = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--ipv6") == 0) {
             family = WG_AF_INET6;
         } else {
@@ -326,12 +350,65 @@ int main(int argc, char **argv)
             continue;
         }
 
-        if (buf[0] == WG_MSG_TRANSPORT_DATA && established) {
-            if (wg_transport_decrypt(plain, &plainlen, &counter, &kp,
-                                     buf, len) != 0) {
-                printf("  transport data failed to decrypt\n");
+        if (buf[0] == WG_MSG_HANDSHAKE_RESP && len == WG_RESP_LEN) {
+            struct wg_keypair fresh;
+
+            if (!wg_mac1_verify(buf, len, WG_RESP_OFF_MAC1, self_mac1)) {
+                printf("  response with bad mac1, ignored\n");
                 continue;
             }
+
+            /*
+             * Counted before anything else. A second response to one
+             * initiation means the client answered a replay, and the
+             * awaiting_response guard below would otherwise swallow it
+             * silently — which is exactly how this test came to pass
+             * against a client with no replay protection at all.
+             */
+            responses_seen++;
+
+            if (drop_response > 0) {
+                drop_response--;
+                printf("  dropping the client's handshake response,"
+                       " as if it were lost\n");
+                fflush(stdout);
+                continue;
+            }
+            if (!awaiting_response) {
+                printf("  a further response we did not ask for\n");
+                continue;
+            }
+            if (wg_handshake_consume_response(buf, &init_hs, &local, &peer,
+                                              &fresh) != 0) {
+                printf("  our handshake response failed to decrypt\n");
+                continue;
+            }
+            /* Keep the old keypair: the client will go on sending under
+               it until it has seen data on the new one. */
+            prev_kp = kp;
+            have_prev = 1;
+            kp = fresh;
+            awaiting_response = 0;
+            printf("  the client answered our handshake; rekeyed\n");
+            fflush(stdout);
+            continue;
+        }
+
+        if (buf[0] == WG_MSG_TRANSPORT_DATA && established) {
+            int on_prev = 0;
+
+            if (wg_transport_decrypt(plain, &plainlen, &counter, &kp,
+                                     buf, len) != 0) {
+                if (!have_prev ||
+                    wg_transport_decrypt(plain, &plainlen, &counter,
+                                         &prev_kp, buf, len) != 0) {
+                    printf("  transport data failed to decrypt\n");
+                    continue;
+                }
+                on_prev = 1;
+            }
+            if (on_prev)
+                printf("  (that one arrived on the previous keypair)\n");
             printf("  data: counter %lu, %lu bytes\n",
                    (unsigned long) counter, (unsigned long) plainlen);
             fflush(stdout);
@@ -369,14 +446,70 @@ int main(int argc, char **argv)
                 }
             }
 
-            if (wg_transport_encrypt(out, &outlen, &kp, plain,
-                                     plainlen) == 0)
+            /*
+             * Start a handshake of our own, which is what a real peer
+             * does when it has data queued on an ageing session. The
+             * client has to answer it; if it ignores the message, as it
+             * once did, this session simply expires.
+             *
+             * Before the echo, not after. A client that receives the
+             * echo first stops reading, sends its next packet, and only
+             * then notices the handshake — so the interesting window,
+             * where it holds a keypair the peer has not confirmed, is
+             * never entered and the test proves nothing.
+             */
+            if (reinit_after >= 0 && !reinitiated && echoed >= reinit_after) {
+                if (wg_handshake_create_initiation(init_msg, &init_hs,
+                                                   &local, &peer,
+                                                   index++) == 0 &&
+                    wg_socket_send(sock, &client_ep, init_msg,
+                                   WG_INIT_LEN) == 0) {
+                    reinitiated = 1;
+                    awaiting_response = 1;
+                    initiations_sent++;
+                    printf("  initiating a handshake of our own\n");
+
+                    /*
+                     * And immediately again, byte for byte. It carries
+                     * the same TAI64N timestamp, so it is a replay, and
+                     * a correct responder answers the first and refuses
+                     * the second. Sending it here is the only way to
+                     * put that rule under test.
+                     */
+                    if (wg_socket_send(sock, &client_ep, init_msg,
+                                       WG_INIT_LEN) == 0) {
+                        initiations_sent++;
+                        printf("  and again, byte for byte — a replay\n");
+                    }
+                    fflush(stdout);
+                } else {
+                    printf("  failed to start our own handshake\n");
+                }
+            }
+
+            if (wg_transport_encrypt(out, &outlen,
+                                     on_prev && have_prev ? &prev_kp : &kp,
+                                     plain, plainlen) == 0)
                 (void) wg_socket_send(sock, &client_ep, out, outlen);
 
             echoed++;
-            if (packets >= 0 && echoed >= packets)
+            /*
+             * Not while a handshake we started is still outstanding:
+             * exiting here would count the client's answer as never
+             * arriving, when it is simply behind this packet. The
+             * timeout branch above still bounds the wait.
+             */
+            if (packets >= 0 && echoed >= packets && !awaiting_response)
                 break;
         }
+    }
+
+    if (initiations_sent == 2) {
+        if (responses_seen == 1)
+            printf("  the replayed initiation was refused, as it must be\n");
+        else
+            printf("  REPLAY ACCEPTED: %d responses to %d initiations\n",
+                   responses_seen, initiations_sent);
     }
 
     printf("responder exiting after %d packet%s\n",

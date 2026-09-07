@@ -412,6 +412,107 @@ static void maybe_rekey(struct wg_client *c)
 
 /* ---- data ------------------------------------------------------------ */
 
+/*
+ * Answer a handshake initiation from the peer.
+ *
+ * Returns 1 if the message was one and was dealt with (well or badly),
+ * 0 if it was not an initiation at all, so the caller can carry on
+ * looking at it.
+ */
+static int handle_initiation(struct wg_client *c, const uint8_t *buf,
+                             size_t len, const struct wg_endpoint *from)
+{
+    struct wg_handshake hs;
+    struct wg_keypair kp;
+    uint8_t timestamp[WG_TIMESTAMP_LEN];
+    uint8_t resp[WG_RESP_LEN];
+    uint32_t index;
+
+    if (len != WG_INIT_LEN || buf[0] != WG_MSG_HANDSHAKE_INIT)
+        return 0;
+
+    /*
+     * mac1 first: it is keyed with our own static public key, so it is
+     * the cheap check that this was addressed to us at all, before any
+     * Diffie-Hellman is done. That ordering is the point of mac1.
+     */
+    if (!wg_mac1_verify(buf, len, WG_INIT_OFF_MAC1, c->self_mac1_key))
+        return 1;
+
+    if (wg_handshake_consume_initiation(buf, &hs, &c->local, timestamp) != 0)
+        return 1;
+
+    /* It decrypted, so we now know who sent it. It must be our peer. */
+    if (!wg_equal(hs.remote_static, c->peer.static_public, WG_KEY_LEN)) {
+        wg_handshake_clear(&hs);
+        return 1;
+    }
+
+    /*
+     * Strictly greater than the last accepted, which is what makes a
+     * captured initiation useless to replay. TAI64N is big-endian
+     * seconds then nanoseconds, so it compares as a byte string.
+     */
+    if (c->have_last_init &&
+        memcmp(timestamp, c->last_init_timestamp, WG_TIMESTAMP_LEN) <= 0) {
+        wg_handshake_clear(&hs);
+        return 1;
+    }
+
+    index = c->local_index + 1;
+    if (index == 0)
+        index = 1;
+
+    if (wg_handshake_create_response(resp, &hs, &c->local, &c->peer,
+                                     index, &kp) != 0) {
+        wg_handshake_clear(&hs);
+        return 1;
+    }
+
+    /* mac2 if the peer has previously challenged us and the cookie is
+       still good; zero otherwise, which is the normal case. */
+    (void) wg_cookie_apply(&c->cookie, resp, WG_RESP_OFF_MAC2,
+                           wg_time_ms());
+
+    if (wg_socket_send(c->sock, from, resp, WG_RESP_LEN) != 0) {
+        wg_zero(&kp, sizeof kp);
+        return 1;
+    }
+
+    c->local_index = index;
+    memcpy(c->last_init_timestamp, timestamp, WG_TIMESTAMP_LEN);
+    c->have_last_init = 1;
+
+    /*
+     * The initiation authenticated, so its source is the peer — the
+     * same rule the rest of the roaming code follows.
+     */
+    maybe_roam(c, from);
+
+    install_keypair(c, &kp);
+    c->kp_unconfirmed = 1;
+    c->peer_handshakes++;
+    wg_zero(&kp, sizeof kp);
+    return 1;
+}
+
+/*
+ * The keypair to encrypt with.
+ *
+ * Normally the current one. The exception is a keypair we built as
+ * responder and the peer has not yet sent on: if our handshake response
+ * was lost, the peer never derived it and would discard anything we
+ * sent under it, so the previous keypair — which the peer demonstrably
+ * has — is the better bet until the new one is confirmed.
+ */
+static struct wg_keypair *sending_keypair(struct wg_client *c)
+{
+    if (c->kp_unconfirmed && c->have_prev &&
+        wg_time_ms() - c->prev_established_ms < c->reject_after_ms)
+        return &c->prev_kp;
+    return &c->kp;
+}
+
 int wg_client_send(struct wg_client *c, const uint8_t *pt, size_t ptlen)
 {
     uint8_t msg[WG_MAX_PACKET];
@@ -436,7 +537,8 @@ int wg_client_send(struct wg_client *c, const uint8_t *pt, size_t ptlen)
         return -1;
     }
 
-    if (wg_transport_encrypt(msg, &msglen, &c->kp, pt, ptlen) != 0) {
+    if (wg_transport_encrypt(msg, &msglen, sending_keypair(c), pt,
+                             ptlen) != 0) {
         set_error(c, "encryption failed");
         return -1;
     }
@@ -537,6 +639,16 @@ int wg_client_recv(struct wg_client *c, uint8_t *out, size_t cap,
         if (rc != WG_SOCK_OK)
             return WG_SOCK_ERROR;
 
+        /*
+         * The peer may start a handshake of its own — it does when it
+         * has data queued on an ageing session. Answering it here is
+         * what keeps such a session alive; ignoring it, as this used
+         * to, left the session to die at REJECT_AFTER_TIME with
+         * nothing in the log to explain why.
+         */
+        if (handle_initiation(c, buf, len, &from))
+            continue;
+
         if (len < WG_DATA_HDR_LEN + WG_TAG_LEN)
             continue;
         if (buf[0] != WG_MSG_TRANSPORT_DATA)
@@ -564,6 +676,14 @@ int wg_client_recv(struct wg_client *c, uint8_t *out, size_t cap,
          * resend that would otherwise do it.
          */
         maybe_roam(c, &from);
+
+        /*
+         * Data on the current keypair confirms it. If we built that
+         * keypair as responder, this is the peer demonstrating it
+         * derived the same one, so it is now safe to send on.
+         */
+        if (kp == &c->kp)
+            c->kp_unconfirmed = 0;
 
         /*
          * Receiving is also a rekey trigger, and at a slightly earlier

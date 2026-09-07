@@ -44,7 +44,8 @@ trap cleanup EXIT
 # client have to notice a challenge mid-handshake and retry.
 "$BUILD/vmsguard-responder" \
     --key "$sk" --peer-key "$cp" \
-    --listen-port "$PORT" --packets 2 --cookie 1 --roam-after 0 > "$log" 2>&1 &
+    --listen-port "$PORT" --packets 2 --cookie 1 --roam-after 0 \
+    --reinitiate-after 0 > "$log" 2>&1 &
 rpid=$!
 
 # Give the responder a moment to bind before the client sends.
@@ -107,3 +108,84 @@ if ! grep -q "peer roamed 1 time" "$out"; then
     exit 1
 fi
 echo "peer roamed mid-session and the client followed it"
+
+# --reinitiate-after 0 makes the responder start a handshake of its own
+# after the keepalive, the way a peer with queued data on an ageing
+# session does. The client has to answer it; a client that ignores the
+# message — as this one used to — leaves the session to expire.
+if ! grep -q "initiating a handshake of our own" "$log"; then
+    echo
+    echo "FAILED: the responder never started its own handshake"
+    exit 1
+fi
+if ! grep -q "the client answered our handshake" "$log"; then
+    echo
+    echo "FAILED: the client did not answer a peer-initiated handshake"
+    exit 1
+fi
+# The responder sends its initiation twice, byte for byte. The second
+# carries the same TAI64N timestamp and is therefore a replay: the
+# client must answer the first and refuse the second, which is what
+# stops a captured initiation being replayed at it later.
+if ! grep -q "the replayed initiation was refused" "$log"; then
+    echo
+    echo "FAILED: the client answered a replayed handshake initiation"
+    exit 1
+fi
+echo "peer-initiated handshake answered, its replay refused"
+
+# ---------------------------------------------------------------------
+# Scenario 2: the handshake response goes missing.
+#
+# The responder initiates, then throws away the client's answer. The
+# client is now holding a keypair the responder never derived. If it
+# sends under that keypair the traffic is undecryptable and the ping is
+# lost; keeping to the previous keypair until the peer has been seen to
+# use the new one is what makes this survivable. Nothing in scenario 1
+# exercises that, because there the response arrives.
+# ---------------------------------------------------------------------
+
+PORT2=$((PORT + 1))
+log2=$(mktemp)
+out2=$(mktemp)
+cleanup2() { [ -n "$rpid2" ] && kill "$rpid2" 2>/dev/null; rm -f "$log2" "$out2"; }
+trap 'cleanup; cleanup2' EXIT
+
+"$BUILD/vmsguard-responder" \
+    --key "$sk" --peer-key "$cp" \
+    --listen-port "$PORT2" --packets 2 \
+    --reinitiate-after 0 --drop-response 1 > "$log2" 2>&1 &
+rpid2=$!
+sleep 1
+
+if ! "$BUILD/vmsguard-interop" \
+        --key "$ck" --peer-key "$sp" \
+        --endpoint "127.0.0.1:$PORT2" \
+        --ping 10.9.0.2 10.9.0.1 \
+        --timeout 3000 > "$out2" 2>&1; then
+    cat "$out2"
+    echo
+    echo "--- responder output ---"
+    cat "$log2"
+    echo
+    echo "FAILED: a lost handshake response broke the data path"
+    exit 1
+fi
+
+wait "$rpid2" 2>/dev/null || true
+rpid2=
+
+if ! grep -q "dropping the client's handshake response" "$log2"; then
+    echo
+    echo "FAILED: the responder never dropped a response"
+    exit 1
+fi
+if grep -q "transport data failed to decrypt" "$log2"; then
+    echo
+    echo "--- responder output ---"
+    cat "$log2"
+    echo
+    echo "FAILED: the client sent on a keypair the peer never derived"
+    exit 1
+fi
+echo "a lost handshake response did not break the data path"

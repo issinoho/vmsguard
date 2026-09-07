@@ -101,6 +101,30 @@ struct wg_client {
     int                  roaming_enabled;
 
     /*
+     * Handshakes the *peer* started.
+     *
+     * WireGuard is symmetric: either end may initiate, and a peer with
+     * data queued on an ageing session will. Ignoring those left the
+     * session to die at REJECT_AFTER_TIME with nothing to explain it.
+     *
+     * last_init_timestamp is the greatest TAI64N seen in an initiation
+     * from this peer. An initiation carrying anything at or below it is
+     * a replay and is refused — the timestamp is what stops a captured
+     * initiation being replayed later, and it is the responder's job to
+     * enforce that.
+     *
+     * kp_unconfirmed marks a keypair we built as *responder*. The
+     * initiator confirms it by sending on it; until then we keep
+     * sending on the previous one, because a lost handshake response
+     * means the initiator never derived this keypair and would discard
+     * anything we sent under it.
+     */
+    uint8_t              last_init_timestamp[WG_TIMESTAMP_LEN];
+    int                  have_last_init;
+    int                  kp_unconfirmed;
+    unsigned long        peer_handshakes;
+
+    /*
      * The endpoint as a name, when it was given as one.
      *
      * Roaming covers a peer that moves and keeps talking, because

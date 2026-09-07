@@ -151,7 +151,8 @@ to gaps:
    arriving early are held until it does; nothing puts the pieces back
    together, and nothing needs to.
 
-Done: rekeying, the replay sliding window, PersistentKeepalive, the
+Done: peer-initiated handshakes, rekeying, the replay sliding window,
+PersistentKeepalive, the
 gateway's source filter, source NAT, ICMP fragmentation-needed, NAT of
 fragmented datagrams, the cookie mechanism (`mac2`), and reading a
 provider's `.conf` directly, roaming, endpoint re-resolution, holding

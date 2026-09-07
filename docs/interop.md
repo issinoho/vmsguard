@@ -199,6 +199,23 @@ for two minutes, and attached to the retry, which does not count against
 the attempt budget — the extra round trip is the peer's doing, not a
 failure of ours. Nothing is printed unless `--verbose` is on.
 
+**Either end may start a handshake.** WireGuard is symmetric, and a peer
+with data queued on an ageing session initiates rather than waiting. The
+client answers those, which is what keeps such a session alive; ignoring
+them left it to expire at `REJECT_AFTER_TIME` with nothing to explain
+why.
+
+Two rules go with that, both of them the responder's job:
+
+- An initiation whose TAI64N timestamp is not greater than the last
+  accepted from that peer is refused. That is what stops a captured
+  initiation being replayed later.
+- A keypair built as *responder* is not sent on until the peer has been
+  seen to use it. If the handshake response was lost, the peer never
+  derived that keypair and would discard anything sent under it, so the
+  previous keypair — which the peer demonstrably holds — is used until
+  the new one is confirmed.
+
 **Handshake succeeds, no echo reply** — key agreement and transport
 framing are working. Almost always `allowed-ips` on the peer not covering
 the `--ping` source address, or the destination simply not answering
