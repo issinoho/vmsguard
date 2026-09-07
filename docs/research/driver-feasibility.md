@@ -196,3 +196,54 @@ entirely in userspace, with no kernel driver dependency.
 2. Record the answer here along with any docs/links VSI provides.
 3. Revisit this document once Phase 1 (protocol MVP) is working, to decide
    whether to invest in the driver path or settle on the proxy fallback.
+
+
+## IPv6 injection: confirmed impossible (2026-09-07)
+
+Probed before any IPv6 code was written, with `probe_inject6`:
+
+```
+  raw IPv6 socket opens              yes
+  IPV6_HDRINCL declared              no -- not defined in the headers
+  binding to the forged source       no -- can't assign requested address
+  unforged packet sends              no -- no route to host
+```
+
+**Established.** A raw IPv6 socket opens, so the family is supported.
+There is no `IPV6_HDRINCL`, so the header cannot be supplied by the
+caller and the stack builds it. Binding to an address this machine does
+not own is refused with `EADDRNOTAVAIL`, so the source cannot be claimed
+that way either. Between them those are the only two portable
+mechanisms, and neither is available.
+
+**Not established.** The last line is inconclusive about the platform:
+`fd00::2` simply has no route from that machine, so it says nothing
+about whether raw IPv6 sending works to a destination that does. It does
+not need to — a gateway that can only send as itself cannot forward.
+
+### What this means
+
+Forwarding *is* putting a packet on the wire with a source you do not
+own. Outbound needs no injection at all: the packet is captured with
+pcap and leaves through the WireGuard UDP socket. It is the return
+direction, decrypted and put back on the LAN addressed to the client,
+that requires it — and there is no way to do it for IPv6.
+
+So IPv6 through the gateway is blocked by exactly the same missing
+facility as the transparent client shape: no way to originate a packet
+the stack did not address. That was already the conclusion for pcap
+injection (`pcap_sendpacket` returns "socket is not connected") and for
+the absence of any packet filter that drops by rule.
+
+The three now have one cause between them, which makes the case to VSI a
+single request rather than three: **a way for a user-mode program to
+present packets to, and receive packets from, the IP stack as an
+interface.** A TUN device answers all three at once.
+
+### Not tried
+
+`IPV6_HDRINCL` might exist numerically without a header definition, as
+options occasionally do. Guessing a value was deliberately not
+attempted: setting an unknown socket option is not a probe, it is
+setting an unknown socket option. That question belongs to VSI, who know
+what the number is.

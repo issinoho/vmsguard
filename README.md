@@ -105,6 +105,11 @@ Nothing known blocks ordinary use of the gateway. The nearest things:
   inherit their first fragment's mapping, and inbound ones that arrive
   early are held until it does. Nothing puts the pieces back together,
   and for a forwarder nothing needs to.
+- **IPv6 does not traverse the gateway**, and cannot with what the
+  platform offers. Probed rather than assumed: no `IPV6_HDRINCL`, and
+  binding a source we do not own is refused, which are the only two
+  ways to originate the return packet. Blocked by the same missing
+  facility as the transparent client shape.
 - **ICMP unreachables from the local stack** cannot be suppressed —
   there is no packet filter on the platform that drops by rule. The
   gateway detects and reports them instead; the fix is `TCPIP SET
