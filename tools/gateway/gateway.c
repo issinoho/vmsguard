@@ -1101,7 +1101,15 @@ int main(int argc, char **argv)
     } else {
         emit("  established\n\n");
     }
-    emit("forwarding. Ctrl-Y or Ctrl-C to stop.\n\n");
+    /*
+     * A detached process has no terminal to press Ctrl-C at, so saying
+     * so in its log is worse than saying nothing — it names the one
+     * thing the reader cannot do.
+     */
+    if (stop_file != NULL)
+        emit("forwarding. To stop:  CREATE %s\n\n", stop_file);
+    else
+        emit("forwarding. Ctrl-Y or Ctrl-C to stop.\n\n");
 
     /* Armed only now, so that a failure before this point exits without
        printing a summary of a run that never started. */

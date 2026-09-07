@@ -56,6 +56,9 @@ want "note: DNS"                         "DNS is reported as not applied"
 # so check the failure that follows names the stub rather than a bad
 # address: an endpoint that did not survive would fail to resolve first.
 want "our address    : "                 "the local address facing the peer is found"
+# Nothing past this point is reachable here: the raw socket needs
+# privilege and the run stops there, so the handshake, the forwarding
+# banner and everything inside the loop go untested by this script.
 want "error: "                            "and it stops at the raw socket, as it should"
 
 # ---------------------------------------------------------------------
