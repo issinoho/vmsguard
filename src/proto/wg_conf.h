@@ -34,11 +34,20 @@
 #define WG_CONF_CIDR_LEN     64
 #define WG_CONF_ENDPOINT_LEN 128
 
-struct wg_conf {
-    uint8_t private_key[WG_KEY_LEN];
+/* Enough for a site with several remote networks. */
+#define WG_CONF_MAX_PEERS 8
+
+/*
+ * One [Peer] section.
+ *
+ * A config may hold several. They are not variants of one peer: each is
+ * a separate tunnel with its own keys, its own endpoint and its own
+ * AllowedIPs, and it is AllowedIPs that decides which of them a given
+ * packet belongs to.
+ */
+struct wg_conf_peer {
     uint8_t public_key[WG_KEY_LEN];
     uint8_t preshared_key[WG_KEY_LEN];
-    int     have_private_key;
     int     have_public_key;
     int     have_preshared_key;
 
@@ -46,18 +55,27 @@ struct wg_conf {
     char    endpoint[WG_CONF_ENDPOINT_LEN];
     int     have_endpoint;
 
+    char    allowed[WG_CONF_MAX_ALLOWED][WG_CONF_CIDR_LEN];
+    int     n_allowed;
+
+    int     keepalive;      /* seconds, 0 if unset or disabled */
+};
+
+struct wg_conf {
+    uint8_t private_key[WG_KEY_LEN];
+    int     have_private_key;
+
     /* The first Address entry, with its prefix length stripped: this is
        the address the provider assigned us, which is what source NAT
        rewrites to. */
     char    address[WG_CONF_CIDR_LEN];
     int     have_address;
 
-    char    allowed[WG_CONF_MAX_ALLOWED][WG_CONF_CIDR_LEN];
-    int     n_allowed;
+    struct wg_conf_peer peers[WG_CONF_MAX_PEERS];
+    int     n_peers;
 
     int     mtu;            /* 0 if unset. The inner MTU, so it is what
                                --tunnel-mtu wants directly. */
-    int     keepalive;      /* seconds, 0 if unset or disabled */
     int     listen_port;    /* 0 if unset */
 
     /* Set when a line was understood but names something vmsguard
@@ -75,6 +93,9 @@ struct wg_conf {
  * A missing value is not an error here — the caller decides which of
  * them it actually needs, since a gateway and a client want different
  * subsets.
+ *
+ * Several [Peer] sections are allowed. Anything the caller can only do
+ * for one peer, such as source NAT, is the caller's business to refuse.
  */
 int wg_conf_parse(struct wg_conf *conf, const char *text, size_t len);
 

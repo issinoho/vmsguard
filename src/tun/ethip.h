@@ -66,6 +66,21 @@ struct ipv4_subnet {
 int ipv4_in_any(const struct ipv4_subnet *list, int n, uint32_t addr);
 
 /*
+ * The most specific subnet in the list that contains `addr`.
+ *
+ * Returns 1 and writes that entry's mask to *mask, or 0 if none
+ * matches. Longest prefix wins, which is what a routing table does and
+ * what WireGuard does to choose a peer: a peer holding 10.9.0.0/24 must
+ * take that traffic even when another holds 0.0.0.0/0.
+ *
+ * A longer prefix is a numerically larger mask, so the comparison is
+ * just `>`. That is only true because masks are contiguous, which
+ * ethip_parse_cidr guarantees by construction.
+ */
+int ipv4_best_match(const struct ipv4_subnet *list, int n, uint32_t addr,
+                    uint32_t *mask);
+
+/*
  * Parse "10.9.0.0/24" into a network address and mask, both in network
  * order. A missing prefix length is treated as /32.
  *

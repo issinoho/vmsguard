@@ -71,16 +71,16 @@ static void test_provider_config(void)
 
     check(parse(&c, text) == 0, "parses");
     check(c.have_private_key, "the private key is read");
-    check(c.have_public_key, "and the peer's public key");
-    check(!c.have_preshared_key, "with no preshared key, correctly");
-    check(c.have_endpoint && strcmp(c.endpoint, "64.20.211.133:1443") == 0,
+    check(c.peers[0].have_public_key, "and the peer's public key");
+    check(!c.peers[0].have_preshared_key, "with no preshared key, correctly");
+    check(c.peers[0].have_endpoint && strcmp(c.peers[0].endpoint, "64.20.211.133:1443") == 0,
           "the endpoint is kept verbatim, port and all");
     check(c.have_address && strcmp(c.address, "10.13.127.177") == 0,
           "Address loses its prefix length, which belongs to the interface");
-    check(c.n_allowed == 1 && strcmp(c.allowed[0], "0.0.0.0/0") == 0,
+    check(c.peers[0].n_allowed == 1 && strcmp(c.peers[0].allowed[0], "0.0.0.0/0") == 0,
           "AllowedIPs keeps its prefix, which is the whole point of it");
     check(c.mtu == 1390, "MTU is the inner MTU, so --tunnel-mtu wants it");
-    check(c.keepalive == 25, "PersistentKeepalive in seconds");
+    check(c.peers[0].keepalive == 25, "PersistentKeepalive in seconds");
     check(c.listen_port == 59612, "ListenPort");
     check(c.saw_dns, "DNS is noticed, so the caller can say it is ignored");
 }
@@ -104,7 +104,7 @@ static void test_syntax(void)
     check(parse(&c,
         "[interface]\nprivatekey = " KEY_A "\n"
         "[PEER]\nPUBLICKEY = " KEY_B "\n") == 0 &&
-        c.have_private_key && c.have_public_key,
+        c.have_private_key && c.peers[0].have_public_key,
         "sections and keys are case-insensitive, as wg-quick's are");
 
     check(parse(&c,
@@ -123,10 +123,10 @@ static void test_syntax(void)
     check(parse(&c,
         "[Peer]\n"
         "AllowedIPs = 10.0.0.0/8, 192.168.0.0/16,172.16.0.0/12\n") == 0 &&
-        c.n_allowed == 3 &&
-        strcmp(c.allowed[0], "10.0.0.0/8") == 0 &&
-        strcmp(c.allowed[1], "192.168.0.0/16") == 0 &&
-        strcmp(c.allowed[2], "172.16.0.0/12") == 0,
+        c.peers[0].n_allowed == 3 &&
+        strcmp(c.peers[0].allowed[0], "10.0.0.0/8") == 0 &&
+        strcmp(c.peers[0].allowed[1], "192.168.0.0/16") == 0 &&
+        strcmp(c.peers[0].allowed[2], "172.16.0.0/12") == 0,
         "AllowedIPs splits on commas, with or without spaces");
 
     check(parse(&c,
@@ -184,15 +184,6 @@ static void test_refusals(void)
     check(parse(&c, "PrivateKey = " KEY_A "\n") == -1,
           "a setting before any section");
 
-    /*
-     * Two peers is not a bigger version of one peer. vmsguard holds a
-     * single peer and would otherwise use whichever came last, which is
-     * not what anyone writing two of them meant.
-     */
-    check(parse(&c,
-        "[Peer]\nPublicKey = " KEY_B "\n"
-        "[Peer]\nPublicKey = " KEY_C "\n") == -1,
-        "a second [Peer], rather than silently using one of them");
 
     {
         char big[4096];
@@ -217,6 +208,74 @@ static void test_refusals(void)
     }
 }
 
+/*
+ * Several [Peer] sections. They are separate tunnels rather than
+ * variants of one, and every setting has to land on the right one --
+ * getting that wrong would route a subnet down another peer's tunnel,
+ * encrypted to the wrong key.
+ */
+static void test_several_peers(void)
+{
+    struct wg_conf c;
+
+    printf("\nseveral peers\n");
+
+    check(parse(&c,
+        "[Interface]\nPrivateKey = " KEY_A "\n"
+        "\n[Peer]\n"
+        "PublicKey = " KEY_B "\n"
+        "AllowedIPs = 10.9.0.0/24\n"
+        "Endpoint = 192.0.2.1:51820\n"
+        "PersistentKeepalive = 25\n"
+        "\n[Peer]\n"
+        "PublicKey = " KEY_C "\n"
+        "PresharedKey = " KEY_A "\n"
+        "AllowedIPs = 10.20.0.0/16, 172.16.0.0/12\n"
+        "Endpoint = 198.51.100.7:1443\n") == 0,
+        "a config with two peers parses");
+    check(c.n_peers == 2, "and both are counted");
+
+    check(c.peers[0].have_public_key && c.peers[1].have_public_key,
+          "each has its own public key");
+    check(memcmp(c.peers[0].public_key, c.peers[1].public_key,
+                 WG_KEY_LEN) != 0,
+          "and they are not the same key");
+
+    check(strcmp(c.peers[0].endpoint, "192.0.2.1:51820") == 0 &&
+          strcmp(c.peers[1].endpoint, "198.51.100.7:1443") == 0,
+          "each endpoint lands on its own peer");
+
+    check(c.peers[0].n_allowed == 1 &&
+          strcmp(c.peers[0].allowed[0], "10.9.0.0/24") == 0,
+          "the first peer's AllowedIPs");
+    check(c.peers[1].n_allowed == 2 &&
+          strcmp(c.peers[1].allowed[0], "10.20.0.0/16") == 0 &&
+          strcmp(c.peers[1].allowed[1], "172.16.0.0/12") == 0,
+          "and the second's, both entries");
+
+    /* A setting given for one peer must not leak to another. */
+    check(c.peers[0].keepalive == 25 && c.peers[1].keepalive == 0,
+          "a keepalive on one peer stays on that peer");
+    check(!c.peers[0].have_preshared_key && c.peers[1].have_preshared_key,
+          "and so does a preshared key");
+
+    /* The interface section is shared, and belongs to neither. */
+    check(c.have_private_key, "the private key is the interface's");
+
+    {
+        char big[2048];
+        size_t n = 0;
+        int i;
+
+        n += (size_t) snprintf(big + n, sizeof big - n, "[Interface]\n");
+        for (i = 0; i < WG_CONF_MAX_PEERS + 1; i++)
+            n += (size_t) snprintf(big + n, sizeof big - n,
+                                   "[Peer]\nPublicKey = " KEY_B "\n");
+        check(parse(&c, big) == -1,
+              "more peers than fit is refused, not truncated");
+    }
+}
+
 int main(void)
 {
     printf("vmsguard config parsing tests\n");
@@ -224,6 +283,7 @@ int main(void)
     test_provider_config();
     test_syntax();
     test_refusals();
+    test_several_peers();
 
     printf("\n%s — %d checks, %d failure%s\n",
            failures == 0 ? "PASS" : "FAIL",

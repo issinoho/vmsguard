@@ -480,6 +480,51 @@ read timeout of 50 ms and never approach a handshake timeout:
 14:10:18  up, 11325 captured / ... 54 rekeys, worst pass 51ms
 ```
 
+### Several peers
+
+A config file may hold more than one `[Peer]`. Each is a separate
+tunnel with its own keys, endpoint, session, timers and `AllowedIPs`,
+and each gets its own UDP socket — so a peer that is rekeying, roaming
+or simply not answering affects nothing but itself.
+
+Which tunnel a packet takes is decided by `AllowedIPs`, by longest
+prefix, exactly as a routing table decides a next hop:
+
+```
+  allowed-ips    : 10.9.0.0 mask 255.255.255.0  via 192.0.2.1:51820
+  allowed-ips    : 10.20.0.0 mask 255.255.0.0  via 192.0.2.2:51820
+                 : 172.16.0.0 mask 255.240.0.0
+```
+
+A peer holding `10.9.0.0/24` takes that traffic even when another holds
+`0.0.0.0/0`. Getting this wrong is not a loud failure — the packet goes
+down the other peer's tunnel, encrypted to the wrong key, and is
+discarded at the far end without a word — which is why the matching
+itself is `ipv4_best_match` in `src/tun/ethip.c` with tests, rather than
+a loop written inline.
+
+**Only a config file can express several peers.** Command-line flags
+configure one, and override the first peer in a file; there is no way
+for a command line to say where one peer ends and the next begins
+without inventing a syntax nobody would recognise.
+
+**Source NAT works with one peer only**, and is refused with more:
+
+```
+error: source NAT works with one peer only. This config has 2.
+```
+
+`--tunnel-address` rewrites every outbound packet to a single address
+and restores replies from one table, and that table cannot say which
+tunnel a reply arrived through. It is also not what several peers are
+for: source NAT exists because a commercial provider accepts only its
+own assigned address, and a link between networks you control does not
+need it.
+
+All peers must complete their handshake at startup. A gateway that came
+up with one tunnel of three would forward a third of the traffic and
+drop the rest, which is harder to diagnose than not starting.
+
 ### Cryptokey routing
 
 `AllowedIPs` is enforced in both directions, which is the whole idea it

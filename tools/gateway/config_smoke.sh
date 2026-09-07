@@ -118,6 +118,31 @@ else
 fi
 rm -f "$logf"
 
+# ---------------------------------------------------------------------
+# Several peers, which only a config file can express.
+# ---------------------------------------------------------------------
+
+"$BUILD/vmsguard-gateway-stub" \
+    --config tests/data/two-peers.conf \
+    --interface ie0 \
+    --client 192.168.0.0/24 > "$out" 2>&1 || true
+
+want "10.9.0.0 mask 255.255.255.0  via 192.0.2.1" \
+     "the first peer's network is routed to the first peer"
+want "10.20.0.0 mask 255.255.0.0  via 192.0.2.2" \
+     "and the second's to the second"
+want "172.16.0.0 mask 255.240.0.0" \
+     "a peer's further AllowedIPs entries are kept"
+
+# Source NAT cannot be shared: one address, one table, no way to say
+# which tunnel a reply came back through.
+"$BUILD/vmsguard-gateway-stub" \
+    --config tests/data/two-peers.conf \
+    --interface ie0 --client 192.168.0.0/24 \
+    --tunnel-address 10.13.49.21 > "$out" 2>&1 || true
+want "source NAT works with one peer only" \
+     "source NAT with several peers is refused, not guessed at"
+
 if [ "$fail" -ne 0 ]; then
     echo
     echo "--- output ---"

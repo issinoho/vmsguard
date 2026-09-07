@@ -116,6 +116,7 @@ static void fail_quoting(struct wg_conf *conf, int lineno, const char *what,
  */
 static int add_allowed(struct wg_conf *conf, char *value, int lineno)
 {
+    struct wg_conf_peer *pr = &conf->peers[conf->n_peers - 1];
     char *p = value;
 
     while (*p != '\0') {
@@ -127,16 +128,16 @@ static int add_allowed(struct wg_conf *conf, char *value, int lineno)
         item = trim(p);
 
         if (*item != '\0') {
-            if (conf->n_allowed >= WG_CONF_MAX_ALLOWED) {
+            if (pr->n_allowed >= WG_CONF_MAX_ALLOWED) {
                 fail(conf, lineno, "too many AllowedIPs entries");
                 return -1;
             }
-            if (copy_into(conf->allowed[conf->n_allowed],
+            if (copy_into(pr->allowed[pr->n_allowed],
                           WG_CONF_CIDR_LEN, item) != 0) {
                 fail(conf, lineno, "AllowedIPs entry is too long");
                 return -1;
             }
-            conf->n_allowed++;
+            pr->n_allowed++;
         }
 
         if (comma == NULL)
@@ -200,7 +201,6 @@ int wg_conf_parse(struct wg_conf *conf, const char *text, size_t len)
     char line[512];
     size_t pos = 0;
     int section = SECT_NONE;
-    int seen_peer = 0;
     int lineno = 0;
 
     memset(conf, 0, sizeof *conf);
@@ -256,18 +256,16 @@ int wg_conf_parse(struct wg_conf *conf, const char *text, size_t len)
             if (ci_equal(s, "Interface")) {
                 section = SECT_INTERFACE;
             } else if (ci_equal(s, "Peer")) {
-                if (seen_peer) {
-                    /*
-                     * A multi-peer config is a meaningfully different
-                     * thing, not a slightly bigger one: vmsguard holds
-                     * a single peer and would silently use whichever
-                     * happened to be last.
-                     */
-                    fail(conf, lineno,
-                         "more than one [Peer]; vmsguard supports one");
+                /*
+                 * Each [Peer] starts a new one. They are separate
+                 * tunnels rather than variants of one, and which of
+                 * them a packet belongs to is decided by AllowedIPs.
+                 */
+                if (conf->n_peers >= WG_CONF_MAX_PEERS) {
+                    fail(conf, lineno, "too many [Peer] sections");
                     return -1;
                 }
-                seen_peer = 1;
+                conf->n_peers++;
                 section = SECT_PEER;
             } else {
                 fail_quoting(conf, lineno, "unknown section", s);
@@ -319,30 +317,34 @@ int wg_conf_parse(struct wg_conf *conf, const char *text, size_t len)
             continue;
         }
 
-        /* [Peer] */
-        if (ci_equal(key, "PublicKey")) {
-            if (set_key(conf, conf->public_key, &conf->have_public_key,
-                        value, "PublicKey", lineno) != 0)
-                return -1;
-        } else if (ci_equal(key, "PresharedKey")) {
-            if (set_key(conf, conf->preshared_key,
-                        &conf->have_preshared_key, value,
-                        "PresharedKey", lineno) != 0)
-                return -1;
-        } else if (ci_equal(key, "Endpoint")) {
-            if (copy_into(conf->endpoint, sizeof conf->endpoint,
-                          value) != 0) {
-                fail(conf, lineno, "Endpoint is too long");
-                return -1;
+        /* [Peer] — always the most recent one. */
+        {
+            struct wg_conf_peer *pr = &conf->peers[conf->n_peers - 1];
+
+            if (ci_equal(key, "PublicKey")) {
+                if (set_key(conf, pr->public_key, &pr->have_public_key,
+                            value, "PublicKey", lineno) != 0)
+                    return -1;
+            } else if (ci_equal(key, "PresharedKey")) {
+                if (set_key(conf, pr->preshared_key,
+                            &pr->have_preshared_key, value,
+                            "PresharedKey", lineno) != 0)
+                    return -1;
+            } else if (ci_equal(key, "Endpoint")) {
+                if (copy_into(pr->endpoint, sizeof pr->endpoint,
+                              value) != 0) {
+                    fail(conf, lineno, "Endpoint is too long");
+                    return -1;
+                }
+                pr->have_endpoint = 1;
+            } else if (ci_equal(key, "AllowedIPs")) {
+                if (add_allowed(conf, value, lineno) != 0)
+                    return -1;
+            } else if (ci_equal(key, "PersistentKeepalive")) {
+                if (set_int(conf, &pr->keepalive, value,
+                            "PersistentKeepalive", lineno) != 0)
+                    return -1;
             }
-            conf->have_endpoint = 1;
-        } else if (ci_equal(key, "AllowedIPs")) {
-            if (add_allowed(conf, value, lineno) != 0)
-                return -1;
-        } else if (ci_equal(key, "PersistentKeepalive")) {
-            if (set_int(conf, &conf->keepalive, value,
-                        "PersistentKeepalive", lineno) != 0)
-                return -1;
         }
 
         if (start + n >= len)

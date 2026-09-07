@@ -118,3 +118,23 @@ int ipv4_in_any(const struct ipv4_subnet *list, int n, uint32_t addr)
     }
     return 0;
 }
+
+int ipv4_best_match(const struct ipv4_subnet *list, int n, uint32_t addr,
+                    uint32_t *mask)
+{
+    int found = 0;
+    uint32_t best = 0;
+    int i;
+
+    for (i = 0; i < n; i++) {
+        if (!ipv4_in_subnet(addr, list[i].net, list[i].mask))
+            continue;
+        if (!found || list[i].mask > best) {
+            best = list[i].mask;
+            found = 1;
+        }
+    }
+    if (found && mask != NULL)
+        *mask = best;
+    return found;
+}

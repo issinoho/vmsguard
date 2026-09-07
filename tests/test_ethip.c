@@ -247,6 +247,59 @@ static void test_in_any(void)
     check(!ipv4_in_any(list, 1, 0xC0A800DBUL), "and not its neighbour");
 }
 
+/*
+ * Longest-prefix match, which is how a destination is tied to a peer.
+ * Getting it wrong does not fail loudly: the packet goes down another
+ * peer's tunnel, encrypted to the wrong key, and is discarded at the
+ * far end without a word.
+ */
+static void test_best_match(void)
+{
+    struct ipv4_subnet list[4];
+    uint32_t mask = 0xDEADBEEFUL;
+
+    printf("\nlongest prefix match\n");
+
+    check(!ipv4_best_match(list, 0, 0x0A000001UL, &mask),
+          "an empty list matches nothing");
+
+    list[0].net  = 0;              /* 0.0.0.0/0    */
+    list[0].mask = 0;
+    list[1].net  = 0x0A090000UL;   /* 10.9.0.0/24  */
+    list[1].mask = 0xFFFFFF00UL;
+    list[2].net  = 0x0A000000UL;   /* 10.0.0.0/8   */
+    list[2].mask = 0xFF000000UL;
+
+    check(ipv4_best_match(list, 3, 0x0A090005UL, &mask) && mask == 0xFFFFFF00UL,
+          "the /24 wins over the /8 and the default route");
+    check(ipv4_best_match(list, 3, 0x0A0A0005UL, &mask) && mask == 0xFF000000UL,
+          "an address in the /8 but not the /24 takes the /8");
+    check(ipv4_best_match(list, 3, 0x08080808UL, &mask) && mask == 0,
+          "and one in neither falls back to the default route");
+
+    /* Order must not matter: the most specific wins wherever it sits. */
+    list[0].net  = 0x0A090000UL;
+    list[0].mask = 0xFFFFFF00UL;
+    list[1].net  = 0;
+    list[1].mask = 0;
+    check(ipv4_best_match(list, 2, 0x0A090005UL, &mask) && mask == 0xFFFFFF00UL,
+          "the specific entry wins when it comes first as well");
+
+    /* A /32 is as specific as it gets. */
+    list[2].net  = 0x0A090005UL;
+    list[2].mask = 0xFFFFFFFFUL;
+    check(ipv4_best_match(list, 3, 0x0A090005UL, &mask) &&
+          mask == 0xFFFFFFFFUL,
+          "a host route beats the subnet containing it");
+
+    /* Without a default route, an unmatched address matches nothing —
+       which is what makes "no peer claims this" expressible. */
+    list[0].net  = 0x0A090000UL;
+    list[0].mask = 0xFFFFFF00UL;
+    check(!ipv4_best_match(list, 1, 0x08080808UL, &mask),
+          "no default route means unmatched really is unmatched");
+}
+
 int main(void)
 {
     printf("vmsguard Ethernet/IPv4 inspection tests\n");
@@ -256,6 +309,7 @@ int main(void)
     test_addresses();
     test_cidr();
     test_subnet();    test_in_any();
+    test_best_match();
 
 
     printf("\n%s — %d checks, %d failure%s\n",

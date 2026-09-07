@@ -8,7 +8,7 @@ things.
 
 ```sh
 make            # everything, and syntax-checks the gateway
-make test       # 385 checks across eight binaries
+make test       # 395 checks across eight binaries
 make loopback   # end-to-end over real UDP, needs no privilege
 ```
 
@@ -157,7 +157,7 @@ to gaps:
    arriving early are held until it does; nothing puts the pieces back
    together, and nothing needs to.
 
-Done: cryptokey routing in both directions, non-blocking rekeying, detached operation with logging,
+Done: several peers, cryptokey routing in both directions, non-blocking rekeying, detached operation with logging,
 peer-initiated handshakes,
 rekeying, the replay sliding window,
 PersistentKeepalive, the

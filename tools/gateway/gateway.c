@@ -135,7 +135,39 @@ struct stats {
  * outlive main's frame. wg_client_close releases the socket but leaves
  * the struct readable, which is all the summary needs.
  */
-static struct wg_client client;
+/*
+ * One tunnel: a peer, and the addresses that belong to it.
+ *
+ * Several are possible, and they are not variants of one another --
+ * each has its own keys, endpoint, session and timers. AllowedIPs is
+ * what ties a packet to a tunnel, in both directions: it decides which
+ * peer an outbound packet is sent to, and what an inbound one from that
+ * peer is permitted to claim to be.
+ *
+ * The client library needs no changes for this. Each tunnel holds a
+ * complete wg_client with its own UDP socket, which costs a socket per
+ * peer and buys complete independence -- a peer that stops answering,
+ * roams, or is rekeying affects nothing but itself.
+ */
+struct tunnel {
+    struct wg_client   client;
+    struct ipv4_subnet allowed[MAX_CLIENTS];
+    int                nallowed;
+    char               label[80];     /* the endpoint, for the log */
+};
+
+static struct tunnel tunnels[WG_CONF_MAX_PEERS];
+static int           ntunnels;
+
+/*
+ * Peers as the config file gave them, copied out of struct wg_conf
+ * before it is scrubbed. Command-line flags override the first of
+ * these; the rest are configurable only from a file, because a command
+ * line has no way to say where one peer ends and the next begins
+ * without inventing a syntax for it.
+ */
+static struct wg_conf_peer conf_peers[WG_CONF_MAX_PEERS];
+static int                 n_conf_peers;
 
 static struct stats     st;
 static struct nat_table nat;
@@ -188,6 +220,32 @@ static void on_interrupt(int sig)
  * three read as one column.
  */
 /*
+ * Whether an address is one of our peers' endpoints.
+ *
+ * Our own encrypted traffic must never be captured and tunnelled again:
+ * with a wide AllowedIPs the outer packets match, and each pass wraps
+ * them once more. Every peer has to be checked, not just the one the
+ * packet would otherwise go to.
+ */
+static int is_peer_endpoint(uint32_t d)
+{
+    int i;
+
+    for (i = 0; i < ntunnels; i++) {
+        const struct wg_endpoint *e = &tunnels[i].client.endpoint;
+        uint32_t a;
+
+        if (e->family != WG_AF_INET)
+            continue;
+        a = ((uint32_t) e->addr[0] << 24) | ((uint32_t) e->addr[1] << 16) |
+            ((uint32_t) e->addr[2] << 8) | (uint32_t) e->addr[3];
+        if (d == a)
+            return 1;
+    }
+    return 0;
+}
+
+/*
  * Whether a packet addressed here is one the gateway would tunnel,
  * ignoring the tunnel subnet itself: not excluded, not multicast or
  * broadcast, and not the peer's own endpoint.
@@ -198,20 +256,12 @@ static void on_interrupt(int sig)
  * a captured packet.
  */
 static int would_tunnel_to(uint32_t d, const struct ipv4_subnet *excludes,
-                           int nexcludes, const struct wg_endpoint *peer)
+                           int nexcludes)
 {
     if ((d & 0xF0000000UL) == 0xE0000000UL || d == 0xFFFFFFFFUL || d == 0)
         return 0;
-
-    if (peer->family == WG_AF_INET) {
-        uint32_t pa = ((uint32_t) peer->addr[0] << 24) |
-                      ((uint32_t) peer->addr[1] << 16) |
-                      ((uint32_t) peer->addr[2] << 8) |
-                      (uint32_t) peer->addr[3];
-        if (d == pa)
-            return 0;
-    }
-
+    if (is_peer_endpoint(d))
+        return 0;
     return !ipv4_in_any(excludes, nexcludes, d);
 }
 
@@ -345,20 +395,28 @@ static void emit_drop_causes(void)
  * so a reader learns one format rather than two, and so a run that ends
  * badly still has its last known state on record.
  */
-static void log_status(const struct wg_client *c, int nat_live)
+static void log_status(int nat_live)
 {
+    unsigned long rekeys = 0, failed = 0, roams = 0;
+    int t;
+
+    for (t = 0; t < ntunnels; t++) {
+        rekeys += tunnels[t].client.rekeys;
+        failed += tunnels[t].client.rekeys_failed;
+        roams  += tunnels[t].client.roams;
+    }
+
     emit("%s  up, %lu captured / %lu tunnelled / %lu injected,"
          " %lu dropped",
          stamp(), st.captured, st.tunnelled, st.injected, st.dropped);
     emit_drop_causes();
-    emit(", %lu rekey%s", c->rekeys, c->rekeys == 1 ? "" : "s");
+    emit(", %lu rekey%s", rekeys, rekeys == 1 ? "" : "s");
     if (nat_live >= 0)
         emit(", %d mappings", nat_live);
-    if (c->rekeys_failed > 0)
-        emit(", %lu FAILED rekey%s", c->rekeys_failed,
-               c->rekeys_failed == 1 ? "" : "s");
-    if (c->roams > 0)
-        emit(", %lu roam%s", c->roams, c->roams == 1 ? "" : "s");
+    if (failed > 0)
+        emit(", %lu FAILED rekey%s", failed, failed == 1 ? "" : "s");
+    if (roams > 0)
+        emit(", %lu roam%s", roams, roams == 1 ? "" : "s");
     /*
      * The longest single pass through the loop. Anything near a
      * handshake timeout means forwarding stopped while a rekey waited,
@@ -366,6 +424,106 @@ static void log_status(const struct wg_client *c, int nat_live)
      */
     emit(", worst pass %lums", st.max_stall_ms);
     emit("\n");
+
+    /*
+     * A per-tunnel line only when there is more than one, and only for
+     * the tunnel with something to say. With a single peer the totals
+     * above already are that peer, and repeating them would be noise in
+     * a log that may run for days.
+     */
+    if (ntunnels > 1) {
+        for (t = 0; t < ntunnels; t++) {
+            const struct wg_client *c = &tunnels[t].client;
+
+            if (c->rekeys_failed == 0 && c->roams == 0)
+                continue;
+            emit("%s    %s: %lu rekeys, %lu failed, %lu roams\n",
+                 stamp(), tunnels[t].label, c->rekeys,
+                 c->rekeys_failed, c->roams);
+        }
+    }
+}
+
+/*
+ * Bring up one tunnel and add it to the list.
+ *
+ * Returns 0, or -1 with the reason already reported.
+ */
+static int open_tunnel(const uint8_t *privkey, const uint8_t *peerkey,
+                       const uint8_t *psk, const char *host, uint16_t port,
+                       const struct wg_endpoint *ep, uint16_t listen_port,
+                       const struct ipv4_subnet *allowed, int nallowed,
+                       int keepalive_s)
+{
+    struct tunnel *t;
+
+    if (ntunnels >= WG_CONF_MAX_PEERS) {
+        emit("error: at most %d peers\n", WG_CONF_MAX_PEERS);
+        return -1;
+    }
+    t = &tunnels[ntunnels];
+
+    if (wg_client_init(&t->client, privkey, peerkey, psk, ep,
+                       listen_port) != 0) {
+        emit("error: %s\n", t->client.error);
+        return -1;
+    }
+
+    /*
+     * Remember the endpoint as written, so that if the peer stops
+     * answering the name can be looked up again. Roaming handles a peer
+     * that moves and keeps talking; only this handles one that goes
+     * quiet and comes back somewhere else, which is what a provider
+     * retiring a server looks like.
+     */
+    wg_client_set_endpoint_name(&t->client, host, port);
+
+    if (keepalive_s > 0)
+        t->client.keepalive_interval_ms = (uint64_t) keepalive_s * 1000;
+
+    memcpy(t->allowed, allowed, (size_t) nallowed * sizeof allowed[0]);
+    t->nallowed = nallowed;
+    snprintf(t->label, sizeof t->label, "%s:%u", host, (unsigned) port);
+
+    ntunnels++;
+    return 0;
+}
+
+/*
+ * Which tunnel a destination belongs to, by longest prefix -- the same
+ * rule a routing table uses, and the same one WireGuard uses to pick a
+ * peer. A more specific AllowedIPs entry wins over a less specific one,
+ * so a peer holding 10.9.0.0/24 takes that traffic even when another
+ * holds 0.0.0.0/0.
+ *
+ * Returns the index, or -1 if no peer claims the address.
+ */
+static void close_tunnels(void)
+{
+    int i;
+
+    for (i = 0; i < ntunnels; i++)
+        wg_client_close(&tunnels[i].client);
+}
+
+static int tunnel_for(uint32_t dst)
+{
+    int best = -1;
+    uint32_t best_mask = 0;
+    int i;
+
+    for (i = 0; i < ntunnels; i++) {
+        uint32_t m;
+
+        if (!ipv4_best_match(tunnels[i].allowed, tunnels[i].nallowed,
+                             dst, &m))
+            continue;
+        if (best < 0 || m > best_mask) {
+            best = i;
+            best_mask = m;
+        }
+    }
+    return best;
 }
 
 /*
@@ -421,10 +579,140 @@ static void format_duration(char *out, size_t cap, uint64_t ms)
         snprintf(out, cap, "%lum %lus", secs / 60, secs % 60);
 }
 
+/*
+ * Deliver one decrypted packet from `t` onto the LAN.
+ *
+ * Split out of the loop because it now runs once per tunnel: inlining
+ * it would have put the whole of it inside two nested loops, and the
+ * cryptokey check in the middle reads as a guard rather than a filter
+ * only when it is at the top of a function.
+ */
+static void deliver_inbound(struct tunnel *t, uint8_t *plain,
+                            size_t plainlen, struct raw_injector *inj,
+                            int verbose)
+{
+    size_t iplen = ((size_t) plain[2] << 8) | plain[3];
+    char abuf[16], bbuf[16];
+
+    st.received++;
+
+    /*
+     * Trust the packet's own length rather than the decrypted
+     * size: WireGuard pads plaintext to a 16-byte boundary, and
+     * injecting that padding would corrupt the packet.
+     */
+    if (iplen >= IPV4_MIN_HDR && iplen <= plainlen) {
+        int nrc = NAT_OK;
+
+        /*
+         * Cryptokey routing, the inbound half.
+         *
+         * Decryption proves the packet came from the peer. It
+         * says nothing about what the peer may claim to *be*,
+         * and WireGuard's central idea is that those are the
+         * same question: a peer may only source addresses
+         * inside its AllowedIPs. Without this a peer -- or
+         * anyone who has taken it over -- could inject packets
+         * onto the LAN bearing any source address at all.
+         *
+         * Checked on the packet as decrypted, before NAT
+         * rewrites anything: what is being validated is what
+         * the peer sent, not what we made of it.
+         *
+         * With a full tunnel the list is 0.0.0.0/0 and this
+         * permits everything, which is correct rather than
+         * pointless -- that configuration really does authorise
+         * the peer to send as anyone.
+         */
+        if (!ipv4_in_any(t->allowed, t->nallowed, ipv4_src(plain))) {
+            st.dropped++;
+            st.drop_not_allowed++;
+            if (verbose)
+                log_drop("in ", plain, iplen,
+                         "source outside the peer's AllowedIPs");
+            return;
+        }
+
+        if (use_nat)
+            nrc = nat_inbound(&nat, plain, iplen, wg_time_ms());
+
+        if (nrc == NAT_HELD) {
+            /*
+             * A fragment that overtook the first of its
+             * datagram inside the tunnel. Not sent and not
+             * lost: it comes back out of nat_take_held once the
+             * first arrives, a moment later.
+             */
+            if (verbose)
+                log_drop("in ", plain, iplen, nat_reason(nrc));
+        } else if (nrc != NAT_OK) {
+            /* No mapping: unsolicited, or the flow expired. */
+            st.dropped++;
+            if (verbose)
+                log_drop("in ", plain, iplen, nat_reason(nrc));
+        } else if (raw_injector_send(inj, plain, iplen) == 0) {
+            st.injected++;
+            if (verbose) {
+                ipv4_format(abuf, sizeof abuf, ipv4_src(plain));
+                ipv4_format(bbuf, sizeof bbuf, ipv4_dst(plain));
+                emit("in  %s -> %s  proto %u  %lu bytes\n",
+                       abuf, bbuf, (unsigned) ipv4_proto(plain),
+                       (unsigned long) iplen);
+            }
+        } else {
+            st.dropped++;
+            st.drop_inject++;
+            if (verbose) {
+                emit("inject failed: %s\n",
+                       raw_injector_error(inj));
+            }
+        }
+        /*
+         * A first fragment has just created a mapping, so any
+         * fragment held waiting for one can go now. Drained
+         * here rather than at the top of the loop so it happens
+         * immediately, while the datagram is still worth
+         * reassembling at the far end.
+         */
+        if (use_nat) {
+            uint8_t held[WG_MAX_PACKET];
+            size_t heldlen;
+
+            while ((heldlen = nat_take_held(&nat, held, sizeof held,
+                                            wg_time_ms())) > 0) {
+                if (raw_injector_send(inj, held, heldlen) == 0) {
+                    st.injected++;
+                    if (verbose) {
+                        ipv4_format(abuf, sizeof abuf,
+                                    ipv4_src(held));
+                        ipv4_format(bbuf, sizeof bbuf,
+                                    ipv4_dst(held));
+                        emit("in  %s -> %s  proto %u  %lu bytes"
+                               "  (was held)\n", abuf, bbuf,
+                               (unsigned) ipv4_proto(held),
+                               (unsigned long) heldlen);
+                    }
+                } else {
+                    st.dropped++;
+                }
+            }
+        }
+    } else {
+        st.dropped++;
+        st.drop_malformed++;
+        if (verbose) {
+            emit("in  decrypted %lu bytes claiming an IP length"
+                 " of %lu  DROPPED: malformed\n",
+                 (unsigned long) plainlen, (unsigned long) iplen);
+        }
+    }
+}
+
 static void print_summary(void)
 {
     uint64_t elapsed = 0;
     char dur[32];
+    int t;
 
     /*
      * How long the run lasted, because without it none of the rest can
@@ -469,12 +757,17 @@ static void print_summary(void)
      * normal case and needs no line; one that did explains why the
      * endpoint in the header is no longer where packets are going.
      */
-    if (client.roams > 0) {
-        char epbuf[80];
+    for (t = 0; t < ntunnels; t++) {
+        const struct wg_client *c = &tunnels[t].client;
 
-        wg_endpoint_format(epbuf, sizeof epbuf, &client.endpoint);
-        emit("peer roamed %lu time%s; last seen at %s\n",
-               client.roams, client.roams == 1 ? "" : "s", epbuf);
+        if (c->roams > 0) {
+            char epbuf[80];
+
+            wg_endpoint_format(epbuf, sizeof epbuf, &c->endpoint);
+            emit("%s: roamed %lu time%s; last seen at %s\n",
+                 tunnels[t].label, c->roams,
+                 c->roams == 1 ? "" : "s", epbuf);
+        }
     }
     /*
      * Always printed, even at zero. A run shorter than the rekey
@@ -482,18 +775,18 @@ static void print_summary(void)
      * otherwise, and the difference is the whole question when a
      * session dies after a few minutes.
      */
-    emit("rekeys: %lu succeeded, %lu failed",
-           client.rekeys, client.rekeys_failed);
-    if (client.peer_handshakes > 0)
-        emit("; the peer started %lu handshake%s of its own",
-               client.peer_handshakes,
-               client.peer_handshakes == 1 ? "" : "s");
-    emit("\n");
+    for (t = 0; t < ntunnels; t++) {
+        const struct wg_client *c = &tunnels[t].client;
 
-    if (client.cookies_received > 0)
-        emit("answered %lu cookie challenge%s from a loaded peer\n",
-               client.cookies_received,
-               client.cookies_received == 1 ? "" : "s");
+        emit("%s: rekeys %lu succeeded, %lu failed",
+             tunnels[t].label, c->rekeys, c->rekeys_failed);
+        if (c->peer_handshakes > 0)
+            emit("; the peer started %lu of its own", c->peer_handshakes);
+        if (c->cookies_received > 0)
+            emit("; answered %lu cookie challenge%s", c->cookies_received,
+                 c->cookies_received == 1 ? "" : "s");
+        emit("\n");
+    }
 
     if (use_nat) {
         emit("NAT: %lu translated, %lu restored, %d of %d mappings live,"
@@ -573,7 +866,11 @@ static void usage(const char *argv0)
 "                   Address, AllowedIPs, MTU, PersistentKeepalive and\n"
 "                   ListenPort from a wg-quick config file, so a\n"
 "                   provider's .conf can be used as it arrives. Any\n"
-"                   flag given as well overrides the file\n"
+"                   flag given as well overrides the first peer.\n"
+"                   Several [Peer] sections are supported and are\n"
+"                   the only way to configure more than one: a\n"
+"                   command line cannot say where one peer ends\n"
+"                   and the next begins\n"
 "  --log            append all output to this file, for a process\n"
 "                   with no terminal. Opened before anything is\n"
 "                   printed, so startup errors land in it too\n"
@@ -808,45 +1105,66 @@ int main(int argc, char **argv)
             memcpy(privkey, conf.private_key, WG_KEY_LEN);
             have_key = 1;
         }
-        if (conf.have_public_key) {
-            memcpy(peerkey, conf.public_key, WG_KEY_LEN);
-            have_peer = 1;
-        }
-        if (conf.have_preshared_key) {
-            memcpy(psk, conf.preshared_key, WG_KEY_LEN);
-            pskp = psk;
-        }
-        if (conf.have_endpoint) {
-            snprintf(conf_endpoint, sizeof conf_endpoint, "%s",
-                     conf.endpoint);
-            endpoint_arg = conf_endpoint;
-        }
-        if (conf.n_allowed > 0) {
-            int k;
+        /*
+         * Copied out before the struct is scrubbed at the end of this
+         * loop -- the same trap that once left --tunnel-subnet pointing
+         * at zeroed memory.
+         */
+        memcpy(conf_peers, conf.peers, sizeof conf_peers);
+        n_conf_peers = conf.n_peers;
 
-            /*
-             * Every entry, not just the first. AllowedIPs is a list in
-             * WireGuard and it means two things at once: what may be
-             * sent to this peer, and what it may claim to be. Using one
-             * of several would quietly narrow both.
-             */
-            snprintf(conf_subnet, sizeof conf_subnet, "%s", conf.allowed[0]);
-            subnet_arg = conf_subnet;
-            nallowed = 0;
-            for (k = 0; k < conf.n_allowed && nallowed < MAX_CLIENTS; k++) {
-                if (ethip_parse_cidr(conf.allowed[k], &allowed[nallowed].net,
-                                     &allowed[nallowed].mask) != 0) {
-                    emit("error: %s: AllowedIPs '%s' is not valid CIDR\n",
-                         argv[i + 1], conf.allowed[k]);
-                    return 2;
-                }
-                nallowed++;
+        /*
+         * The first peer also fills the single-peer variables, so that
+         * a flag given as well still overrides it and every existing
+         * check still applies. Peers beyond the first are used as they
+         * came from the file.
+         */
+        if (n_conf_peers > 0) {
+            const struct wg_conf_peer *p0 = &conf_peers[0];
+
+            if (p0->have_public_key) {
+                memcpy(peerkey, p0->public_key, WG_KEY_LEN);
+                have_peer = 1;
             }
+            if (p0->have_preshared_key) {
+                memcpy(psk, p0->preshared_key, WG_KEY_LEN);
+                pskp = psk;
+            }
+            if (p0->have_endpoint) {
+                snprintf(conf_endpoint, sizeof conf_endpoint, "%s",
+                         p0->endpoint);
+                endpoint_arg = conf_endpoint;
+            }
+            if (p0->n_allowed > 0) {
+                int k;
+
+                /*
+                 * Every entry, not just the first. AllowedIPs is a list
+                 * in WireGuard and means two things at once: what may
+                 * be sent to this peer, and what it may claim to be.
+                 * Using one of several would quietly narrow both.
+                 */
+                snprintf(conf_subnet, sizeof conf_subnet, "%s",
+                         p0->allowed[0]);
+                subnet_arg = conf_subnet;
+                nallowed = 0;
+                for (k = 0; k < p0->n_allowed && nallowed < MAX_CLIENTS;
+                     k++) {
+                    if (ethip_parse_cidr(p0->allowed[k],
+                                         &allowed[nallowed].net,
+                                         &allowed[nallowed].mask) != 0) {
+                        emit("error: %s: AllowedIPs '%s' is not valid"
+                             " CIDR\n", argv[i + 1], p0->allowed[k]);
+                        return 2;
+                    }
+                    nallowed++;
+                }
+            }
+            if (p0->keepalive > 0)
+                keepalive_s = p0->keepalive;
         }
         if (conf.mtu > 0)
             tunnel_mtu = conf.mtu;
-        if (conf.keepalive > 0)
-            keepalive_s = conf.keepalive;
         if (conf.listen_port > 0)
             listen_port = (uint16_t) conf.listen_port;
 
@@ -887,7 +1205,7 @@ int main(int argc, char **argv)
          * exists precisely to be unremovable.
          */
         wg_zero(text, sizeof text);
-        wg_zero(&conf, sizeof conf);
+        wg_zero(&conf, sizeof conf);   /* conf_peers already copied */
         i++;
     }
 
@@ -1053,39 +1371,91 @@ int main(int argc, char **argv)
 
     emit("vmsguard gateway\n");
 
-    /* ---- the tunnel ---- */
+    /* ---- the tunnels ---- */
 
-    if (wg_client_init(&client, privkey, peerkey, pskp, &endpoint,
-                       listen_port) != 0) {
-        emit("error: %s\n", client.error);
+    /*
+     * Peer 0 from the flags as merged above, and any further peers
+     * exactly as the config file gave them.
+     */
+    if (open_tunnel(privkey, peerkey, pskp, host, peer_port, &endpoint,
+                    listen_port, allowed, nallowed, keepalive_s) != 0)
         return 1;
+
+    for (i = 1; i < n_conf_peers; i++) {
+        const struct wg_conf_peer *pr = &conf_peers[i];
+        struct ipv4_subnet pa[MAX_CLIENTS];
+        struct wg_endpoint pe;
+        char phost[128];
+        uint16_t pport;
+        int npa = 0, k;
+        char *pc;
+
+        if (!pr->have_public_key || !pr->have_endpoint) {
+            emit("error: peer %d has no %s\n", i + 1,
+                 pr->have_public_key ? "Endpoint" : "PublicKey");
+            return 2;
+        }
+        for (k = 0; k < pr->n_allowed && npa < MAX_CLIENTS; k++) {
+            if (ethip_parse_cidr(pr->allowed[k], &pa[npa].net,
+                                 &pa[npa].mask) != 0) {
+                emit("error: peer %d: AllowedIPs '%s' is not valid CIDR\n",
+                     i + 1, pr->allowed[k]);
+                return 2;
+            }
+            npa++;
+        }
+        if (npa == 0) {
+            emit("error: peer %d has no AllowedIPs, so nothing would ever"
+                 " be sent to it\n", i + 1);
+            return 2;
+        }
+
+        snprintf(phost, sizeof phost, "%s", pr->endpoint);
+        pc = strrchr(phost, ':');
+        if (pc == NULL) {
+            emit("error: peer %d: Endpoint must be host:port\n", i + 1);
+            return 2;
+        }
+        *pc = '\0';
+        pport = (uint16_t) atoi(pc + 1);
+        if (pport == 0 || wg_endpoint_resolve(&pe, phost, pport) != 0) {
+            emit("error: peer %d: cannot resolve '%s'\n", i + 1, phost);
+            return 1;
+        }
+
+        /*
+         * Port 0 for every peer after the first: they each need their
+         * own socket, and only one of them can have the configured
+         * listen port.
+         */
+        if (open_tunnel(privkey, pr->public_key,
+                        pr->have_preshared_key ? pr->preshared_key : NULL,
+                        phost, pport, &pe, 0, pa, npa,
+                        pr->keepalive) != 0)
+            return 1;
     }
 
-    /*
-     * Remember the endpoint as written, so that if the peer stops
-     * answering the name can be looked up again. Roaming handles a peer
-     * that moves and keeps talking; only this handles one that goes
-     * quiet and comes back somewhere else, which is what a provider
-     * retiring a server looks like.
-     */
-    wg_client_set_endpoint_name(&client, host, peer_port);
-
-    wg_key_to_base64(b64, client.local.static_public);
+    wg_key_to_base64(b64, tunnels[0].client.local.static_public);
     emit("  our public key : %s\n", b64);
+
     /*
      * Named AllowedIPs rather than "tunnel subnet", because it is both:
-     * what gets sent to the peer, and what the peer is permitted to
+     * what gets sent to a peer, and what that peer is permitted to
      * claim as a source.
      */
     {
-        int k;
+        int t, k;
 
-        for (k = 0; k < nallowed; k++) {
-            ipv4_format(abuf, sizeof abuf, allowed[k].net);
-            ipv4_format(bbuf, sizeof bbuf, allowed[k].mask);
-            emit("  %s: %s mask %s\n",
-                 k == 0 ? "allowed-ips    " : "               ",
-                 abuf, bbuf);
+        for (t = 0; t < ntunnels; t++) {
+            for (k = 0; k < tunnels[t].nallowed; k++) {
+                ipv4_format(abuf, sizeof abuf, tunnels[t].allowed[k].net);
+                ipv4_format(bbuf, sizeof bbuf, tunnels[t].allowed[k].mask);
+                emit("  %-15s: %s mask %s%s%s\n",
+                     k == 0 ? "allowed-ips" : "",
+                     abuf, bbuf,
+                     (k == 0 && ntunnels > 1) ? "  via " : "",
+                     (k == 0 && ntunnels > 1) ? tunnels[t].label : "");
+            }
         }
     }
     if (use_nat) {
@@ -1112,9 +1482,32 @@ int main(int argc, char **argv)
     /* ---- capture ---- */
 
     if (resolve_interface(realif, sizeof realif, ifname) != 0) {
-        wg_client_close(&client);
+        close_tunnels();
         return 1;
     }
+    /*
+     * Source NAT rewrites every outbound packet to one address and
+     * demultiplexes the replies from a single table. With two peers
+     * that table cannot say which tunnel a reply came back through, so
+     * the restoration would be a guess. Refused rather than guessed.
+     *
+     * It is also not what multi-peer is for: source NAT exists because
+     * a commercial provider accepts only its own assigned address, and
+     * a site-to-site link between networks you control does not need
+     * it.
+     */
+    if (use_nat && ntunnels > 1) {
+        emit("error: source NAT works with one peer only. This config has"
+             " %d.\n"
+             "       --tunnel-address rewrites every outbound packet to a"
+             " single\n"
+             "       address and restores replies from one table, which"
+             " cannot say\n"
+             "       which tunnel a reply arrived through.\n", ntunnels);
+        close_tunnels();
+        return 2;
+    }
+
     emit("  capturing on   : %s\n", realif);
     emit("\n");
 
@@ -1123,14 +1516,14 @@ int main(int argc, char **argv)
     if (pc == NULL) {
         emit("error: pcap_open_live(%s): %s\n", realif, errbuf);
         emit("       packet capture needs privilege\n");
-        wg_client_close(&client);
+        close_tunnels();
         return 1;
     }
     if (pcap_datalink(pc) != DLT_EN10MB) {
         emit("error: %s is link type %d, not Ethernet\n",
                 realif, pcap_datalink(pc));
         pcap_close(pc);
-        wg_client_close(&client);
+        close_tunnels();
         return 1;
     }
 
@@ -1163,26 +1556,36 @@ int main(int argc, char **argv)
         emit("error: %s\n", raw_injector_error(inj));
         raw_injector_close(inj);
         pcap_close(pc);
-        wg_client_close(&client);
+        close_tunnels();
         return 1;
     }
 
     /* ---- handshake ---- */
 
-    emit("handshake with the peer\n");
-    if (wg_client_handshake(&client, 3, 5000) != 0) {
-        emit("error: %s\n", client.error);
-        raw_injector_close(inj);
-        pcap_close(pc);
-        wg_client_close(&client);
-        return 1;
+    /*
+     * Every peer, and all of them must come up. A gateway that starts
+     * with one of three tunnels working would forward a third of the
+     * traffic and drop the rest, which is harder to diagnose than not
+     * starting at all.
+     */
+    for (i = 0; i < ntunnels; i++) {
+        emit("handshake with %s\n", tunnels[i].label);
+        if (wg_client_handshake(&tunnels[i].client, 3, 5000) != 0) {
+            emit("error: %s: %s\n", tunnels[i].label,
+                 tunnels[i].client.error);
+            raw_injector_close(inj);
+            pcap_close(pc);
+            close_tunnels();
+            return 1;
+        }
+        if (tunnels[i].client.keepalive_interval_ms > 0)
+            emit("  established, keepalive every %lu s\n",
+                 (unsigned long)
+                 (tunnels[i].client.keepalive_interval_ms / 1000));
+        else
+            emit("  established\n");
     }
-    if (keepalive_s > 0) {
-        client.keepalive_interval_ms = (uint64_t) keepalive_s * 1000;
-        emit("  established, keepalive every %d s\n\n", keepalive_s);
-    } else {
-        emit("  established\n\n");
-    }
+    emit("\n");
     /*
      * A detached process has no terminal to press Ctrl-C at, so saying
      * so in its log is worse than saying nothing — it names the one
@@ -1213,7 +1616,7 @@ int main(int argc, char **argv)
         uint8_t plain[WG_MAX_PACKET];
         uint8_t natbuf[WG_MAX_PACKET];
         size_t plainlen = 0;
-        int rc;
+        int rc, t;
 
         if (stop_requested)
             break;
@@ -1250,7 +1653,7 @@ int main(int argc, char **argv)
                 if (status_interval_ms > 0 &&
                     now - last_status_ms >= status_interval_ms) {
                     last_status_ms = now;
-                    log_status(&client, use_nat ? nat_active(&nat, now) : -1);
+                    log_status(use_nat ? nat_active(&nat, now) : -1);
                 }
             }
         }
@@ -1304,9 +1707,8 @@ int main(int argc, char **argv)
                  */
                 if (icmp_error_from(ip, iplen, gw_addr, &orig_dst,
                                     &orig_proto) &&
-                    ipv4_in_any(allowed, nallowed, orig_dst) &&
-                    would_tunnel_to(orig_dst, excludes, nexcludes,
-                                    &endpoint) &&
+                    tunnel_for(orig_dst) >= 0 &&
+                    would_tunnel_to(orig_dst, excludes, nexcludes) &&
                     is_a_client(ipv4_dst(ip), clients, nclients)) {
                     st.stack_unreach++;
                     if (verbose) {
@@ -1324,8 +1726,7 @@ int main(int argc, char **argv)
              * tunnel subnet the outer packets heading to the peer would
              * otherwise match and be re-tunnelled, recursively.
              */
-            if (ip != NULL && endpoint.family == WG_AF_INET &&
-                memcmp(ip + 16, endpoint.addr, 4) == 0)
+            if (ip != NULL && is_peer_endpoint(ipv4_dst(ip)))
                 ip = NULL;
 
             /*
@@ -1362,8 +1763,8 @@ int main(int argc, char **argv)
                     ip = NULL;
             }
 
-            if (ip != NULL && ipv4_in_any(allowed, nallowed,
-                                         ipv4_dst(ip))) {
+            t = (ip != NULL) ? tunnel_for(ipv4_dst(ip)) : -1;
+            if (t >= 0) {
                 st.captured++;
 
                 /*
@@ -1438,7 +1839,7 @@ int main(int argc, char **argv)
                     ip = natbuf;
                 }
 
-                if (wg_client_send(&client, ip, iplen) == 0) {
+                if (wg_client_send(&tunnels[t].client, ip, iplen) == 0) {
                     st.tunnelled++;
                     if (verbose) {
                         ipv4_format(abuf, sizeof abuf, ipv4_src(ip));
@@ -1461,133 +1862,32 @@ after_out:
             break;
         }
 
-        /* Keepalives and rekeying are time-driven, so an idle tunnel
-           still needs the clock looked at. */
-        (void) wg_client_tick(&client);
+        /*
+         * Keepalives and rekeying are time-driven, and each tunnel
+         * keeps its own clock: an idle one still ages out.
+         */
+        for (t = 0; t < ntunnels; t++)
+            (void) wg_client_tick(&tunnels[t].client);
 
-        /* Inbound: decrypt and put it back on the LAN. Zero timeout,
-           because pcap_next_ex above already did the waiting. */
-        rc = wg_client_recv(&client, plain, sizeof plain, &plainlen, 0);
-        if (rc == WG_SOCK_OK && plainlen >= IPV4_MIN_HDR) {
-            size_t iplen = ((size_t) plain[2] << 8) | plain[3];
-
-            st.received++;
-
-            /*
-             * Trust the packet's own length rather than the decrypted
-             * size: WireGuard pads plaintext to a 16-byte boundary, and
-             * injecting that padding would corrupt the packet.
-             */
-            if (iplen >= IPV4_MIN_HDR && iplen <= plainlen) {
-                int nrc = NAT_OK;
-
-                /*
-                 * Cryptokey routing, the inbound half.
-                 *
-                 * Decryption proves the packet came from the peer. It
-                 * says nothing about what the peer may claim to *be*,
-                 * and WireGuard's central idea is that those are the
-                 * same question: a peer may only source addresses
-                 * inside its AllowedIPs. Without this a peer -- or
-                 * anyone who has taken it over -- could inject packets
-                 * onto the LAN bearing any source address at all.
-                 *
-                 * Checked on the packet as decrypted, before NAT
-                 * rewrites anything: what is being validated is what
-                 * the peer sent, not what we made of it.
-                 *
-                 * With a full tunnel the list is 0.0.0.0/0 and this
-                 * permits everything, which is correct rather than
-                 * pointless -- that configuration really does authorise
-                 * the peer to send as anyone.
-                 */
-                if (!ipv4_in_any(allowed, nallowed, ipv4_src(plain))) {
-                    st.dropped++;
-                    st.drop_not_allowed++;
-                    if (verbose)
-                        log_drop("in ", plain, iplen,
-                                 "source outside the peer's AllowedIPs");
-                    continue;
-                }
-
-                if (use_nat)
-                    nrc = nat_inbound(&nat, plain, iplen, wg_time_ms());
-
-                if (nrc == NAT_HELD) {
-                    /*
-                     * A fragment that overtook the first of its
-                     * datagram inside the tunnel. Not sent and not
-                     * lost: it comes back out of nat_take_held once the
-                     * first arrives, a moment later.
-                     */
-                    if (verbose)
-                        log_drop("in ", plain, iplen, nat_reason(nrc));
-                } else if (nrc != NAT_OK) {
-                    /* No mapping: unsolicited, or the flow expired. */
-                    st.dropped++;
-                    if (verbose)
-                        log_drop("in ", plain, iplen, nat_reason(nrc));
-                } else if (raw_injector_send(inj, plain, iplen) == 0) {
-                    st.injected++;
-                    if (verbose) {
-                        ipv4_format(abuf, sizeof abuf, ipv4_src(plain));
-                        ipv4_format(bbuf, sizeof bbuf, ipv4_dst(plain));
-                        emit("in  %s -> %s  proto %u  %lu bytes\n",
-                               abuf, bbuf, (unsigned) ipv4_proto(plain),
-                               (unsigned long) iplen);
-                    }
-                } else {
-                    st.dropped++;
-                    st.drop_inject++;
-                    if (verbose) {
-                        emit("inject failed: %s\n",
-                               raw_injector_error(inj));
-                    }
-                }
-                /*
-                 * A first fragment has just created a mapping, so any
-                 * fragment held waiting for one can go now. Drained
-                 * here rather than at the top of the loop so it happens
-                 * immediately, while the datagram is still worth
-                 * reassembling at the far end.
-                 */
-                if (use_nat) {
-                    uint8_t held[WG_MAX_PACKET];
-                    size_t heldlen;
-
-                    while ((heldlen = nat_take_held(&nat, held, sizeof held,
-                                                    wg_time_ms())) > 0) {
-                        if (raw_injector_send(inj, held, heldlen) == 0) {
-                            st.injected++;
-                            if (verbose) {
-                                ipv4_format(abuf, sizeof abuf,
-                                            ipv4_src(held));
-                                ipv4_format(bbuf, sizeof bbuf,
-                                            ipv4_dst(held));
-                                emit("in  %s -> %s  proto %u  %lu bytes"
-                                       "  (was held)\n", abuf, bbuf,
-                                       (unsigned) ipv4_proto(held),
-                                       (unsigned long) heldlen);
-                            }
-                        } else {
-                            st.dropped++;
-                        }
-                    }
-                }
-            } else {
-                st.dropped++;
-                st.drop_malformed++;
-                if (verbose) {
-                    emit("in  decrypted %lu bytes claiming an IP length"
-                           " of %lu  DROPPED: malformed\n",
-                           (unsigned long) plainlen, (unsigned long) iplen);
-                }
+        /*
+         * Inbound, every tunnel. Zero timeout on each, because
+         * pcap_next_ex above already did the waiting -- polling them in
+         * turn costs a syscall apiece and keeps one busy peer from
+         * starving the others.
+         */
+        for (t = 0; t < ntunnels; t++) {
+            rc = wg_client_recv(&tunnels[t].client, plain, sizeof plain,
+                                &plainlen, 0);
+            if (rc == WG_SOCK_ERROR) {
+                emit("%s: tunnel receive error\n", tunnels[t].label);
+                goto done;
             }
-        } else if (rc == WG_SOCK_ERROR) {
-            emit("tunnel receive error\n");
-            break;
+            if (rc != WG_SOCK_OK || plainlen < IPV4_MIN_HDR)
+                continue;
+            deliver_inbound(&tunnels[t], plain, plainlen, inj, verbose);
         }
     }
+done:
 
     if (stopped_by_file)
         emit("\nstopped on request");
@@ -1599,6 +1899,6 @@ after_out:
 
     raw_injector_close(inj);
     pcap_close(pc);
-    wg_client_close(&client);
+    close_tunnels();
     return 0;
 }
