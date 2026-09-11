@@ -14,6 +14,11 @@
 !     $ MMS TEST           build and run the protocol tests
 !     $ MMS CLEAN          remove build products
 !
+! Target names are matched case sensitively: MMS receives the command
+! line with its case intact, so "MMS clean" failed with %MMS-F-BADTARG
+! against a CLEAN written in capitals. Lowercase aliases are defined at
+! the foot of this file so either spelling works.
+!
 ! Note on comments: MMS uses "!", and a hyphen as the last character of
 ! any line, comment included, is treated as a continuation character.
 ! That is why no divider or comment here ends in a dash.
@@ -152,6 +157,13 @@ $(OPT) :
 ! reference. build_vms.com learned this the hard way and stops on it;
 ! MMS would otherwise carry on and print "build complete" over a broken
 ! image. %X10000002 is a plain error status, which aborts the build.
+!
+! Verified both ways on 2026-09-11, since a check that has only ever
+! been seen not to fire is not known to work. A deliberate link against
+! an undefined symbol reported %ILINK-W-USEUNDEF, *wrote the image
+! anyway*, and left $SEVERITY at 0 -- the condition these lines test. A
+! full CLEAN and rebuild then ran all four links with none of them
+! firing.
 
 [.build]vmsguard_key.exe : [.build]keys.obj, $(PROTO_OBJS), $(OPT)
     $(LINK)/EXECUTABLE=$(MMS$TARGET) [.build]keys.obj,$(PROTO_OBJS),-
@@ -194,7 +206,20 @@ TEST : [.build]test_proto.exe
 
 ! ==== housekeeping ====
 
+! CLEAN deletes every image in [.build], including the PROBE_*.EXE that
+! only build_vms.com builds -- MMS has no rules for them and will not
+! put them back. Save them first, or rebuild with @build_vms afterwards.
+
 CLEAN :
     @- IF F$SEARCH("[.build]*.obj") .NES. "" THEN DELETE/NOCONFIRM [.build]*.obj;*
     @- IF F$SEARCH("[.build]*.exe") .NES. "" THEN DELETE/NOCONFIRM [.build]*.exe;*
     @- IF F$SEARCH("[.build]*.opt") .NES. "" THEN DELETE/NOCONFIRM [.build]*.opt;*
+
+! Lowercase aliases. MMS matches target names case sensitively, and
+! typing them in lowercase is the natural thing to do.
+
+all : ALL
+
+test : TEST
+
+clean : CLEAN
