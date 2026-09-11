@@ -552,7 +552,7 @@ because a packet originating on this machine could not be suppressed;
 that is now solved, by a facility already shipping. What replaced it is
 a gap in observability rather than in capability.
 
-### Two manuals read against this, and what they settle (2026-09-12)
+### Four manuals read against this, and what they settle (2026-09-12)
 
 Neither moves the blocked row. Recorded so the same ground is not
 covered twice.
@@ -585,6 +585,43 @@ symbols are undefined on x86-64**. Every driver example in the pre-x86
 *Writing OpenVMS Device Drivers* material uses `IRP$L_SVAPTE`. If the
 driver route is ever reopened, those examples are stale in a way that
 reads as a missing symbol rather than as a design change.
+
+**VSI TCP/IP Services Sockets API and System Services Programming.**
+Two things, one of which reopens nothing and one of which is a gap in
+our own testing.
+
+It **confirms the IPv6 injection finding and makes it permanent**. The
+absence of `IPV6_HDRINCL` is not an omission in VSI's implementation:
+the manual's own comparison table says IPv4 raw sockets "send and
+receive complete packets" and IPv6 raw sockets do not, using ancillary
+data for header fields instead. That is RFC 3542, which replaced header
+inclusion outright. There is no version of this API where the option
+appears, so `probe_inject6`'s result stands for good rather than
+pending a newer release.
+
+It also documents `SIOCGIFCONF` — the stack's own interface list —
+as an ioctl and as a `$QIO` `IO$_SENSEMODE`, which is a different list
+from the one libpcap enumerates. Which raises the gap:
+
+**We never tried opening `IT0` by name.** Every record here says
+`pcap_findalldevs` does not *list* it, and the conclusion drawn was
+that pcap cannot see it. Those are two different mechanisms, and on
+several platforms libpcap enumerates a restricted set while still
+opening any name handed to it. `probe_pcap` already takes an interface
+as `argv[1]`, so the test costs one run: `PP IT0` after
+`iptunnel create` and `ifconfig "IT0" up`. Until that is run, "pcap
+cannot see `ITn`" rests on enumeration alone.
+
+**OpenVMS VAX Device Support Manual (1994, VAX V6.1).** Superseded for
+this target and not useful. It is MACRO-32 throughout, and its
+mechanics are VAX-specific: VAXBI, VMEbus, Q-bus and UNIBUS adapters,
+and the `SVAPTE/BOFF/BCNT` buffer mapping the IOBD guide above says is
+undefined on x86-64 — 41 occurrences of it here. There is no LAN driver
+chapter, no VCI, and its only "pseudo" references are VAXBI pseudo CSR
+addressing rather than software-only devices. The class/port design it
+describes, which is the nearest thing in it to a pseudo-NIC, carries an
+explicit warning that there are "no supported methods for implementing
+the class/port design in a non-Digital-supplied device driver".
 
 ### What is still unknown
 
