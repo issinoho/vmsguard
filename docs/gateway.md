@@ -795,9 +795,11 @@ run is judged.
 
 ### A second opinion on the wire, without tcpdump
 
-From the *VSI OpenVMS LAN Driver Tracing Guide*. **Documented, not yet
-run here** — it is written down because the gateway's whole view of the
-wire comes through one libpcap capture, and when that view is the thing
+From the *VSI OpenVMS LAN Driver Tracing Guide*. **Run against a live
+gateway on 2026-09-12 and confirmed working**; the results, and two
+traps in the file it produces, are below. It is worth having because
+the gateway's whole view of the wire comes through one libpcap capture,
+and when that view is the thing
 in doubt there is nothing to check it against.
 
 The LAN drivers keep a trace buffer of their own, below pcap, and LANCP
@@ -848,6 +850,73 @@ cost a round trip:
 This does nothing for the client shape: tracing is a property of LAN
 devices, and a configured tunnel is not one. See
 [`research/driver-feasibility.md`](research/driver-feasibility.md).
+
+#### What a real run showed (2026-09-12)
+
+A gateway run with `--keepalive 5`, traced end to end. The tunnel is
+plainly visible and behaves exactly as specified:
+
+```
+05:23:57.760658 IP 192.168.0.80.62376 > 192.168.0.131.51820: UDP, length 148
+05:23:57.776607 IP 192.168.0.131.51820 > 192.168.0.80.62376: UDP, length 92
+05:24:02.970262 IP 192.168.0.80.62376 > 192.168.0.131.51820: UDP, length 32
+05:24:08.029200 IP 192.168.0.80.62376 > 192.168.0.131.51820: UDP, length 32
+```
+
+Handshake initiation, response 16 ms later, then thirteen keepalives at
+five-second intervals with no gaps. 2642 frames in total, of which ours
+were 15: the rest was an ARP sweep of the segment by two other hosts,
+broadcast chatter on a proprietary ethertype, and the box's own SSH
+sessions. Promiscuous capture sees all of it, which is worth remembering
+before turning `PK` on and before leaving the files lying about
+afterwards.
+
+**Trap one: transmit lengths exclude the FCS, receive lengths include
+it.** The trace's `plen` for our 148-byte handshake was 190 — 14 bytes
+of MAC header over a 176-byte IP packet, no FCS. The 92-byte response
+came back as `plen 138` for a 134-byte frame. Confirmed against the IP
+header's own `TotLen` in both directions, so it is not a guess. A
+4-byte discrepancy that appears in one direction only would otherwise
+read as a protocol bug.
+
+**Trap two: the file is pcapng, and tcpdump refuses it.**
+
+```
+tcpdump: pcap_loop: an interface has a type 0 different from the type
+         of the first interface
+```
+
+The manual calls the output "binary Wireshark libpcap format"; it is
+actually pcapng, and LANCP writes **two** Interface Description Blocks
+— the real one for `EIA0` with linktype 1, and a second, bare 20-byte
+IDB with **linktype 0** and no options. Every one of the 2642 packets
+references interface 0, so the second block is unused, but tcpdump
+rejects the whole file on the type mismatch rather than ignoring it.
+
+Stripping that block makes the file read normally, and loses nothing:
+
+```sh
+python3 - "$IN" "$OUT" <<'EOF'
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+out, off, idbs = bytearray(), 0, 0
+while off < len(d) - 12:
+    btype, blen = struct.unpack_from('<II', d, off)
+    if blen < 12 or off + blen > len(d):
+        break
+    if btype == 1:
+        idbs += 1
+        if idbs == 2:          # the spurious linktype-0 block
+            off += blen
+            continue
+    out += d[off:off + blen]
+    off += blen
+open(sys.argv[2], 'wb').write(bytes(out))
+EOF
+```
+
+Whether Wireshark tolerates the file as written has not been checked —
+only that tcpdump does not, and that removing the block fixes it.
 
 ## Full tunnels need exclusions
 
