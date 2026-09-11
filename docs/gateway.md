@@ -807,7 +807,13 @@ traffic, this says whether the driver saw it, which separates "not on
 the wire" from "not delivered to us".
 
 It needs the LAN device name, not the TCP/IP interface name — `EIA0`
-rather than `IE0`. `SHOW CONFIGURATION` gives the mapping.
+rather than `IE0`. `SHOW CONFIGURATION` gives the mapping, and on this
+machine there is exactly one device to choose from:
+
+```
+  Device  Medium/User  ----LinkState----  MAC Address        Description
+   EIA0    Ethernet     Up 1gb Fdx Auto   AA-00-04-00-01-04  i82540 KVM
+```
 
 ```dcl
 $ MCR LANCP SHOW CONFIGURATION
@@ -821,10 +827,14 @@ $ MCR LANCP SET DEVICE/NOTRACE EIA0         ! and release the buffer
 Four things the manual is explicit about, each of which would otherwise
 cost a round trip:
 
-- **Tracing is already on**, started at device configuration with a
-  default mask, so a small rolling window of recent packet data exists
-  before anything is enabled. The default buffer is only 512 entries of
-  32 bytes, so it is a window of moments.
+- **Tracing is already on, but carries no packets.** It starts at device
+  configuration, and the manual's example mask has packet bits set —
+  this machine's does not. Confirmed 2026-09-12: the live mask is
+  `(%x9C2027F0,%x000063EF)`, which decodes entirely to events — fork and
+  state errors, `LANACTION`, `SET_MAC`, link state, timeouts — with
+  every packet-data bit (14-17, 22-25) clear. So there is no rolling
+  window of recent traffic to go back to; packet data exists only from
+  the moment it is asked for. The buffer is 512 entries of 32 bytes.
 - **`SET DEVICE/TRACE` restarts tracing from scratch** with a
   reinitialised buffer. It does not resume, so setting it discards
   whatever the default tracing had collected.

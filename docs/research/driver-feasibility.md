@@ -563,10 +563,15 @@ a genuinely useful second view of the wire — see
 [`../gateway.md`](../gateway.md) — but it is a property of **LAN
 devices**, addressed as `EIA0`. A configured tunnel is not a LAN device
 and has no LAN driver to trace, so this is the same layer pcap already
-sees, reached by a different route. It is worth one command to confirm
-that `SHOW DEVICE/TRACE/HEADER` across all devices lists no `IT`
-anything, since that would settle the point from the machine rather than
-from the manual.
+sees, reached by a different route.
+
+Confirmed on the machine rather than left at the manual, 2026-09-12.
+`LANCP SHOW CONFIGURATION` lists one device, `EIA0`, and
+`SHOW DEVICE/TRACE/HEADER` — which applies to all devices — reports
+trace data for that one and nothing else. No `IT` device appears in
+either. The LAN layer does not know tunnel interfaces exist, which is
+the same boundary pcap ran into, and the two are now known to be the
+same boundary rather than assumed to be.
 
 **VSI OpenVMS x86-64 Driver Developer Guide for the I/O Buffer
 Descriptor.** Concerns how a driver maps a user buffer for DMA: the
