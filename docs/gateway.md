@@ -793,6 +793,52 @@ Earlier builds printed the summary only when an error broke the loop, so
 every ordinary run threw its counters away — and the counters are how a
 run is judged.
 
+### A second opinion on the wire, without tcpdump
+
+From the *VSI OpenVMS LAN Driver Tracing Guide*. **Documented, not yet
+run here** — it is written down because the gateway's whole view of the
+wire comes through one libpcap capture, and when that view is the thing
+in doubt there is nothing to check it against.
+
+The LAN drivers keep a trace buffer of their own, below pcap, and LANCP
+writes it out **as a pcap file** for Wireshark. It is a driver-level
+record rather than a second capture: if the gateway ever appears to miss
+traffic, this says whether the driver saw it, which separates "not on
+the wire" from "not delivered to us".
+
+It needs the LAN device name, not the TCP/IP interface name — `EIA0`
+rather than `IE0`. `SHOW CONFIGURATION` gives the mapping.
+
+```dcl
+$ MCR LANCP SHOW CONFIGURATION
+$ MCR LANCP SET DEVICE/TRACE=PK EIA0        ! full packet data
+$ ! ... reproduce whatever is in question ...
+$ MCR LANCP SHOW DEVICE EIA0 /TRACE -
+      /PCAPFILE=SYS$LOGIN:TRACE.PCAP/OUTPUTFILE=NL:
+$ MCR LANCP SET DEVICE/NOTRACE EIA0         ! and release the buffer
+```
+
+Four things the manual is explicit about, each of which would otherwise
+cost a round trip:
+
+- **Tracing is already on**, started at device configuration with a
+  default mask, so a small rolling window of recent packet data exists
+  before anything is enabled. The default buffer is only 512 entries of
+  32 bytes, so it is a window of moments.
+- **`SET DEVICE/TRACE` restarts tracing from scratch** with a
+  reinitialised buffer. It does not resume, so setting it discards
+  whatever the default tracing had collected.
+- **`PK` captures full packet data, transmit and receive** — every
+  frame on the segment, not only ours. On a shared network that is other
+  people's traffic written to a file, which is worth a thought before
+  turning it on and a reason to turn it off afterwards.
+- **`/OUTPUTFILE=NL:`** suppresses the text dump, which is otherwise
+  printed alongside the pcap.
+
+This does nothing for the client shape: tracing is a property of LAN
+devices, and a configured tunnel is not one. See
+[`research/driver-feasibility.md`](research/driver-feasibility.md).
+
 ## Full tunnels need exclusions
 
 `--tunnel-subnet 0.0.0.0/0` matches local destinations exactly as

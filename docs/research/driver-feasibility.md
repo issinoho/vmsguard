@@ -552,6 +552,35 @@ because a packet originating on this machine could not be suppressed;
 that is now solved, by a facility already shipping. What replaced it is
 a gap in observability rather than in capability.
 
+### Two manuals read against this, and what they settle (2026-09-12)
+
+Neither moves the blocked row. Recorded so the same ground is not
+covered twice.
+
+**VSI OpenVMS LAN Driver Tracing Guide.** LAN drivers keep their own
+trace buffer below pcap, and LANCP writes it out as a pcap file. That is
+a genuinely useful second view of the wire — see
+[`../gateway.md`](../gateway.md) — but it is a property of **LAN
+devices**, addressed as `EIA0`. A configured tunnel is not a LAN device
+and has no LAN driver to trace, so this is the same layer pcap already
+sees, reached by a different route. It is worth one command to confirm
+that `SHOW DEVICE/TRACE/HEADER` across all devices lists no `IT`
+anything, since that would settle the point from the machine rather than
+from the manual.
+
+**VSI OpenVMS x86-64 Driver Developer Guide for the I/O Buffer
+Descriptor.** Concerns how a driver maps a user buffer for DMA: the
+`SVAPTE/BOFF/BCNT` triplet and the DIOBM are gone on x86-64, replaced by
+an IOBD holding a list of physical Extents. A pseudo-NIC has no DMA
+engine, so none of it applies to anything we would write.
+
+One thing in it is worth keeping anyway, because it invalidates
+reference material rather than adding any: **all IRP SVAPTE-related
+symbols are undefined on x86-64**. Every driver example in the pre-x86
+*Writing OpenVMS Device Drivers* material uses `IRP$L_SVAPTE`. If the
+driver route is ever reopened, those examples are stale in a way that
+reads as a missing symbol rather than as a design change.
+
 ### What is still unknown
 
 Creation is not operation. Two questions remain, and they are
