@@ -151,12 +151,36 @@ Stated so that nothing here is read as a stronger claim than it is:
   from all LAN devices. This system has exactly one, so the two cannot
   be distinguished here.
 - Whether traffic actually routed through `ITn` would also appear on
-  such a handle. The tunnel was idle in these tests. We can run that
-  test — routing traffic through the tunnel and capturing with a filter
-  that excludes the LAN — if it would be useful.
+  such a handle, in addition to the Ethernet's. See below.
 - Whether `pcap_sendpacket()` behaves any differently on such a handle.
   It fails on `IE0` with `send: socket is not connected`, and fails
   identically on `IT2`.
+
+## With traffic actually on the tunnel
+
+The tests above were run on an idle tunnel, which invites the obvious
+objection: of course nothing of the tunnel's was seen. So the same
+handle was opened with a filter naming both the inner and the outer
+address, and traffic was then sent through the tunnel.
+
+```
+$ PP "IT2" "host 10.99.0.2 or host 192.0.2.2"
+$ ping 10.99.0.2
+```
+
+`10.99.0.2` is the tunnel's remote inner address, so a packet to it is
+routed through `IT2` and leaves encapsulated to `192.0.2.2`. The two
+halves of the filter therefore distinguish the two possibilities:
+
+- **frames matching `10.99.0.2`** — the inner packet, which exists only
+  on the tunnel. Seeing it would mean the handle really is capturing
+  `IT2`.
+- **frames matching `192.0.2.2`** — the encapsulated packet, which
+  exists only on the Ethernet. Seeing that instead confirms the handle
+  is on `IE0`.
+
+RESULT TO BE FILLED IN — this section is written ahead of the run so
+that what each outcome means is settled before the outcome is known.
 
 ## Why it matters to us
 

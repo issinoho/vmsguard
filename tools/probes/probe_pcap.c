@@ -17,8 +17,15 @@
  * experimental use, addressed to an all-zero destination. It is inert:
  * nothing on the network is expected to act on it.
  *
- * Usage: probe_pcap [interface]
+ * Usage: probe_pcap [interface [filter]]
  *   With no argument, uses the first non-loopback device pcap reports.
+ *   The filter is an ordinary pcap expression, e.g. "host 10.99.0.2".
+ *
+ * The filter exists to answer a question lengths cannot: a handle
+ * opened on a configured tunnel captures the Ethernet's frames, so on
+ * a busy segment the first frames to arrive are always the LAN's, and
+ * the tunnel's own traffic could be behind thousands of them. A filter
+ * naming the tunnel's addresses says whether it is there at all.
  *
  * C99. Build instructions in README.md. Almost certainly needs
  * privileges to open a live capture handle.
@@ -64,6 +71,17 @@
 
 #ifdef __VMS
 #  pragma names restore
+#endif
+
+/*
+ * PCAP_NETMASK_UNKNOWN arrived in libpcap 1.1 and the image on OpenVMS
+ * reports 0.9.4, so it cannot be relied on. Zero is what callers passed
+ * before it existed and means the same thing to pcap_compile: the mask
+ * is only consulted for the "broadcast" keyword, which no filter here
+ * uses.
+ */
+#ifndef PCAP_NETMASK_UNKNOWN
+#  define PCAP_NETMASK_UNKNOWN 0
 #endif
 
 /*
@@ -122,6 +140,8 @@ int main(int argc, char **argv)
     struct pcap_pkthdr *hdr = NULL;
     const unsigned char *data = NULL;
     unsigned char frame[60];
+    const char *filter = NULL;
+    struct bpf_program prog;
     int rc;
     int captured = 0;
     int i;
@@ -153,6 +173,8 @@ int main(int argc, char **argv)
 
     if (argc > 1)
         ifname = argv[1];
+    if (argc > 2)
+        filter = argv[2];
     if (ifname == NULL)
         ifname = devs->name;
 
@@ -171,6 +193,32 @@ int main(int argc, char **argv)
     printf("  note  link type %d (%s)\n", pcap_datalink(h),
            pcap_datalink_val_to_name(pcap_datalink(h)));
 
+    /* --- optional filter --- */
+
+    if (filter != NULL) {
+        /*
+         * The netmask is only used to decide what "broadcast" means in
+         * an expression; none of ours says that, and an unknown mask
+         * is the honest value for an interface whose mask we have not
+         * asked for.
+         */
+        if (pcap_compile(h, &prog, filter, 1, PCAP_NETMASK_UNKNOWN) != 0) {
+            printf("  FAIL  pcap_compile(%s): %s\n", filter, pcap_geterr(h));
+            pcap_close(h);
+            pcap_freealldevs(devs);
+            return 1;
+        }
+        if (pcap_setfilter(h, &prog) != 0) {
+            printf("  FAIL  pcap_setfilter: %s\n", pcap_geterr(h));
+            pcap_freecode(&prog);
+            pcap_close(h);
+            pcap_freealldevs(devs);
+            return 1;
+        }
+        pcap_freecode(&prog);
+        printf("  ok    filter set: %s\n", filter);
+    }
+
     /* --- capture: a few packets, or time out --- */
 
     for (i = 0; i < 20 && captured < 3; i++) {
@@ -185,9 +233,16 @@ int main(int argc, char **argv)
         }
         /* rc == 0 is a timeout; keep trying */
     }
-    if (captured == 0)
-        printf("  note  no frames captured — the link may simply be idle,\n"
-               "        so this is inconclusive rather than a failure\n");
+    if (captured == 0) {
+        if (filter != NULL)
+            printf("  note  no frames matched the filter. On an interface\n"
+                   "        known to be carrying matching traffic, that is\n"
+                   "        a result: this handle is not capturing it\n");
+        else
+            printf("  note  no frames captured — the link may simply be"
+                   " idle,\n"
+                   "        so this is inconclusive rather than a failure\n");
+    }
 
     /* --- injection: the decisive test --- */
 

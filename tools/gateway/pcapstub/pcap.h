@@ -57,8 +57,19 @@ int      pcap_next_ex(pcap_t *p, struct pcap_pkthdr **hdr,
  * unbuildable line in it.
  */
 #define PCAP_IF_LOOPBACK 0x00000001
+#define PCAP_NETMASK_UNKNOWN 0xffffffff
+
+struct bpf_program {
+    unsigned int  bf_len;
+    void         *bf_insns;
+};
+
 const char *pcap_lib_version(void);
 const char *pcap_datalink_val_to_name(int dlt);
 int         pcap_sendpacket(pcap_t *p, const unsigned char *buf, int size);
+int         pcap_compile(pcap_t *p, struct bpf_program *fp, const char *str,
+                         int optimize, unsigned int netmask);
+int         pcap_setfilter(pcap_t *p, struct bpf_program *fp);
+void        pcap_freecode(struct bpf_program *fp);
 
 #endif /* VMSGUARD_STUB_PCAP_H */
