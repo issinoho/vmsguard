@@ -66,6 +66,53 @@
 #  pragma names restore
 #endif
 
+/*
+ * Show the head of a captured frame.
+ *
+ * Lengths alone cannot say *which interface* a frame came from, and
+ * that turned out to matter: opening a configured tunnel by name
+ * succeeded and immediately captured frames, on an interface whose
+ * packet counters were zero. Either the counters lie or the capture is
+ * coming from somewhere else, and the first bytes settle it — a frame
+ * off the LAN starts with real MAC addresses and an ethertype, while
+ * anything off a tunnel should start with an IP header (0x45 for the
+ * usual IPv4, or 0x6x for IPv6).
+ */
+static void dump_head(const unsigned char *p, unsigned len)
+{
+    unsigned n = len < 34 ? len : 34;
+    unsigned i;
+
+    printf("        ");
+    for (i = 0; i < n; i++) {
+        printf("%02x", p[i]);
+        if ((i % 4) == 3)
+            printf(" ");
+    }
+    printf("\n");
+
+    /*
+     * Interpret it both ways rather than assuming which is right: as
+     * an Ethernet header, and as a bare IP header.
+     */
+    if (len >= 14) {
+        printf("        as ethernet: dst %02x:%02x:%02x:%02x:%02x:%02x"
+               " src %02x:%02x:%02x:%02x:%02x:%02x type %02x%02x\n",
+               p[0], p[1], p[2], p[3], p[4], p[5],
+               p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13]);
+    }
+    if (len >= 20 && (p[0] >> 4) == 4) {
+        printf("        as bare IPv4: %u.%u.%u.%u -> %u.%u.%u.%u"
+               " proto %u\n",
+               p[12], p[13], p[14], p[15],
+               p[16], p[17], p[18], p[19], p[9]);
+    } else if (len >= 40 && (p[0] >> 4) == 6) {
+        printf("        as bare IPv6: next header %u\n", p[6]);
+    } else {
+        printf("        (does not begin with an IP version nibble)\n");
+    }
+}
+
 int main(int argc, char **argv)
 {
     char errbuf[PCAP_ERRBUF_SIZE];
@@ -131,6 +178,7 @@ int main(int argc, char **argv)
         if (rc == 1) {
             captured++;
             printf("  ok    captured frame, %u bytes on the wire\n", hdr->len);
+            dump_head(data, hdr->caplen);
         } else if (rc < 0) {
             printf("  FAIL  pcap_next_ex: %s\n", pcap_geterr(h));
             break;

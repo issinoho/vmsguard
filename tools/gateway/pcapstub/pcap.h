@@ -49,4 +49,16 @@ char    *pcap_geterr(pcap_t *p);
 int      pcap_next_ex(pcap_t *p, struct pcap_pkthdr **hdr,
                       const unsigned char **data);
 
+/*
+ * Used by tools/probes/probe_pcap.c rather than by the gateway. They
+ * are declared here so that probe can be syntax-checked on Linux too:
+ * it is built only on OpenVMS, so without these every change to it
+ * went to the target unchecked, and one duly arrived with an
+ * unbuildable line in it.
+ */
+#define PCAP_IF_LOOPBACK 0x00000001
+const char *pcap_lib_version(void);
+const char *pcap_datalink_val_to_name(int dlt);
+int         pcap_sendpacket(pcap_t *p, const unsigned char *buf, int size);
+
 #endif /* VMSGUARD_STUB_PCAP_H */

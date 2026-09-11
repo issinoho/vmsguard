@@ -47,9 +47,9 @@ TESTS   = build/test_proto build/test_slip build/test_hdlc \
 TOOLS   = build/vmsguard-interop build/vmsguard-responder \
           build/vmsguard-key build/probe-inject6 build/probe-encap
 
-.PHONY: all test loopback gateway-check clean
+.PHONY: all test loopback gateway-check probe-check clean
 
-all: $(TESTS) $(TOOLS) gateway-check
+all: $(TESTS) $(TOOLS) gateway-check probe-check
 
 # The gateway needs pcap and only ever runs on OpenVMS, so nothing here
 # links it — which meant it was never seen by -std=c99 -pedantic -Wall
@@ -59,6 +59,14 @@ all: $(TESTS) $(TOOLS) gateway-check
 # is needed. See tools/gateway/pcapstub/pcap.h.
 gateway-check: build/vmsguard-gateway-stub
 	@sh tools/gateway/config_smoke.sh
+
+# probe_pcap is built only on OpenVMS, where pcap exists, so nothing
+# here used to look at it and changes went to the target unchecked.
+# Compiling it against the stub headers costs nothing and catches the
+# mistakes that would otherwise cost a round trip to find.
+probe-check:
+	@$(CC) $(CFLAGS) -Itools/gateway/pcapstub -fsyntax-only \
+	    tools/probes/probe_pcap.c && echo "probe_pcap syntax ok"
 
 # Linked against a stub libpcap whose pcap_open_live declines, so the
 # gateway runs as far as printing what it derived from its arguments and
