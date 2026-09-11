@@ -204,13 +204,15 @@ a narrow ask: make `ITn` visible to pcap. See
 Nothing outstanding is known to block ordinary use. The nearest things
 to gaps:
 
-1. **The NAT table is scanned linearly**, for every outbound packet, and
-   is now 2048 entries. Cheap next to encrypting the same packet, but it
-   is the first thing to index if the gateway is ever pushed hard.
-2. **Datagrams are not reassembled**, only passed through. Later
+1. **Datagrams are not reassembled**, only passed through. Later
    fragments inherit their first fragment's mapping, and inbound ones
    arriving early are held until it does; nothing puts the pieces back
    together, and nothing needs to.
+2. **NAT lookups are counted, not timed.** `probes` and `lookups` say
+   how many entries a lookup examined, which is what the tests assert a
+   bound on. Nobody has measured the gateway's throughput on the target
+   under load, so the index is known to do less work, not known to have
+   made anything faster.
 
 Done: IPv6 through the gateway (including ICMPv6 Packet Too Big,
 which needs `--gateway-ip6` for a source address), several peers, cryptokey routing in
@@ -218,7 +220,8 @@ both directions, non-blocking rekeying, detached operation with logging,
 peer-initiated handshakes,
 rekeying, the replay sliding window,
 PersistentKeepalive, the
-gateway's source filter, source NAT, ICMP fragmentation-needed, NAT of
+gateway's source filter, source NAT, hash-indexed NAT lookups, ICMP
+fragmentation-needed, NAT of
 fragmented datagrams, the cookie mechanism (`mac2`), and reading a
 provider's `.conf` directly, roaming, endpoint re-resolution, holding
 out-of-order inbound fragments, and detection of the stack's own

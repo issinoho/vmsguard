@@ -1059,6 +1059,17 @@ static void print_summary(void)
             emit("     %lu live mapping%s recycled to make room; a flow"
                    " that quiet may have stopped working\n",
                    nat.evicted, nat.evicted == 1 ? " was" : "s were");
+        /*
+         * Only a bug in nat.c can produce this, so it says so plainly
+         * rather than leaving a bare number to be interpreted as some
+         * network condition. Nothing here can be done about it at run
+         * time; the value is in it being visible at all.
+         */
+        if (nat.chain_overruns > 0)
+            emit("     %lu corrupt lookup chain%s abandoned — a defect in"
+                   " the NAT index, please report it\n",
+                   nat.chain_overruns,
+                   nat.chain_overruns == 1 ? "" : "s");
     }
 }
 

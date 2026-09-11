@@ -230,9 +230,13 @@ reason:
 - **The table holds 2048 flows.** A later run reached 749 new flows a
   minute, which at a 30-second timeout is around 375 live — three
   quarters of the 512 it used to be. 2048 is four times the measured
-  peak. The scan is linear and runs for every outbound packet, which is
-  worth knowing but is a few thousand integer comparisons against
-  encrypting the same packet.
+  peak.
+- **Lookups go through hash chains**, keyed on the five-tuple outbound
+  and on the translated identifier inbound. The scan they replaced cost
+  a few thousand comparisons per packet, which was affordable next to
+  encrypting that packet. What was not affordable was port allocation:
+  it asks "is this identifier taken?" per candidate, and each question
+  was a scan of the whole table.
 
 Confirmed on the target (2026-09-06). A 37.4-second run translated 49
 flows and ended with 26 live: the 23 created in the first seven seconds

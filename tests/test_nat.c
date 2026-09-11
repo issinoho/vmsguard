@@ -530,7 +530,7 @@ static void test_eviction(void)
         if (i == 0)
             first_port = get16(pkt + 20);
     }
-    check(all_translated, "every one of 512 flows is translated");
+    check(all_translated, "every one of 2048 flows is translated");
     check(nat_active(&t, 1000) == NAT_ENTRIES, "the table is full");
     check(t.evicted == 0, "and nothing has been evicted yet");
 
@@ -555,6 +555,172 @@ static void test_eviction(void)
         check(nat_inbound(&t, reply, rlen, 1001) == NAT_DROP_NO_MAPPING,
               "the recycled flow's reply has nowhere to go");
     }
+}
+
+/* ---- the hash indices ------------------------------------------------ */
+
+/*
+ * The index changes how much work a lookup does and nothing about what
+ * it returns, so every other test in this file passes equally well with
+ * a linear scan back in place. That is what t.probes and t.lookups are
+ * for: they make the work itself observable, and these checks assert a
+ * bound on it that a scan of 2048 entries cannot meet.
+ *
+ * Confirmed to fail without the index: with find_outbound reverted to a
+ * scan, the ratio below comes out at 1024 against a limit of 8.
+ */
+static void test_index(void)
+{
+    struct nat_table t;
+    static uint16_t ports[NAT_ENTRIES];   /* static: too big for a frame */
+    uint8_t pkt[128], reply[128];
+    size_t len, rlen;
+    int i, gen;
+    int all_found = 1, all_restored = 1;
+    unsigned long probes, lookups, evicted_before;
+
+    printf("\nlookups through the hash indices\n");
+    nat_init(&t, TUNNEL_ADDR);
+
+    for (i = 0; i < NAT_ENTRIES; i++) {
+        len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR,
+                       (uint16_t) (1024 + i), 80, 10);
+        check_quiet(nat_outbound(&t, pkt, len, 1000));
+        ports[i] = get16(pkt + 20);
+    }
+    check(nat_active(&t, 1000) == NAT_ENTRIES, "the table is full");
+
+    /*
+     * Every flow is looked up again, outbound and in. A wrong chain
+     * shows up here as a mapping that cannot be found or one that
+     * restores the wrong client, both of which a scan would never do:
+     * correctness first, cost second.
+     */
+    probes = t.probes;
+    lookups = t.lookups;
+
+    for (i = 0; i < NAT_ENTRIES; i++) {
+        len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR,
+                       (uint16_t) (1024 + i), 80, 10);
+        if (nat_outbound(&t, pkt, len, 1000) != NAT_OK ||
+            get16(pkt + 20) != ports[i])
+            all_found = 0;
+
+        rlen = build_l4(reply, 6, PEER_ADDR, TUNNEL_ADDR, 80, ports[i], 10);
+        if (nat_inbound(&t, reply, rlen, 1000) != NAT_OK ||
+            ipv4_dst(reply) != LAN_ADDR ||
+            get16(reply + 22) != (uint16_t) (1024 + i))
+            all_restored = 0;
+    }
+    check(all_found, "all 2048 flows are found again with their own port");
+    check(all_restored, "and every reply is restored to the right client");
+    check(t.evicted == 0, "no flow was displaced along the way");
+
+    probes = t.probes - probes;
+    lookups = t.lookups - lookups;
+    check(lookups >= 2 * NAT_ENTRIES, "both directions were measured");
+    check(probes / lookups < 8,
+          "a lookup in a full table examines a handful of entries, not 2048");
+
+    /*
+     * One further flow, with every slot live. This is the case that was
+     * worst before indexing: allocating an identifier asks "is this one
+     * taken?" per candidate, and each question was a full scan.
+     */
+    probes = t.probes;
+    len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 9999, 80, 10);
+    check(nat_outbound(&t, pkt, len, 1001) == NAT_OK,
+          "a new flow on a full table is still translated");
+    check(t.probes - probes < 64,
+          "and allocating its identifier does not scan the table");
+
+    /*
+     * Churn. Each generation expires everything and fills the table
+     * again, so every slot is reclaimed and relinked repeatedly.
+     *
+     * This is the check that fails if a reclaimed slot is not unlinked
+     * from its old buckets: the stale links stay in the chains, every
+     * generation adds another set, and the cost per lookup climbs with
+     * them even though the answers stay correct.
+     */
+    evicted_before = t.evicted;
+
+    for (gen = 1; gen <= 4; gen++) {
+        uint64_t now = 1000 + (uint64_t) gen * (NAT_TIMEOUT_TCP_MS + 1000);
+
+        for (i = 0; i < NAT_ENTRIES; i++) {
+            len = build_l4(pkt, 6, LAN_ADDR2, PEER_ADDR,
+                           (uint16_t) (2048 + i), 443, 10);
+            check_quiet(nat_outbound(&t, pkt, len, now));
+            ports[i] = get16(pkt + 20);
+        }
+
+        probes = t.probes;
+        lookups = t.lookups;
+        all_restored = 1;
+        for (i = 0; i < NAT_ENTRIES; i++) {
+            rlen = build_l4(reply, 6, PEER_ADDR, TUNNEL_ADDR, 443,
+                            ports[i], 10);
+            if (nat_inbound(&t, reply, rlen, now) != NAT_OK ||
+                ipv4_dst(reply) != LAN_ADDR2 ||
+                get16(reply + 22) != (uint16_t) (2048 + i))
+                all_restored = 0;
+        }
+        probes = t.probes - probes;
+        lookups = t.lookups - lookups;
+
+        if (gen == 4) {
+            check(all_restored,
+                  "after four generations of churn, every reply still lands");
+            check(probes / lookups < 8,
+                  "and lookups are no dearer than they were in the first");
+            check(t.evicted == evicted_before,
+                  "an expired table is refilled without evicting anything");
+        }
+    }
+}
+
+/*
+ * A chain corrupted into a loop must not hang.
+ *
+ * This is not hypothetical: deliberately removing the unlink in
+ * claim_slot, to confirm the churn checks above could fail, made the
+ * suite hang instead of fail. An entry relinked while still in its
+ * bucket points at itself, and the walk never ends. In the gateway that
+ * is a detached process wedging the tunnel silently, so the walks are
+ * bounded and the bound is checked here.
+ */
+static void test_chain_loop(void)
+{
+    struct nat_table t;
+    uint8_t pkt[128], reply[128];
+    size_t len, rlen;
+    uint16_t port;
+    int i, idx = -1;
+
+    printf("\na chain corrupted into a loop\n");
+    nat_init(&t, TUNNEL_ADDR);
+
+    len = build_l4(pkt, 6, LAN_ADDR, PEER_ADDR, 5000, 80, 10);
+    check_quiet(nat_outbound(&t, pkt, len, 1000));
+    port = get16(pkt + 20);
+
+    for (i = 0; i < NAT_ENTRIES; i++) {
+        if (t.entries[i].used)
+            idx = i;
+    }
+    check(idx >= 0, "the flow was recorded somewhere in the table");
+    t.entries[idx].next_in = (uint16_t) idx;   /* the loop */
+
+    /*
+     * The right identifier but a peer port that matches nothing, so the
+     * walk cannot end early on a hit and has to reach the bound.
+     */
+    rlen = build_l4(reply, 6, PEER_ADDR, TUNNEL_ADDR, 81, port, 10);
+    check(nat_inbound(&t, reply, rlen, 1000) == NAT_DROP_NO_MAPPING,
+          "a lookup down a looped chain gives up instead of spinning");
+    check(t.chain_overruns == 1,
+          "and counts it, since only a bug in nat.c can cause it");
 }
 
 /* ---- fragmentation --------------------------------------------------- */
@@ -867,6 +1033,8 @@ int main(void)
     test_expiry();
     test_protocol_timeouts();
     test_eviction();
+    test_index();
+    test_chain_loop();
     test_fragments();
     test_packets_versus_flows();
     test_held_fragments();

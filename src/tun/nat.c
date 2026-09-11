@@ -217,11 +217,147 @@ const char *nat_reason(int code)
 
 /* ---- table ----------------------------------------------------------- */
 
+/*
+ * An entry index has to fit in the uint16_t chain links, with NAT_NIL
+ * left over to mean "end". Checked at compile time rather than trusted,
+ * since raising NAT_ENTRIES is exactly the change that would break it
+ * and the symptom would be a chain that silently terminates early.
+ *
+ * A negative array size, because C99 has no _Static_assert and VSI C is
+ * C99. At file scope, so it is not an unused local typedef.
+ */
+typedef char nat_entries_fit_in_chain_links[NAT_ENTRIES < NAT_NIL ? 1 : -1];
+
 void nat_init(struct nat_table *t, uint32_t tunnel_addr)
 {
+    int i;
+
     memset(t, 0, sizeof *t);
     t->tunnel_addr = tunnel_addr;
     t->next_port = 0;
+
+    /* Empty is NAT_NIL, not the zero memset leaves: zero is entry 0. */
+    for (i = 0; i < NAT_BUCKETS; i++) {
+        t->bucket_out[i] = NAT_NIL;
+        t->bucket_in[i] = NAT_NIL;
+    }
+    for (i = 0; i < NAT_ENTRIES; i++) {
+        t->entries[i].next_out = NAT_NIL;
+        t->entries[i].next_in = NAT_NIL;
+    }
+}
+
+/* ---- hashing --------------------------------------------------------- */
+
+/*
+ * A 32-bit finalising mix. The inputs that matter here differ in their
+ * low bits — consecutive ephemeral ports, addresses on one LAN — and
+ * folding to a bucket keeps only low bits, so the mix has to carry the
+ * high ones down. Unsigned multiplication wraps by definition, which is
+ * the one thing this relies on.
+ */
+static uint32_t hash_mix(uint32_t h)
+{
+    h ^= h >> 16;
+    h *= 0x7FEB352DUL;
+    h ^= h >> 15;
+    h *= 0x846CA68BUL;
+    h ^= h >> 16;
+    return h;
+}
+
+static unsigned hash_out(uint8_t proto, uint32_t lan_addr, uint16_t lan_id,
+                         uint32_t peer_addr, uint16_t peer_id)
+{
+    uint32_t h;
+
+    h = hash_mix(lan_addr ^ hash_mix(peer_addr));
+    h ^= ((uint32_t) lan_id << 16) | (uint32_t) peer_id;
+    h = hash_mix(h ^ (uint32_t) proto);
+    return (unsigned) (h & (NAT_BUCKETS - 1));
+}
+
+/*
+ * Keyed on the identifier and protocol alone. See the header: the same
+ * chain answers an inbound lookup and "is this identifier free?", and
+ * the second of those cannot know the peer.
+ */
+static unsigned hash_in(uint8_t proto, uint16_t nat_id)
+{
+    uint32_t h = hash_mix(((uint32_t) nat_id << 8) | (uint32_t) proto);
+
+    return (unsigned) (h & (NAT_BUCKETS - 1));
+}
+
+/* ---- chains ---------------------------------------------------------- */
+
+static uint16_t entry_index(const struct nat_table *t,
+                            const struct nat_entry *e)
+{
+    return (uint16_t) (e - t->entries);
+}
+
+static void link_entry(struct nat_table *t, struct nat_entry *e)
+{
+    uint16_t idx = entry_index(t, e);
+    unsigned bo = hash_out(e->proto, e->lan_addr, e->lan_id,
+                           e->peer_addr, e->peer_id);
+    unsigned bi = hash_in(e->proto, e->nat_id);
+
+    e->next_out = t->bucket_out[bo];
+    t->bucket_out[bo] = idx;
+    e->next_in = t->bucket_in[bi];
+    t->bucket_in[bi] = idx;
+}
+
+/*
+ * Remove an entry from both chains. Must be called while its keys are
+ * still intact, since they are what says which buckets it is in — which
+ * is why claim_slot unlinks a reclaimed slot rather than leaving it to
+ * the caller that is about to overwrite them.
+ */
+static void unlink_entry(struct nat_table *t, struct nat_entry *e)
+{
+    uint16_t idx = entry_index(t, e);
+    unsigned b;
+    uint16_t i;
+    int guard;
+
+    b = hash_out(e->proto, e->lan_addr, e->lan_id, e->peer_addr, e->peer_id);
+    if (t->bucket_out[b] == idx) {
+        t->bucket_out[b] = e->next_out;
+    } else {
+        guard = NAT_ENTRIES;
+        for (i = t->bucket_out[b]; i != NAT_NIL; i = t->entries[i].next_out) {
+            if (guard-- <= 0) {
+                t->chain_overruns++;
+                break;
+            }
+            if (t->entries[i].next_out == idx) {
+                t->entries[i].next_out = e->next_out;
+                break;
+            }
+        }
+    }
+    e->next_out = NAT_NIL;
+
+    b = hash_in(e->proto, e->nat_id);
+    if (t->bucket_in[b] == idx) {
+        t->bucket_in[b] = e->next_in;
+    } else {
+        guard = NAT_ENTRIES;
+        for (i = t->bucket_in[b]; i != NAT_NIL; i = t->entries[i].next_in) {
+            if (guard-- <= 0) {
+                t->chain_overruns++;
+                break;
+            }
+            if (t->entries[i].next_in == idx) {
+                t->entries[i].next_in = e->next_in;
+                break;
+            }
+        }
+    }
+    e->next_in = NAT_NIL;
 }
 
 unsigned long nat_timeout_for(uint8_t proto)
@@ -246,14 +382,29 @@ int nat_active(const struct nat_table *t, uint64_t now_ms)
     return n;
 }
 
-/* Is this translated identifier already in use for a different flow? */
-static int port_taken(const struct nat_table *t, uint8_t proto, uint16_t id,
+/*
+ * Is this translated identifier already in use for a live flow?
+ *
+ * Walks one bucket of the inbound chain, which holds every mapping with
+ * this identifier whatever its peer. That is what makes the chain worth
+ * keying on the identifier alone: this question is asked once per
+ * candidate port, and it used to be answered by a full scan.
+ */
+static int port_taken(struct nat_table *t, uint8_t proto, uint16_t id,
                       uint64_t now_ms)
 {
-    int i;
+    uint16_t i;
+    int guard = NAT_ENTRIES;
 
-    for (i = 0; i < NAT_ENTRIES; i++) {
+    t->lookups++;
+    for (i = t->bucket_in[hash_in(proto, id)]; i != NAT_NIL;
+         i = t->entries[i].next_in) {
         const struct nat_entry *e = &t->entries[i];
+        if (guard-- <= 0) {
+            t->chain_overruns++;
+            break;
+        }
+        t->probes++;
         if (e->used && !expired(e, now_ms) &&
             e->proto == proto && e->nat_id == id)
             return 1;
@@ -266,10 +417,19 @@ static struct nat_entry *find_outbound(struct nat_table *t, uint8_t proto,
                                        uint32_t peer_addr, uint16_t peer_id,
                                        uint64_t now_ms)
 {
-    int i;
+    uint16_t i;
+    int guard = NAT_ENTRIES;
 
-    for (i = 0; i < NAT_ENTRIES; i++) {
+    t->lookups++;
+    for (i = t->bucket_out[hash_out(proto, lan_addr, lan_id,
+                                    peer_addr, peer_id)];
+         i != NAT_NIL; i = t->entries[i].next_out) {
         struct nat_entry *e = &t->entries[i];
+        if (guard-- <= 0) {
+            t->chain_overruns++;
+            break;
+        }
+        t->probes++;
         if (e->used && !expired(e, now_ms) &&
             e->proto == proto && e->lan_addr == lan_addr &&
             e->lan_id == lan_id && e->peer_addr == peer_addr &&
@@ -283,10 +443,18 @@ static struct nat_entry *find_inbound(struct nat_table *t, uint8_t proto,
                                       uint16_t nat_id, uint32_t peer_addr,
                                       uint16_t peer_id, uint64_t now_ms)
 {
-    int i;
+    uint16_t i;
+    int guard = NAT_ENTRIES;
 
-    for (i = 0; i < NAT_ENTRIES; i++) {
+    t->lookups++;
+    for (i = t->bucket_in[hash_in(proto, nat_id)]; i != NAT_NIL;
+         i = t->entries[i].next_in) {
         struct nat_entry *e = &t->entries[i];
+        if (guard-- <= 0) {
+            t->chain_overruns++;
+            break;
+        }
+        t->probes++;
         if (e->used && !expired(e, now_ms) &&
             e->proto == proto && e->nat_id == nat_id &&
             e->peer_addr == peer_addr && e->peer_id == peer_id)
@@ -295,28 +463,55 @@ static struct nat_entry *find_inbound(struct nat_table *t, uint8_t proto,
     return NULL;
 }
 
-/* A free slot, or the least recently used one if none is free. */
+/*
+ * A free slot, or the least recently used one if none is free, unlinked
+ * from its chains and ready to be filled in.
+ *
+ * Still a scan of the whole array, deliberately. It runs once per new
+ * flow rather than once per packet — 749 a minute at the measured peak,
+ * against thousands of packets a second — and the LRU choice it makes
+ * needs to see every entry to be the choice it claims to be. Indexing
+ * this too would mean maintaining an ordering on every packet to save
+ * work on a fraction of them.
+ */
 static struct nat_entry *claim_slot(struct nat_table *t, uint64_t now_ms)
 {
     struct nat_entry *oldest = NULL;
+    struct nat_entry *chosen = NULL;
     int i;
 
     for (i = 0; i < NAT_ENTRIES; i++) {
         struct nat_entry *e = &t->entries[i];
-        if (!e->used || expired(e, now_ms))
-            return e;
+        if (!e->used || expired(e, now_ms)) {
+            chosen = e;
+            break;
+        }
         if (oldest == NULL || e->last_used_ms < oldest->last_used_ms)
             oldest = e;
     }
 
+    if (chosen == NULL) {
+        /*
+         * Every entry is live, so the least recently used is recycled
+         * and whatever flow owned it stops working. Preferable to
+         * refusing the new flow, but it is a real loss and used to
+         * happen invisibly: count it so the summary can say it
+         * happened.
+         */
+        t->evicted++;
+        chosen = oldest;
+    }
+
     /*
-     * Every entry is live, so the least recently used is recycled and
-     * whatever flow owned it stops working. Preferable to refusing the
-     * new flow, but it is a real loss and used to happen invisibly:
-     * count it so the summary can say it happened.
+     * Unlink here, while the keys that say which buckets it is in are
+     * still the old ones. An expired entry is still linked — expiry is
+     * lazy and costs nothing until the slot is wanted — so a reclaimed
+     * slot is nearly always in two chains it must leave before it is
+     * relinked under its new keys.
      */
-    t->evicted++;
-    return oldest;
+    if (chosen != NULL && chosen->used)
+        unlink_entry(t, chosen);
+    return chosen;
 }
 
 static int allocate_id(struct nat_table *t, uint8_t proto, uint64_t now_ms,
@@ -536,6 +731,7 @@ int nat_outbound(struct nat_table *t, uint8_t *pkt, size_t len,
         e->peer_id = peer_id;
         e->nat_id = nat_id;
         e->used = 1;
+        link_entry(t, e);   /* keys are final now and never change */
         t->flows++;
     }
     e->last_used_ms = now_ms;

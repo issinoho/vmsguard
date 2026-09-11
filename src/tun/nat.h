@@ -41,12 +41,45 @@
  *
  * 2048 is four times the measured peak requirement.
  *
- * The table is scanned linearly and every outbound packet scans it, so
- * this is not free. It is, though, nowhere near the cost of the
- * ChaCha20-Poly1305 already being run over the same packet: a few
- * thousand integer comparisons against encryption of up to 1400 bytes.
+ * Lookups are through the hash indices below rather than a scan of this
+ * array, so the size can grow again without the per-packet cost growing
+ * with it.
  */
 #define NAT_ENTRIES 2048
+
+/*
+ * Hash indices over the entry table.
+ *
+ * Every packet has to find its mapping, and finding it by walking all
+ * NAT_ENTRIES was affordable only because encrypting the same packet
+ * costs more. Port allocation was the part that did not stay
+ * affordable: allocate_id asks "is this identifier taken?" for each
+ * candidate, and answering that by a scan made a new flow cost up to
+ * NAT_ENTRIES * NAT_PORT_COUNT comparisons on a full table.
+ *
+ * Two chains, because the two lookups have different keys:
+ *
+ *   out — (proto, lan_addr, lan_id, peer_addr, peer_id), the whole
+ *         five-tuple as it arrives from the client
+ *   in  — (proto, nat_id) alone, deliberately not the full inbound key:
+ *         the bucket then holds every mapping using that identifier,
+ *         which is exactly the question port allocation asks, and an
+ *         inbound lookup filters the same chain on the peer.
+ *
+ * Chains are singly linked through indices in the entries themselves,
+ * so the table stays one flat struct with no allocation — a
+ * requirement here, not a preference.
+ *
+ * An entry's keys never change once it is linked: a mapping's nat_id is
+ * fixed at creation and only last_used_ms is touched afterwards. So
+ * linking happens at creation and unlinking when a slot is reclaimed,
+ * and nothing has to be moved between buckets in between.
+ *
+ * Power of two so the fold is a mask, and twice NAT_ENTRIES so a full
+ * table still averages a chain of two.
+ */
+#define NAT_BUCKETS 4096
+#define NAT_NIL     0xFFFF   /* end of chain; also "not linked" */
 
 /*
  * Ports handed out for translated flows. Above the ephemeral range most
@@ -146,6 +179,8 @@ struct nat_entry {
     uint16_t nat_id;        /* what we substitute               */
     uint8_t  proto;
     uint8_t  used;
+    uint16_t next_out;      /* chain links, NAT_NIL at the end  */
+    uint16_t next_in;
     uint64_t last_used_ms;
 };
 
@@ -153,6 +188,8 @@ struct nat_table {
     struct nat_entry entries[NAT_ENTRIES];
     struct nat_frag  frags[NAT_FRAGS];
     struct nat_held  held[NAT_HELD_MAX];
+    uint16_t bucket_out[NAT_BUCKETS];
+    uint16_t bucket_in[NAT_BUCKETS];
     uint32_t tunnel_addr;   /* the address the provider assigned us */
     uint16_t next_port;
     /* Counters, for reporting. */
@@ -174,6 +211,36 @@ struct nat_table {
      * with nothing anywhere to say why. Worth watching.
      */
     unsigned long evicted;
+    /*
+     * Entries examined by a lookup, and lookups made.
+     *
+     * Here because the index is otherwise untestable: it changes how
+     * much work a lookup does and nothing about what it returns, so
+     * every test of behaviour passes just as well with the scan back.
+     * These two make the work itself observable, and tests/test_nat.c
+     * asserts a bound on the ratio that a linear scan cannot meet.
+     *
+     * They also answer the operational question directly, if the
+     * gateway is ever pushed hard enough to ask it.
+     */
+    unsigned long probes;
+    unsigned long lookups;
+    /*
+     * Chain walks abandoned for running longer than the table is big.
+     *
+     * That can only happen if a chain has been corrupted into a loop,
+     * which is one missing unlink away: relinking an entry that is
+     * still in its bucket points it at itself. Deliberately introducing
+     * that bug made the test suite hang rather than fail, which is the
+     * same thing the gateway would do — detached, on a machine with no
+     * debugger to attach, wedging the tunnel with nothing in the log.
+     *
+     * So every walk is bounded, and a walk that hits the bound gives up
+     * and counts it. The mapping is then missed, which costs a packet
+     * or a flow; the alternative costs the whole gateway. Non-zero here
+     * means a bug in this file, not a network condition.
+     */
+    unsigned long chain_overruns;
 };
 
 /* How long a mapping for this protocol is kept once idle. */

@@ -115,9 +115,6 @@ so there is no plaintext original to suppress.
 
 Nothing known blocks ordinary use of the gateway. The nearest things:
 
-- **The NAT table is a linear scan**, 2048 entries, walked for every
-  outbound packet. Cheap next to encrypting that same packet, but it is
-  the first thing to index if the gateway is pushed hard.
 - **Datagrams are passed through, not reassembled.** Later fragments
   inherit their first fragment's mapping, and inbound ones that arrive
   early are held until it does. Nothing puts the pieces back together,
