@@ -190,14 +190,22 @@ inbound path is therefore demonstrated, with nothing forged.
 
 The client shape is **narrowed, not solved**. Its inbound half is the
 above. Its outbound half needs the encapsulated frame captured, and
-pcap does not list `IT0` — only `IE0` and `LO0` — so capture would have
-to happen on `IE0`, where the frame carries the inner packet
-unencrypted to the router. A tunnel cannot terminate locally —
-`127.0.0.1` and the machine's own address are both refused with
-`invalid argument`, while a remote one succeeds — so the encapsulated
-frame must reach the wire and the leak is unavoidable. What remains is
-a narrow ask: make `ITn` visible to pcap. See
-`docs/research/driver-feasibility.md`.
+capture would have to happen on `IE0`, where the frame carries the
+inner packet unencrypted to the router. A tunnel cannot terminate
+locally — `127.0.0.1` and the machine's own address are both refused
+with `invalid argument`, while a remote one succeeds — so the
+encapsulated frame must reach the wire and the leak is unavoidable.
+
+**Corrected 2026-09-12.** This used to say pcap does not list `ITn`,
+and that the ask was to make it visible. Both were wrong, and wrong
+because the conclusion came from `pcap_findalldevs` alone —
+`pcap_open_live("IT0")` had never been called. Given an **IPv4**
+address on the interface (every tunnel tested before was IPv6-only),
+pcap both lists a tunnel and opens it. What it then hands back is
+`IE0`'s traffic, reporting link type EN10MB: the frames carry `EIA0`'s
+own MAC while the tunnel's counters sit at zero. So the real ask is
+that a handle opened on a non-LAN interface stop silently delivering
+the LAN device's packets. See `docs/research/driver-feasibility.md`.
 
 ## Known gaps, in priority order
 

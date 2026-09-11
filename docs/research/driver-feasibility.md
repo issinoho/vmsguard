@@ -540,12 +540,18 @@ Blocked, for a different and much smaller reason than before.
 | --- | --- |
 | Hand the stack a packet to deliver | **solved** — inject to a tunnel |
 | Suppress the plaintext original | **solved** — routing at `ITn` encapsulates it instead |
-| Observe what the stack emits | **blocked** — pcap cannot see `ITn` |
+| Observe what the stack emits | **blocked** — see the correction below |
 
 The third is the whole of what remains, and it is a narrow, concrete
-thing to ask VSI for: **make `ITn` visible to pcap**, or provide any way
-to read what a tunnel interface emits. Not a new subsystem — a capture
-hook on an interface that already exists and already works.
+thing to ask VSI for: a way to read what a tunnel interface emits. Not
+a new subsystem — a capture hook on an interface that already exists
+and already works.
+
+**The reason recorded here was wrong**, though the row is still
+blocked. It said pcap cannot see `ITn`. In fact pcap lists and opens a
+tunnel that has an IPv4 address, and then delivers `IE0`'s traffic from
+the handle. Tested 2026-09-12; the detail is at the end of this
+document.
 
 Worth stating plainly what changed today. The client shape was abandoned
 because a packet originating on this machine could not be suppressed;
@@ -607,10 +613,58 @@ from the one libpcap enumerates. Which raises the gap:
 `pcap_findalldevs` does not *list* it, and the conclusion drawn was
 that pcap cannot see it. Those are two different mechanisms, and on
 several platforms libpcap enumerates a restricted set while still
-opening any name handed to it. `probe_pcap` already takes an interface
-as `argv[1]`, so the test costs one run: `PP IT0` after
-`iptunnel create` and `ifconfig "IT0" up`. Until that is run, "pcap
-cannot see `ITn`" rests on enumeration alone.
+opening any name handed to it.
+
+That test was run, and the answer is below.
+
+### pcap and `ITn`: it opens, and it captures the wrong interface
+
+Run 2026-09-12. The reason for reopening was the above: the conclusion
+rested on enumeration alone and `pcap_open_live("IT0")` had never been
+called.
+
+The errors move as the interface gains configuration:
+
+| interface | state | `pcap_open_live` |
+| --- | --- | --- |
+| `IT0` | does not exist | no such device or address |
+| `IT2` | up, no address | can't assign requested address |
+| `IT1` | up, IPv6 address only | can't assign requested address |
+| `IT2` | up, `10.99.0.1` | **succeeds**, and `findalldevs` lists it |
+
+So libpcap here wants an **IPv4** address on an interface before it will
+touch it, and every tunnel tested before today was IPv6-only. Even the
+enumeration finding was an artefact of that: an IPv4-addressed tunnel
+appears in the device list.
+
+**But the handle captures `IE0`.** The open reports link type 1
+(EN10MB), which a tunnel carrying bare IP cannot be, and the frames are
+plainly the LAN's:
+
+```
+9c31c37a4eb1 aa0004000104 0800 4500006c...06...c0a80050 c0a80001
+dst router   src EIA0      IP        TCP  192.168.0.80 -> 192.168.0.1
+```
+
+The source MAC is `EIA0`'s own, the addresses are the LAN's, and `IT2`
+had `Ipkts 0 Opkts 0` with nothing routed through it at the time. This
+is the box's own SSH traffic, captured from the Ethernet while we asked
+for a tunnel.
+
+That is worse than the refusal it replaces. A refusal is honest; this
+looks like success — a handle opens, a link type is reported, frames
+arrive — and the client's outbound half could have been built on it
+before anyone noticed the frames were the wrong interface's.
+
+**The client shape stays blocked, and the ask to VSI is now sharper.**
+It is not "make `ITn` visible to pcap": `ITn` can be listed and opened
+today. It is that **a handle opened on a non-LAN interface delivers the
+LAN device's traffic instead of that interface's**, silently. Whether
+the fix is real capture on tunnel interfaces or an honest error on
+open, the current behaviour cannot be built on either way.
+
+Injection is unchanged — `pcap_sendpacket` still returns "socket is not
+connected" — so that finding stands exactly as recorded.
 
 **OpenVMS VAX Device Support Manual (1994, VAX V6.1).** Superseded for
 this target and not useful. It is MACRO-32 throughout, and its
