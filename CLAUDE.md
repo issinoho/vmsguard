@@ -8,7 +8,7 @@ things.
 
 ```sh
 make            # everything, and syntax-checks the gateway
-make test       # 508 checks across nine binaries
+make test       # 522 checks across nine binaries
 make loopback   # end-to-end over real UDP, needs no privilege
 ```
 

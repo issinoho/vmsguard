@@ -153,6 +153,41 @@ $ then
 $     say "ERROR: no include logical matches ''ssl_library'."
 $     exit 2
 $ endif
+$!
+$! A logical that is not defined is not an error to the compiler: the
+$! include directory is simply ignored, <openssl/evp.h> is found
+$! somewhere else on the search path, and the version that turns up is
+$! whatever that directory happens to hold.
+$!
+$ if f$trnlnm(ssl_include) .eqs. ""
+$ then
+$     say "ERROR: ''ssl_include' is not a defined logical name."
+$     say ""
+$     say "The image ''ssl_library' exists, but its headers do not,"
+$     say "and building anyway would compile against whichever OpenSSL"
+$     say "headers are found instead. See what is defined with:"
+$     say "  $ show logical SSL*$INCLUDE"
+$     exit 2
+$ endif
+$!
+$! Which family the link is about to name. wg_crypto.c checks the
+$! headers against this and refuses to compile if they disagree: the
+$! image and the headers are chosen from two separate logical names, so
+$! nothing else makes them agree. Forcing 1.1.1 on the Itanium machine
+$! compiled 3.x headers against a 1.1.1 image and produced four
+$! undefined symbols, which was luck -- a mismatch over a symbol present
+$! in both would have linked and failed at runtime.
+$!
+$ ssl_expect = ""
+$ if f$locate("SSL3$", ssl_library) .lt. f$length(ssl_library) then -
+      ssl_expect = ",VMSGUARD_EXPECT_OPENSSL_3"
+$ if f$locate("SSL31$", ssl_library) .lt. f$length(ssl_library) then -
+      ssl_expect = ",VMSGUARD_EXPECT_OPENSSL_3"
+$ if f$locate("SSL111$", ssl_library) .lt. f$length(ssl_library) then -
+      ssl_expect = ",VMSGUARD_EXPECT_OPENSSL_1"
+$ if f$locate("SSL1$", ssl_library) .lt. f$length(ssl_library) then -
+      ssl_expect = ",VMSGUARD_EXPECT_OPENSSL_1"
+$!
 $ say "using OpenSSL image: ''ssl_library'"
 $ say "        and headers: ''ssl_include'"
 $!
@@ -160,7 +195,7 @@ $! _SOCKADDR_LEN selects the BSD 4.4 socket structures, which is what
 $! provides sockaddr_in6 and sockaddr_storage. Section 1.4.1 of the
 $! Sockets API manual. Without it the platform layer will not compile.
 $!
-$ cc_defines = "/DEFINE=(_SOCKADDR_LEN)"
+$ cc_defines = "/DEFINE=(_SOCKADDR_LEN" + ssl_expect + ")"
 $!
 $! VSI C V7.7 is GEM-based, not Clang, so C99 is the ceiling. If
 $! /STANDARD=C99 rejects something, try /STANDARD=RELAXED.

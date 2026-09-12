@@ -34,6 +34,11 @@
 SSL_INCLUDE = SSL3$INCLUDE
 SSL_LIBRARY = SYS$LIBRARY:SSL3$LIBCRYPTO_SHR32
 
+! Both names above say 3.x, and VMSGUARD_EXPECT_OPENSSL_3 in CFLAGS
+! makes wg_crypto.c refuse to compile if the headers that logical
+! actually resolves to are older. Change all three together, or not at
+! all. build_vms.com derives the same define from the image it finds.
+
 ! _SOCKADDR_LEN selects the BSD 4.4 socket structures, which is where
 ! sockaddr_in6 and sockaddr_storage come from (Sockets API manual,
 ! section 1.4.1). The platform layer will not compile without it.
@@ -56,7 +61,8 @@ SSL_LIBRARY = SYS$LIBRARY:SSL3$LIBCRYPTO_SHR32
 ! while build_vms.com had carried it for months -- the same split that
 ! left ethip.obj without a rule. Keep the two include lists identical.
 
-CFLAGS = /STANDARD=C99/DEFINE=(_SOCKADDR_LEN)/POINTER_SIZE=32-
+CFLAGS = /STANDARD=C99/DEFINE=(_SOCKADDR_LEN,VMSGUARD_EXPECT_OPENSSL_3)-
+/POINTER_SIZE=32-
 /PREFIX_LIBRARY_ENTRIES=ALL_ENTRIES-
 /INCLUDE_DIRECTORY=([.src.proto],[.src.platform],[.src.client],-
 [.src.tun],$(SSL_INCLUDE))

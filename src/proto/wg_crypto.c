@@ -33,6 +33,33 @@
 #define WG_LEGACY_OPENSSL 1
 #endif
 
+/*
+ * The build picks the crypto image and the headers from two independent
+ * logical names, and until this check existed nothing made them agree.
+ * Forcing the 1.1.1 image on the Itanium machine compiled against 3.x
+ * headers and produced four undefined symbols -- EVP_CIPHER_fetch,
+ * EVP_CIPHER_free, EVP_PKEY_CTX_new_from_name, EVP_PKEY_generate --
+ * because this file took the 3.0 branch and then linked against an
+ * image that has none of them.
+ *
+ * That was caught only by luck: those four do not exist in 1.1.1, so
+ * the link had something to complain about. A mismatch over a symbol
+ * present in both versions with a different struct behind it would have
+ * linked cleanly and gone wrong at runtime, inside OpenSSL, a long way
+ * from the cause.
+ *
+ * So the build procedure says which family it believes it is linking,
+ * and the headers are made to agree here, where the preprocessor can
+ * see both. Undefined means unchecked, which is what a build that has
+ * not been told gets.
+ */
+#if defined(VMSGUARD_EXPECT_OPENSSL_1) && OPENSSL_VERSION_NUMBER >= 0x30000000L
+#error "OpenSSL 3.x headers with a pre-3.0 crypto image: the SSLnnn$INCLUDE logical does not match the image the link names"
+#endif
+#if defined(VMSGUARD_EXPECT_OPENSSL_3) && OPENSSL_VERSION_NUMBER < 0x30000000L
+#error "pre-3.0 OpenSSL headers with a 3.x crypto image: the SSLnnn$INCLUDE logical does not match the image the link names"
+#endif
+
 #ifdef WG_LEGACY_OPENSSL
 typedef const EVP_CIPHER wg_cipher_t;
 #else

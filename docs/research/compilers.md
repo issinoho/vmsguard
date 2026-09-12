@@ -30,6 +30,15 @@ Two expectations this corrected:
   against a real 1.1.1 image, even though one is now within reach —
   which is why `@build_vms TEST SSL111` exists.
 
+  **And it still is.** The first attempt at that, on 2026-09-12, did not
+  exercise the legacy branch: it found `SSL111$LIBCRYPTO_SHR32` and then
+  compiled against 3.x headers anyway, so the 3.0 branch was built and
+  linked against an image with none of its entry points. Four undefined
+  symbols, and a stopped build. The header/image pairing is now checked
+  at compile time, so the next attempt either takes the legacy branch or
+  says why it cannot; what it needs first is an `SSL111$INCLUDE` that
+  resolves to 1.1.1 headers.
+
 Alignment was the risk worth naming in advance: Itanium traps unaligned
 loads that x86-64 performs silently. Nothing in the tree relies on one,
 because wire formats are read and written with explicit offsets and

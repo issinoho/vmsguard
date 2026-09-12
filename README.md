@@ -165,7 +165,7 @@ Nothing known blocks ordinary use of the gateway. The nearest things:
 
 ```sh
 make          # protocol core, tools, tests, and runs the gateway
-make test     # 508 checks across nine binaries
+make test     # 522 checks across nine binaries
 make loopback # end-to-end self-test over real UDP: handshake,
               # cookie challenge, roaming and data path
 ```
@@ -260,6 +260,21 @@ working image that crashes when execution reaches the unresolved
 reference. One `in6addr_any` reference cost a debugging session that
 looked like a wild pointer. Always check the link output.
 
+**The OpenSSL headers and the OpenSSL image are chosen separately, and
+nothing makes them agree.** The image comes from a path on the `LINK`
+line, the headers from an `SSLnnn$INCLUDE` logical, and a logical that
+is not defined is not an error — the include directory is ignored and
+`<openssl/evp.h>` is found somewhere else, at whatever version happens
+to be there. Forcing the 1.1.1 image on the Itanium machine compiled
+3.x headers against it and produced four undefined symbols. That was
+luck: `EVP_CIPHER_fetch` and its three companions do not exist in
+1.1.1, so the link had something to say. A mismatch over a symbol
+present in both versions with a different struct behind it would have
+linked cleanly and failed inside OpenSSL at runtime. `build_vms.com`
+now names the family it is linking, `wg_crypto.c` refuses to compile if
+the headers disagree, and a missing include logical stops the build
+rather than being ignored.
+
 **Files are opened for exclusive access by default.** A log written
 with plain `fopen(path, "a")` cannot be read while the process holds it:
 `TYPE/CONTINUOUS` fails with `RMS-E-FLK, file currently locked by
@@ -334,7 +349,7 @@ makes IPv6 forwarding work without forging anything.
 ## Testing
 
 ```sh
-make test       # 508 checks: protocol, framing, IPv4/IPv6 inspection,
+make test       # 522 checks: protocol, framing, IPv4/IPv6 inspection,
                 #   NAT, ICMP, encapsulation and config parsing
 make loopback   # four scenarios over real UDP: cookie challenge, roaming,
                 #   a peer-initiated handshake and its replay, a lost
@@ -373,7 +388,7 @@ tools/gateway/  the subnet gateway, its DCL procedures, and a stub
                 libpcap so the Linux build can compile and run it
 tools/probes/   OpenSSL, sockets, pcap and injection probes
 tools/spike/    the pseudo-terminal spike from the TUN investigation
-tests/          508 checks across nine binaries
+tests/          522 checks across nine binaries
 docs/           building, interop, gateway
 docs/research/  toolchain, TCP/IP stack, crypto, virtual-interface findings
 ```
