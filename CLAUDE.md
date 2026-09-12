@@ -32,6 +32,13 @@ touched anything in `src/client/`, `src/platform/` or `src/proto/`.
 OpenVMS builds with `@build_vms TEST` (DCL) or `MMS` (`descrip.mms`,
 core and tools only). `build_vms.com` is the exercised path.
 
+`@build_vms TEST SSL111` builds against OpenSSL 1.1.1 instead of 3.x and
+takes the pre-3.0 branch of `wg_crypto.c` and `probe_openssl.c`. Both
+generations pass all 522 checks on Itanium. If you touch either file,
+that parameter is how the other branch gets exercised — and note that on
+OpenVMS the header version is chosen by the logical name `OPENSSL`, not
+by `/INCLUDE_DIRECTORY`, which is why the build defines it.
+
 ## Hard constraints
 
 ### C99, not C11

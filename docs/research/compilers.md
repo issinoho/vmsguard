@@ -50,6 +50,16 @@ Two expectations this corrected:
   they are linking, and the compile-time guard catches the pairing if
   anything still disagrees.
 
+  **Settled 2026-09-12.** With that fixed, `@build_vms TEST SSL111`
+  builds the whole tree against `SSL111$LIBCRYPTO_SHR32` and all 522
+  checks pass. `probe_openssl` reports `OpenSSL 1.1.1w 11 Sep 2023` and
+  passes its eight primitive checks through the pre-3.0 entry points:
+  `EVP_PKEY_CTX_new_id`, `EVP_chacha20_poly1305`, `EVP_blake2s256` and
+  `EVP_PKEY_HKDF`. So the legacy branch is compiled, linked and
+  exercised against a real 1.1.1 library rather than reasoned about, and
+  vmsguard builds on an OpenVMS system where 3.x was never an option.
+  Rebuilding with no parameter returns to 3.0 and passes the same 522.
+
 Alignment was the risk worth naming in advance: Itanium traps unaligned
 loads that x86-64 performs silently. Nothing in the tree relies on one,
 because wire formats are read and written with explicit offsets and

@@ -5,7 +5,7 @@ testing the target system directly, rather than inferring from headers.
 
 | Probe | Answers | Matters for |
 | --- | --- | --- |
-| `probe_openssl.c` | Does OpenSSL 3.0.21 really provide working X25519, ChaCha20-Poly1305, BLAKE2s and HKDF? | Settled — the MVP works |
+| `probe_openssl.c` | Does the installed OpenSSL really provide working X25519, ChaCha20-Poly1305, BLAKE2s and HKDF? | Settled for 3.0.21 and for 1.1.1w — still the first thing to run on a new OpenSSL |
 | `probe_sockets.c` | Non-blocking + `poll()`, and is `SOCK_RAW` usable? | `SOCK_RAW` gates the gateway |
 | `probe_pcap.c` | Does libpcap actually capture and inject? | Gates the gateway |
 

@@ -22,6 +22,14 @@ explicit-offsets rule for wire formats was what made that free. The
 gateway's behaviour on Itanium has not been measured yet; what is
 established there is that everything builds and every self-test passes.
 
+That machine also settles **OpenSSL 1.1.1**, which matters for older
+OpenVMS systems where 3.x is not available. `@build_vms TEST SSL111`
+builds the tree against `SSL111$LIBCRYPTO_SHR32` and passes the same 522
+checks, with `probe_openssl` reporting OpenSSL 1.1.1w and exercising the
+pre-3.0 entry points `wg_crypto.c` compiles in that case. Until then the
+pre-3.0 branch had only ever been compiled, never linked or run against
+a library that needed it.
+
 | | |
 | --- | --- |
 | Protocol core | 131 self-tests pass natively on OpenVMS |
