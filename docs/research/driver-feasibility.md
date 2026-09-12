@@ -271,6 +271,23 @@ a keyword: `iptunnel show IT3` works and `iptunnel show tunnel` returns
 `invalid argument`. Obvious once seen, and duly typed literally on
 2026-09-12.
 
+**A tunnel cannot be deleted while it still has an address**, and
+`ifconfig down` does not remove one. Bringing an interface down drops
+its routes and leaves the address assigned, and `iptunnel delete` then
+fails with `SIOCIPTUNNEL delete: mount device busy` — which does not
+suggest an address is the reason. The full sequence is:
+
+```
+$ ifconfig "IT3" delete     ! removes the address
+$ iptunnel delete IT3
+interface IT3 deleted
+```
+
+This matters to the client shape rather than being housekeeping: a
+client creates a tunnel at startup and removes it at shutdown, so a
+teardown that quietly leaves the interface behind would leak one `ITn`
+per run until the system is rebooted.
+
 "A configured tunnel is created as a virtual interface (ITn)... an IPv4
 configured tunnel encapsulates IPv4 **or IPv6** packets in an IPv4
 packet." The reference given is RFC 2003, IP-in-IP encapsulation.
