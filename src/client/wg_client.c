@@ -746,24 +746,36 @@ int wg_client_recv(struct wg_client *c, uint8_t *out, size_t cap,
             continue;
         }
 
-        if (len < WG_DATA_HDR_LEN + WG_TAG_LEN)
+        if (len < WG_DATA_HDR_LEN + WG_TAG_LEN) {
+            c->rx_malformed++;
             continue;
-        if (buf[0] != WG_MSG_TRANSPORT_DATA)
+        }
+        if (buf[0] != WG_MSG_TRANSPORT_DATA) {
+            c->rx_malformed++;
             continue;
-        if (len - WG_DATA_HDR_LEN - WG_TAG_LEN > cap)
+        }
+        if (len - WG_DATA_HDR_LEN - WG_TAG_LEN > cap) {
+            c->rx_malformed++;
             continue;   /* would not fit; drop rather than truncate */
+        }
 
         kp = keypair_for(c, wg_get32(buf + WG_DATA_OFF_RECEIVER));
-        if (kp == NULL)
+        if (kp == NULL) {
+            c->rx_unknown_keypair++;
             continue;
+        }
 
         if (wg_transport_decrypt(out, &plainlen, &counter, kp,
-                                 buf, len) != 0)
+                                 buf, len) != 0) {
+            c->rx_decrypt_failed++;
             continue;
+        }
 
         /* Sliding-window replay check, per keypair. */
-        if (!wg_replay_check(&kp->replay, counter))
+        if (!wg_replay_check(&kp->replay, counter)) {
+            c->rx_replayed++;
             continue;
+        }
 
         /*
          * Authenticated and not a replay, so the source is the peer.

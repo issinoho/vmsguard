@@ -170,6 +170,24 @@ struct wg_client {
     int                  have_host;
     unsigned long        reresolves;
 
+    /*
+     * Inbound packets discarded without being delivered, by reason.
+     *
+     * Every one of these used to be a bare `continue`, so a packet that
+     * arrived and could not be used left no trace anywhere. A live run
+     * stalled for forty seconds with the gateway reporting nothing
+     * dropped, and there was no way to tell whether packets were
+     * arriving and being discarded or not arriving at all — which are
+     * different faults with different fixes.
+     *
+     * unknown_keypair is the interesting one during a rekey: it means
+     * the peer is sending under a session we no longer hold.
+     */
+    unsigned long        rx_malformed;        /* too short, or not data  */
+    unsigned long        rx_unknown_keypair;  /* index matches no session */
+    unsigned long        rx_decrypt_failed;   /* authentication failed    */
+    unsigned long        rx_replayed;         /* outside the window       */
+
     char                 error[160];
 };
 

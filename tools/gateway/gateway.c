@@ -437,9 +437,50 @@ static void emit_drop_causes(void)
  * so a reader learns one format rather than two, and so a run that ends
  * badly still has its last known state on record.
  */
+/*
+ * Inbound packets the tunnel received and could not use, totalled
+ * across peers. Each was a silent `continue` until a live run stalled
+ * for forty seconds while every counter here read zero.
+ */
+static unsigned long tunnel_rx_discards(void)
+{
+    unsigned long n = 0;
+    int t;
+
+    for (t = 0; t < ntunnels; t++) {
+        const struct wg_client *c = &tunnels[t].client;
+        n += c->rx_malformed + c->rx_unknown_keypair +
+             c->rx_decrypt_failed + c->rx_replayed;
+    }
+    return n;
+}
+
+static void emit_rx_discards(void)
+{
+    unsigned long malformed = 0, unknown = 0, bad = 0, replayed = 0;
+    int t;
+
+    for (t = 0; t < ntunnels; t++) {
+        const struct wg_client *c = &tunnels[t].client;
+        malformed += c->rx_malformed;
+        unknown   += c->rx_unknown_keypair;
+        bad       += c->rx_decrypt_failed;
+        replayed  += c->rx_replayed;
+    }
+    if (malformed > 0)
+        emit(" malformed %lu", malformed);
+    if (unknown > 0)
+        emit(" unknown-session %lu", unknown);
+    if (bad > 0)
+        emit(" undecryptable %lu", bad);
+    if (replayed > 0)
+        emit(" replayed %lu", replayed);
+}
+
 static void log_status(int nat_live)
 {
     unsigned long rekeys = 0, failed = 0, roams = 0;
+    unsigned long discards;
     int t;
 
     for (t = 0; t < ntunnels; t++) {
@@ -453,6 +494,16 @@ static void log_status(int nat_live)
          stamp(), st.captured, st.tunnelled, st.injected, st.dropped);
     emit_drop_causes();
     emit(", %lu rekey%s", rekeys, rekeys == 1 ? "" : "s");
+    /*
+     * Printed on the status line rather than only in the summary: the
+     * question it answers -- are packets arriving and being discarded?
+     * -- is asked while a run is stalling, not afterwards.
+     */
+    discards = tunnel_rx_discards();
+    if (discards > 0) {
+        emit(", %lu tunnel discard%s:", discards, discards == 1 ? "" : "s");
+        emit_rx_discards();
+    }
     if (nat_live >= 0)
         emit(", %d mappings", nat_live);
     if (failed > 0)
@@ -1014,6 +1065,21 @@ static void print_summary(void)
             emit("; answered %lu cookie challenge%s", c->cookies_received,
                  c->cookies_received == 1 ? "" : "s");
         emit("\n");
+
+        /*
+         * Always named individually here, unlike on the status line.
+         * "unknown-session" in particular says the peer was sending
+         * under a session we no longer held, which is a rekey fault
+         * and not a network one -- and is invisible without this.
+         */
+        if (c->rx_malformed + c->rx_unknown_keypair +
+            c->rx_decrypt_failed + c->rx_replayed > 0) {
+            emit("%s: tunnel packets discarded --"
+                 " %lu malformed, %lu unknown session,"
+                 " %lu undecryptable, %lu replayed\n",
+                 tunnels[t].label, c->rx_malformed, c->rx_unknown_keypair,
+                 c->rx_decrypt_failed, c->rx_replayed);
+        }
     }
 
     if (use_nat) {
