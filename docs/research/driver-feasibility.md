@@ -288,6 +288,22 @@ client creates a tunnel at startup and removes it at shutdown, so a
 teardown that quietly leaves the interface behind would leak one `ITn`
 per run until the system is rebooted.
 
+It is the **IPv4** address specifically that holds the device. Deleting
+an IPv6-only tunnel's address failed outright —
+
+```
+%TCPIP-E-FSDELIFADDR, IT1 :C2A8:00FF:FE50:0000 could not delete address
+```
+
+— and `iptunnel delete IT1` succeeded regardless. So a teardown should
+attempt the address deletion and carry on rather than treating its
+failure as fatal.
+
+That is the second thing today to distinguish an interface's IPv4
+address from its IPv6 one: libpcap will not list or open an interface
+without the former either. Both look like the same registration being
+keyed on IPv4.
+
 "A configured tunnel is created as a virtual interface (ITn)... an IPv4
 configured tunnel encapsulates IPv4 **or IPv6** packets in an IPv4
 packet." The reference given is RFC 2003, IP-in-IP encapsulation.
