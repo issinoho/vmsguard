@@ -97,6 +97,23 @@ CLIENT_OBJS = [.build]wg_client.obj
 ! definition pointing at the kit this file already names is harmless.
 ! Deassign it by hand if you then build against a different one:
 !     $ DEASSIGN/JOB OPENSSL
+!
+! Not yet proven to take effect. MMS CLEAN followed by MMS TEST compiles
+! the whole tree on Itanium and passes, but the system-wide OPENSSL there
+! already points at SSL3$INCLUDE: -- the same kit this file names -- so a
+! clean build is equally consistent with this define working and with it
+! being ignored. To settle it, make the ambient definition wrong and let
+! the guard in wg_crypto.c answer:
+!
+!     $ DEFINE/JOB OPENSSL SSL111$INCLUDE:
+!     $ MMS CLEAN
+!     $ MMS TEST
+!     $ DEASSIGN/JOB OPENSSL
+!
+! If .FIRST reaches the compile subprocesses it overrides that and the
+! build succeeds. If it does not, the compiles see 1.1.1 headers while
+! CFLAGS says VMSGUARD_EXPECT_OPENSSL_3, and the #error names the
+! mismatch instead of anything having to be inferred.
 
 .FIRST
     @- IF F$SEARCH("BUILD.DIR;1") .EQS. "" THEN CREATE/DIRECTORY [.build]
