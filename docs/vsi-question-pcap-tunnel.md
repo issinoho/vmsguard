@@ -213,23 +213,38 @@ this libpcap filters in the application rather than in the kernel, so a
 filter cannot be what is hiding the traffic — it is applied to whatever
 the handle has already delivered.
 
-## A third question: how should traffic be routed into `ITn`?
+### Routing into the tunnel — answered, and the answer is the netmask
 
-Related, and possibly relevant to the above.
+Included because it explains the failed run above, and because the
+behaviour on the way to it looks like something worth knowing.
 
-After `iptunnel create 192.0.2.2` and
-`ifconfig "IT2" 10.99.0.1 10.99.0.2`, with the interface `UP`, there is
-no route through the tunnel — as the table above shows — and we have
-not found the documented way to create one. `netstat -i` shows the
-interface with network `10` and address `10.99.0.1`, which suggests the
-stack considers `10/8` reachable there, but no matching entry appears
-in the routing table and packets to `10.99.0.2` are discarded without
-`Opkts` or `Oerrs` moving on the interface.
+`ifconfig "IT2" 10.99.0.1 10.99.0.2` configures the addresses and
+creates **no route**, which is what made the run above meaningless.
+Adding a netmask and `up` in the same command installs the interface
+route:
 
-Is `iptunnel` intended to be used with an explicit route added
-afterwards, and if so by which mechanism? This matters to us
-independently of the capture question: the client design routes traffic
-into `ITn` deliberately.
+```
+$ ifconfig "IT2" 10.99.0.1 10.99.0.2 netmask 255.255.255.0 up
+
+$ netstat -rn
+10.99.0/24       10.99.0.1          U           1        0  IT2
+10.99.0.1        10.99.0.1          UHL         0        0  IT2
+```
+
+The intermediate attempt is the part that may be a defect. With a host
+netmask — the natural choice for a point-to-point tunnel — the command
+is refused **and the existing address is deleted**:
+
+```
+$ ifconfig "IT2" 10.99.0.1 10.99.0.2 netmask 255.255.255.255 up
+%TCPIP-I-FSIPADDRDEL, IT2 10.99.0.1 primary address removed from node
+host address is zero when ipaddr=10.99.0.1 netmask:255.255.255.255
+```
+
+The interface is left with no address at all, rather than with the
+configuration it had before the rejected command. A program
+reconfiguring an interface cannot treat a failed `ifconfig` as a no-op,
+and the message arrives on the terminal rather than as a status.
 
 ## Why it matters to us
 
