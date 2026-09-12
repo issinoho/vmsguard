@@ -14,11 +14,10 @@
 !     $ MMS TEST           build and run the protocol tests
 !     $ MMS CLEAN          remove build products
 !
-! Type the targets in capitals. MMS looks up a target named on the
-! command line case sensitively, so "MMS clean" fails with
-! %MMS-F-BADTARG against a CLEAN written in capitals -- and a lowercase
-! alias cannot fix that, for the reason recorded at the foot of this
-! file.
+! Either case works on the command line: "MMS TEST" and "mms test" both
+! reach the TEST target below. What cannot work is an alias that differs
+! from a real target only in case, which this file used to carry. See the
+! note at the foot.
 !
 ! Note on comments: MMS uses "!", and a hyphen as the last character of
 ! any line, comment included, is treated as a continuation character.
@@ -263,26 +262,27 @@ CLEAN :
     @- IF F$SEARCH("[.build]*.exe") .NES. "" THEN DELETE/NOCONFIRM [.build]*.exe;*
     @- IF F$SEARCH("[.build]*.opt") .NES. "" THEN DELETE/NOCONFIRM [.build]*.opt;*
 
-! There were lowercase aliases here, "test : TEST" and two like it, and
-! they never worked. On Itanium, 2026-09-13:
+! There were lowercase aliases here, "test : TEST" and two like it. They
+! did not help and they did harm. On Itanium, 2026-09-13, with them
+! present:
 !
 !     $ mms test
 !     %MMS-W-GWKLOOP, Circular dependency detected at target TEST
 !     %MMS-W-GWKCONECT, Target TEST found in circular dependency.
 !
 ! and nothing was built or run. Both messages are warnings, so MMS
-! reported the cycle, declined to do the work, and exited quietly.
+! reported the cycle, declined to do the work, and exited quietly, which
+! reads as a fault in this file and leaves the caller thinking a build
+! happened.
 !
-! Two MMS behaviours meet here. A target named on the command line is
-! looked up case sensitively, which is why "MMS clean" gave
-! %MMS-F-BADTARG and prompted the aliases in the first place. But a
-! dependency is resolved as an OpenVMS file specification, and those are
-! case insensitive -- so "test" and "TEST" are one name, and "test :
-! TEST" is a target that depends on itself.
+! With them deleted, "mms test" builds and runs TEST. So MMS treats a
+! target name as an OpenVMS file specification, and those are case
+! insensitive: that is one rule, and it accounts for both halves. A
+! lowercase command-line target finds an uppercase target with no alias
+! needed, and "test : TEST" is one name depending on itself.
 !
-! No alias differing only in case can work, and one that looks like it
-! should is worse than none: %MMS-F-BADTARG says plainly that the target
-! does not exist, where the circular-dependency warning reads like a
-! fault in this file and leaves the caller thinking a build ran.
-!
-! So: capitals. MMS, MMS TEST, MMS CLEAN.
+! The aliases were added because "MMS clean" once gave %MMS-F-BADTARG,
+! recorded here as command-line targets being case sensitive. That
+! cannot be the explanation, since lowercase resolves fine now.
+! Whatever it was is unexplained, and worth re-reading this note if it
+! recurs rather than reaching for an alias again.

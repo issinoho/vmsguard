@@ -72,14 +72,11 @@ effect, check that the pull actually ran.
 
 Two things running MMS added, neither of them in the manual's index:
 
-- **Target names are case sensitive, and a lowercase alias cannot fix
-  it.** MMS sees the command line with its case intact, so `MMS clean`
-  fails with `%MMS-F-BADTARG` against a `CLEAN` written in capitals.
-  `descrip.mms` used to define `clean : CLEAN` and two like it, which
-  looked like the answer and never worked: a *dependency* is resolved as
-  an OpenVMS file specification, and those are case insensitive, so
-  `test` and `TEST` are one name and the alias is a target depending on
-  itself. On Itanium, 2026-09-13:
+- **A target name is an OpenVMS file specification, so case does not
+  matter — and an alias differing only in case is a target that depends
+  on itself.** `descrip.mms` used to define `clean : CLEAN` and two like
+  it, on the belief that command-line targets were matched case
+  sensitively. On Itanium, 2026-09-13, with those aliases present:
 
   ```
   $ mms test
@@ -87,10 +84,14 @@ Two things running MMS added, neither of them in the manual's index:
   %MMS-W-GWKCONECT, Target TEST found in circular dependency.
   ```
 
-  Nothing was built and nothing ran, and because both are warnings MMS
-  exited quietly. The aliases are gone: type `MMS`, `MMS TEST` and
-  `MMS CLEAN` in capitals, and a wrong spelling says `%MMS-F-BADTARG`
-  rather than appearing to work.
+  Nothing was built and nothing ran, and because both messages are
+  warnings MMS exited quietly — which reads as a broken description file.
+  With the aliases deleted, `mms test` builds and runs `TEST`, so no
+  alias was ever needed.
+
+  The `%MMS-F-BADTARG` from `MMS clean` that prompted them is therefore
+  unexplained. It was recorded as case sensitivity and that cannot be
+  right. If it happens again, the answer is not an alias.
 - **`MMS CLEAN` deletes the probe images too.** It removes every `.exe`
   in `[.build]`, and `PROBE_*.EXE` are built only by `build_vms.com`,
   which MMS has no rules for and will not put back. Copy them elsewhere
