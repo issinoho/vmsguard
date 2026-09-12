@@ -35,8 +35,16 @@ Worth doing before touching OpenVMS — it catches ordinary mistakes on a
 platform with better diagnostics, and `-std=c99 -pedantic` enforces the
 dialect the VSI C compiler expects.
 
+Build `probe_openssl` both ways. Its pre-3.0 branch is what an OpenVMS
+system with only 1.1.1 compiles, and every call in it still exists in
+3.x, so forcing the define here runs that branch for real rather than
+merely compiling it. It was 3.0-only until an Itanium build against
+1.1.1 stopped on `<openssl/params.h>`.
+
 ```sh
 cc -std=c99 -pedantic -Wall -Wextra -o probe_openssl probe_openssl.c -lcrypto
+cc -std=c99 -pedantic -Wall -Wextra -DVMSGUARD_LEGACY_OPENSSL \
+   -o probe_openssl_legacy probe_openssl.c -lcrypto
 cc -std=c99 -pedantic -Wall -Wextra -o probe_sockets probe_sockets.c
 cc -std=c99 -pedantic -Wall -Wextra -D_DEFAULT_SOURCE \
    -o probe_pcap probe_pcap.c -lpcap
