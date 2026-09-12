@@ -179,8 +179,57 @@ halves of the filter therefore distinguish the two possibilities:
   exists only on the Ethernet. Seeing that instead confirms the handle
   is on `IE0`.
 
-RESULT TO BE FILLED IN — this section is written ahead of the run so
-that what each outcome means is settled before the outcome is known.
+**Result: nothing matched the filter**, on either interface — the same
+filter on a handle opened on `IE0` matched nothing either.
+
+The reason turned out to be that the packets never reached any
+interface. `ifconfig` configures the tunnel's addresses but creates no
+route, and the routing table has no entry for the remote inner address:
+
+```
+$ netstat -rn
+Destination      Gateway            Flags     Refs     Use  Interface
+default          192.168.0.1        UGS         5  1462383  IE0
+127.0.0.1        127.0.0.1          UHL        29   675704  LO0
+192.168.0/24     192.168.0.80       U           4  1753039  IE0
+192.168.0.80     192.168.0.80       UHL         0       16  IE0
+```
+
+`IT2`'s `Opkts` stayed at 0 throughout, and `ping` reported
+`%SYSTEM-F-TIMEOUT`. So this run says nothing about capture either way,
+and is reported here rather than omitted so that the evidence below is
+not read as resting on it.
+
+**It does not need to.** The frames delivered by a handle opened on
+`IT2` carry `aa-00-04-00-01-04` as their source MAC address, which is
+`EIA0`'s own hardware address, and LAN addresses in their IP headers. A
+tunnel interface cannot carry a frame bearing the Ethernet
+controller's MAC address, whatever that tunnel is or is not carrying at
+the time. That is what shows the handle is not bound to the interface
+it was opened on, and it holds regardless of how busy the tunnel is.
+
+Note also `tcpdump: Filtering in user process` on setting a filter:
+this libpcap filters in the application rather than in the kernel, so a
+filter cannot be what is hiding the traffic — it is applied to whatever
+the handle has already delivered.
+
+## A third question: how should traffic be routed into `ITn`?
+
+Related, and possibly relevant to the above.
+
+After `iptunnel create 192.0.2.2` and
+`ifconfig "IT2" 10.99.0.1 10.99.0.2`, with the interface `UP`, there is
+no route through the tunnel — as the table above shows — and we have
+not found the documented way to create one. `netstat -i` shows the
+interface with network `10` and address `10.99.0.1`, which suggests the
+stack considers `10/8` reachable there, but no matching entry appears
+in the routing table and packets to `10.99.0.2` are discarded without
+`Opkts` or `Oerrs` moving on the interface.
+
+Is `iptunnel` intended to be used with an explicit route added
+afterwards, and if so by which mechanism? This matters to us
+independently of the capture question: the client design routes traffic
+into `ITn` deliberately.
 
 ## Why it matters to us
 
