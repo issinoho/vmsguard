@@ -1,5 +1,11 @@
 # Plan
 
+> **Historical.** This is the plan the project was started from, kept
+> for the reasoning behind its shape rather than as a description of
+> where things stand. `README.md` says what exists today and
+> `CLAUDE.md` what is outstanding. The open items below were closed on
+> 2026-09-12; the phases are largely done or superseded.
+
 ## Context
 
 `vmsguard` targets a port of WireGuard to OpenVMS x86-64. WireGuard needs a
@@ -64,14 +70,18 @@ Decisions:
 - Output is a decision document, not committed driver code, until
   feasibility is confirmed.
 
-## Open items to track (not blocking, but flagged)
+## Open items to track (closed 2026-09-12)
 
-- Confirm `wireguard-lwip`'s license before treating it as more than an
-  architectural reference.
-- Verify pthreads stability on OpenVMS x86-64 directly rather than trusting
-  release-note summaries.
-- Confirm raw-socket / non-blocking-IO completeness of VSI TCP/IP Services
-  sockets API from the primary manual (inaccessible from this environment).
+- ~~Confirm `wireguard-lwip`'s license~~ — never consulted. The
+  protocol is written from the whitepaper and the Noise specification,
+  and `CLAUDE.md`'s clean-room rule forbids taking anything from a
+  GPLv2 implementation.
+- ~~Verify pthreads stability on OpenVMS x86-64~~ — moot. Nothing in
+  the tree uses threads; the gateway is a single forwarding loop.
+- ~~Confirm raw-socket / non-blocking-IO completeness from the primary
+  manual~~ — settled on the machine instead, which is better evidence.
+  `SOCK_RAW` and `IP_HDRINCL` work (with the host-byte-order trap in
+  `gateway.md`), and the manual arrived later and agreed.
 
 ## Verification
 

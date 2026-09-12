@@ -77,8 +77,15 @@ exactly what it exists for.
 The client is an ordinary LAN machine with one route pointed at the
 OpenVMS box. It needs no VPN software of its own.
 
-Still untested: a large outbound transfer, which is where the MTU gap
-below will bite. Nothing sent here exceeded 569 bytes outbound.
+Still untested *against a provider*: a large outbound transfer, which is
+where the MTU gap below will bite. Nothing sent here exceeded 569 bytes
+outbound.
+
+A 20 MB transfer each way has since been run against a laptop peer with
+source NAT on (2026-09-12, see [`gateway.md`](gateway.md)) without MTU
+trouble, at 12.1 Mbit/s out and 8.2 in. That is not the same test: the
+provider's MTU is smaller and the path crosses the internet rather than
+a switch.
 
 ## Confirmed: rekeying against the provider (2026-09-07)
 

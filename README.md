@@ -100,12 +100,23 @@ half of the problem, solved. The stack will also accept a packet
 injected back into `ITn` and process it as though it arrived from
 elsewhere, which is how IPv6 now returns through the gateway.
 
-What blocks the client shape is the remaining half: pcap does not list
-`ITn`, only `IE0` and `LO0`, so there is no way to read what the tunnel
-emits. Capturing on `IE0` instead would work, but the encapsulated frame
-crosses the segment carrying the inner packet unencrypted, and a tunnel
-cannot terminate locally to avoid that — `127.0.0.1` and the machine's
-own address are both refused. See
+What blocks the client shape is the remaining half: reading what the
+tunnel emits. A pcap handle opened on `ITn` **succeeds** — given an IPv4
+address on the interface — and then delivers `IE0`'s frames instead,
+carrying the Ethernet controller's own MAC address while the tunnel's
+counters stay at zero. Measured with traffic demonstrably crossing the
+tunnel at the time. That is worse than a refusal, because a program
+cannot detect it: the capture loop receives plausible frames and reports
+success while watching a different interface.
+
+Capturing on `IE0` deliberately would work, but the encapsulated frame
+crosses the segment carrying the inner packet unencrypted — observed,
+not merely reasoned — and a tunnel cannot terminate locally to avoid
+that, since `127.0.0.1` and the machine's own address are both refused.
+
+Reported to VSI on 2026-09-12; see
+[`docs/vsi-question-pcap-tunnel.md`](docs/vsi-question-pcap-tunnel.md)
+and
 [`docs/research/driver-feasibility.md`](docs/research/driver-feasibility.md).
 
 The gateway shape sidesteps all of it: forwarded traffic was never ours,
@@ -115,6 +126,14 @@ so there is no plaintext original to suppress.
 
 Nothing known blocks ordinary use of the gateway. The nearest things:
 
+- **Inbound latency is the capture timeout.** Measured on the target:
+  a ping through the gateway averages 58 ms where the LAN floor is 6 ms,
+  and `PCAP_TIMEOUT_MS` is 50. The forwarding loop waits in
+  `pcap_next_ex` and only then polls the tunnel socket, so an inbound
+  packet sits until the capture call gives up. It is also why inbound
+  throughput (8.2 Mbit/s) trails outbound (12.1). Fixing it means
+  waiting on both sources at once, which needs a `wg_platform.h` call
+  that does not exist yet and must suit a `$QIO` implementation too.
 - **Datagrams are passed through, not reassembled.** Later fragments
   inherit their first fragment's mapping, and inbound ones that arrive
   early are held until it does. Nothing puts the pieces back together,
