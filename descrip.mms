@@ -14,10 +14,11 @@
 !     $ MMS TEST           build and run the protocol tests
 !     $ MMS CLEAN          remove build products
 !
-! Target names are matched case sensitively: MMS receives the command
-! line with its case intact, so "MMS clean" failed with %MMS-F-BADTARG
-! against a CLEAN written in capitals. Lowercase aliases are defined at
-! the foot of this file so either spelling works.
+! Type the targets in capitals. MMS looks up a target named on the
+! command line case sensitively, so "MMS clean" fails with
+! %MMS-F-BADTARG against a CLEAN written in capitals -- and a lowercase
+! alias cannot fix that, for the reason recorded at the foot of this
+! file.
 !
 ! Note on comments: MMS uses "!", and a hyphen as the last character of
 ! any line, comment included, is treated as a continuation character.
@@ -262,11 +263,26 @@ CLEAN :
     @- IF F$SEARCH("[.build]*.exe") .NES. "" THEN DELETE/NOCONFIRM [.build]*.exe;*
     @- IF F$SEARCH("[.build]*.opt") .NES. "" THEN DELETE/NOCONFIRM [.build]*.opt;*
 
-! Lowercase aliases. MMS matches target names case sensitively, and
-! typing them in lowercase is the natural thing to do.
-
-all : ALL
-
-test : TEST
-
-clean : CLEAN
+! There were lowercase aliases here, "test : TEST" and two like it, and
+! they never worked. On Itanium, 2026-09-13:
+!
+!     $ mms test
+!     %MMS-W-GWKLOOP, Circular dependency detected at target TEST
+!     %MMS-W-GWKCONECT, Target TEST found in circular dependency.
+!
+! and nothing was built or run. Both messages are warnings, so MMS
+! reported the cycle, declined to do the work, and exited quietly.
+!
+! Two MMS behaviours meet here. A target named on the command line is
+! looked up case sensitively, which is why "MMS clean" gave
+! %MMS-F-BADTARG and prompted the aliases in the first place. But a
+! dependency is resolved as an OpenVMS file specification, and those are
+! case insensitive -- so "test" and "TEST" are one name, and "test :
+! TEST" is a target that depends on itself.
+!
+! No alias differing only in case can work, and one that looks like it
+! should is worse than none: %MMS-F-BADTARG says plainly that the target
+! does not exist, where the circular-dependency warning reads like a
+! fault in this file and leaves the caller thinking a build ran.
+!
+! So: capitals. MMS, MMS TEST, MMS CLEAN.
