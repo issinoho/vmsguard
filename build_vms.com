@@ -331,6 +331,7 @@ $     close popt
 $     cc 'cc_flags'/OBJECT=[.build]probe_pcap.obj [.tools.probes]probe_pcap.c
 $     link/executable=[.build]probe_pcap.exe -
           [.build]probe_pcap.obj,[.build]pcap.opt/OPTIONS
+$     if $severity .ne. 1 then goto linkfail
 $!
 $     say "building vmsguard_gateway"
 $     cc 'cc_flags'/OBJECT=[.build]gateway.obj [.tools.gateway]gateway.c
@@ -339,6 +340,7 @@ $     link/executable=[.build]vmsguard_gateway.exe -
           [.build]ethip.obj,[.build]rawinject.obj,[.build]nat.obj,-
           [.build]icmp.obj,[.build]encap.obj,-
           [.build]vmsguard.opt/OPTIONS,[.build]pcap.opt/OPTIONS
+$     if $severity .ne. 1 then goto linkfail
 $ endif
 $!
 $ say "building test_proto"

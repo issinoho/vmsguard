@@ -202,7 +202,16 @@ int main(int argc, char **argv)
          * is the honest value for an interface whose mask we have not
          * asked for.
          */
-        if (pcap_compile(h, &prog, filter, 1, PCAP_NETMASK_UNKNOWN) != 0) {
+        /*
+         * The cast is for libpcap 0.9.4, whose pcap_compile takes a
+         * plain char * — const arrived later. VSI C reports the
+         * mismatch as %CC-W-NOTCONSTQUAL, which is a *warning*, and the
+         * link then reports %ILINK-W-COMPWARN, which is also a warning:
+         * on VMS that combination builds an image and says nothing
+         * useful. pcap_compile does not modify the string.
+         */
+        if (pcap_compile(h, &prog, (char *) filter, 1,
+                         PCAP_NETMASK_UNKNOWN) != 0) {
             printf("  FAIL  pcap_compile(%s): %s\n", filter, pcap_geterr(h));
             pcap_close(h);
             pcap_freealldevs(devs);
