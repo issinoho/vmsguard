@@ -81,8 +81,19 @@ Keep it that way; anything needing a socket or a clock belongs above it.
 
 ## OpenVMS
 
-You cannot reach the OpenVMS machine. The workflow is: develop and test
-on Linux, the user builds and runs on OpenVMS and pastes the output.
+You cannot reach either OpenVMS machine. The workflow is: develop and
+test on Linux, the user builds and runs on OpenVMS and pastes the output.
+
+There are now two targets: the x86-64 box (V9.2-3, VSI C V7.7-003, TCP/IP
+Services V6.0-30) where everything has been measured, and an Itanium
+rx2660 (V8.4-2L3, VSI C V7.4-001, TCP/IP Services V6.0-31) added
+2026-09-12, where the tree builds and all self-tests pass but nothing
+about the *gateway* has been measured. Do not assume a finding
+transfers. The Itanium stack is a point release newer, not older, so it
+is not evidence about pre-6.0 behaviour, and its pcap is the same
+`libpcap version 0.9.4`. What it is evidence about is architecture.
+Its LAN interface is `WE1`, not `IE0`, so any command with
+`--interface` differs between the two machines.
 
 That makes a round trip expensive, so:
 
@@ -142,12 +153,18 @@ path rather than uid, so root does not help.
   it turns out to do the same job.
 - **SLIP is unusable**: the management layer knows the controller, but
   no driver exists. `SET INTERFACE SL0` returns success and creates
-  nothing.
+  nothing. **Closed on both architectures, 2026-09-12.** Retested on
+  Itanium V8.4-2L3 on the theory that a driver dropped by the fresh
+  x86-64 port might survive on older iron: same acceptance, same absent
+  `SL0` in `SHOW INTERFACE`. Two architectures and two OS versions now,
+  so do not reopen this for want of different hardware.
 - **PPP is unusable**: the driver exists and creates an interface, but
   requires `/MODEM` and `/DIALUP`, which a `PTD$` pseudo-terminal
   cannot be given (`SYSTEM-E-UNSUPPORTED`).
 - **pcap cannot inject.** `pcap_sendpacket` is declared and returns
   "socket is not connected". Capture works. Injection uses a raw socket.
+  Confirmed on Itanium too (2026-09-12): same failure, same message, and
+  `SOCK_RAW` opens there as well.
 - **IPv6 cannot be injected directly.** Confirmed 2026-09-07 with
   `probe_inject6`: a raw IPv6 socket opens, but `IPV6_HDRINCL` is not
   declared and binding to an address we do not own is refused

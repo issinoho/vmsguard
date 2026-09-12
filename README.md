@@ -1,6 +1,6 @@
 # vmsguard
 
-WireGuard® for OpenVMS x86-64.
+WireGuard® for OpenVMS, on x86-64 and Itanium.
 
 A clean-room implementation of the WireGuard protocol in portable C,
 running on OpenVMS and interoperating with the reference implementation.
@@ -12,6 +12,15 @@ running on OpenVMS and interoperating with the reference implementation.
 Working on OpenVMS V9.2-3 x86-64 (VSI C V7.7-003, VSI TCP/IP Services
 V6.0-30, OpenSSL 3.0.21), verified against the Linux kernel WireGuard
 module and against a commercial VPN provider over the public internet.
+
+Also builds and passes its tests unmodified on OpenVMS V8.4-2L3 Itanium
+(HP rx2660, VSI C V7.4-001, TCP/IP Services V6.0-31), confirmed
+2026-09-12 — no source change, no conditional, and no build-file change
+beyond what `build_vms.com` already worked out for itself. Itanium
+faults on unaligned access where x86-64 shrugs, so the `memcpy`-and-
+explicit-offsets rule for wire formats was what made that free. The
+gateway's behaviour on Itanium has not been measured yet; what is
+established there is that everything builds and every self-test passes.
 
 | | |
 | --- | --- |
@@ -238,7 +247,7 @@ platform. Recorded here because rediscovering it is slow.
 | `/DEFINE=(_SOCKADDR_LEN)` | Selects BSD 4.4 sockets. Without it there is no `sockaddr_in6` or `sockaddr_storage`. |
 | `/PREFIX_LIBRARY_ENTRIES=ALL_ENTRIES` | Without it only ANSI names get the `DECC$` prefix the C RTL exports, so `socket`, `close`, `poll`, `getaddrinfo` all fail to link. |
 | `/POINTER_SIZE=32` | Must match the OpenSSL image. `SSL3$LIBCRYPTO_SHR32` is 32-bit, `..._SHR` is 64-bit. |
-| `/STANDARD=C99` | VSI C V7.7 is GEM-based, not Clang. C99 is the ceiling. |
+| `/STANDARD=C99` | VSI C V7.7 is GEM-based, not Clang. C99 is the ceiling. Accepted unchanged by V7.4-001 on Itanium. |
 
 No socket library is needed on the `LINK` line; `TCPIP$IPC_SHR` is picked
 up automatically. OpenSSL needs an options file naming an explicit path —

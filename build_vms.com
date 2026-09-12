@@ -9,6 +9,12 @@ $!     @build_vms            build everything
 $!     @build_vms CLEAN      delete objects and executables
 $!     @build_vms TEST       build, then run the self-tests
 $!
+$! A second parameter names an OpenSSL family to link against instead
+$! of the newest one found:
+$!
+$!     @build_vms TEST SSL111
+$!
+$!
 $! Why DCL as well as descrip.mms: this procedure uses nothing but CC
 $! and LINK, so it has far fewer ways to go wrong than an MMS
 $! description file whose syntax has not been verified. Try this first.
@@ -75,6 +81,28 @@ $     ssl_candidates = "SYS$LIBRARY:SSL3$LIBCRYPTO_SHR," + -
                        "SYS$SHARE:SSL1$LIBCRYPTO_SHR"
 $ endif
 $!
+$! An OpenVMS system may carry several OpenSSL families side by side --
+$! SSL$, SSL1$, SSL111$ and SSL3$ were all installed on the Itanium
+$! V8.4-2L3 machine -- and the newest-first search above will always
+$! take 3.x where it exists. That leaves the pre-3.0 branch of
+$! wg_crypto.c, which is what an older system would compile, built but
+$! never run anywhere. Naming a family as P2 forces it, so that path can
+$! be linked against a real 1.1.1 image and put through the tests rather
+$! than taken on trust.
+$!
+$ if p2 .nes. ""
+$ then
+$     if pointer_size .eqs. "32"
+$     then
+$         ssl_suffix = "32"
+$     else
+$         ssl_suffix = ""
+$     endif
+$     ssl_candidates = "SYS$LIBRARY:" + p2 + "$LIBCRYPTO_SHR" + ssl_suffix + "," + -
+                       "SYS$SHARE:" + p2 + "$LIBCRYPTO_SHR" + ssl_suffix
+$     say "OpenSSL family forced to ''p2' by P2"
+$ endif
+$!
 $ ssl_library = ""
 $ i = 0
 $ ssl_loop:
@@ -111,6 +139,18 @@ $     say ""
 $     say "then set pointer_size in this procedure to match what you"
 $     say "have. Do not link an image of the other pointer size: it"
 $     say "builds cleanly and then crashes inside OpenSSL."
+$     exit 2
+$ endif
+$!
+$! A family named by P2 that the chain above does not recognise still
+$! needs an include logical, or the compile picks up whatever SSL
+$! headers are first on the search path -- a version mismatch that
+$! compiles and then calls the wrong ABI.
+$!
+$ if ssl_include .eqs. "" .and. p2 .nes. "" then ssl_include = p2 + "$INCLUDE"
+$ if ssl_include .eqs. ""
+$ then
+$     say "ERROR: no include logical matches ''ssl_library'."
 $     exit 2
 $ endif
 $ say "using OpenSSL image: ''ssl_library'"
@@ -289,6 +329,26 @@ $ link/executable=[.build]test_hdlc.exe -
       [.build]test_hdlc.obj,[.build]hdlc.obj
 $ if $severity .ne. 1 then goto linkfail
 $!
+$! test_conf and test_platform are the two the Linux suite runs that
+$! this procedure did not, and they are the two whose subject matter is
+$! most platform-dependent: parsing a provider's config, and the
+$! endpoint comparison roaming turns on. Both are pure -- wg_conf_parse
+$! takes a buffer, not a file name -- so there was never a reason for
+$! them to be Linux-only, and on Itanium they were the only part of the
+$! suite left unexercised.
+$!
+$ say "building test_conf"
+$ cc 'cc_flags'/OBJECT=[.build]test_conf.obj [.tests]test_conf.c
+$ link/executable=[.build]test_conf.exe -
+      [.build]test_conf.obj,'proto_objs',[.build]vmsguard.opt/OPTIONS
+$ if $severity .ne. 1 then goto linkfail
+$!
+$ say "building test_platform"
+$ cc 'cc_flags'/OBJECT=[.build]test_platform.obj [.tests]test_platform.c
+$ link/executable=[.build]test_platform.exe -
+      [.build]test_platform.obj,[.build]wg_platform.obj
+$ if $severity .ne. 1 then goto linkfail
+$!
 $! ---- probes -------------------------------------------------------
 $!
 $! These verify the mechanisms the gateway design depends on, rather
@@ -394,6 +454,10 @@ $     say ""
 $     run [.build]test_nat
 $     say ""
 $     run [.build]test_icmp
+$     say ""
+$     run [.build]test_conf
+$     say ""
+$     run [.build]test_platform
 $ endif
 $!
 $ exit 1

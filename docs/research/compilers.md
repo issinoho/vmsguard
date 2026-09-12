@@ -1,5 +1,43 @@
 # Compilers & languages on OpenVMS x86-64
 
+## Second target: Itanium (2026-09-12)
+
+```
+VSI TCP/IP Services for OpenVMS Industry Standard 64 Version V6.0-31
+on an HP rx2660 (1.59GHz/6.0MB) running OpenVMS V8.4-2L3
+VSI C V7.4-001 on OpenVMS IA64 V8.4-2L3
+```
+
+Everything below about the x86-64 compiler holds here too, which was not
+a given: V7.4-001 is three releases older and accepted `/STANDARD=C99`
+with the same flags and no diagnostics. The whole tree built — protocol
+core, client, packet plumbing, tools, probes and the gateway — and 464
+checks passed with no failures.
+
+Two expectations this corrected:
+
+- **The stack is not the 5.7 generation the IA-64 manuals describe.** It
+  is V6.0-31, a point release *newer* than the x86-64 box's V6.0-30. So
+  this machine is not a way to see how an older TCP/IP Services behaves;
+  it is a near-identical stack on a different architecture. Nor is the
+  pcap different: both report `libpcap version 0.9.4`. So a pcap finding
+  reproducing here says the failure is not specific to the x86-64 port,
+  and little more than that.
+- **OpenSSL 3.0 is present, not just 1.1.1.** `SYS$LIBRARY:` carries
+  `SSL$`, `SSL1$`, `SSL111$` and `SSL3$` images side by side, and
+  `build_vms.com`'s newest-first search took `SSL3$LIBCRYPTO_SHR32`. The
+  pre-3.0 branch of `wg_crypto.c` is therefore *still* unexercised
+  against a real 1.1.1 image, even though one is now within reach —
+  which is why `@build_vms TEST SSL111` exists.
+
+Alignment was the risk worth naming in advance: Itanium traps unaligned
+loads that x86-64 performs silently. Nothing in the tree relies on one,
+because wire formats are read and written with explicit offsets and
+`memcpy` rather than packed structs. That convention was adopted for
+compiler-independence and paid off for a reason nobody wrote down at the
+time.
+
+
 ## Confirmed on the target system (2026-09-06)
 
 ```

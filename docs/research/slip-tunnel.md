@@ -155,6 +155,21 @@ it.** Test it before building anything on this design.
   management manual documents version 5.7 on IA-64/Alpha. SLIP is an old
   facility and could have been dropped. Check `TCPIP SET INTERFACE SL0` is
   accepted on the target.
+
+  **Answered, and then answered again on Itanium (2026-09-12).** It is
+  accepted on both and creates an interface on neither. The Itanium
+  retest was worth doing because a SLIP driver is architecture-specific
+  code and x86-64 OpenVMS is a fresh port that plausibly left old
+  drivers behind — if any machine still had one it would be the rx2660
+  running V8.4-2L3. `SET INTERFACE SL0 /HOST=10.9.0.2
+  /NETWORK_MASK=255.255.255.0 /SERIAL_DEVICE=FTA8:` returned no error
+  there, `SHOW INTERFACE` then listed `LO0`, `WE0` and `WE1` only, and a
+  ping to the far end of the notional link timed out for want of a
+  route. The `PTD$CREATE` half works fine on both; there is simply
+  nothing to attach the pseudo-terminal to.
+
+  This closes the question rather than deferring it. The remaining
+  theory it disposes of is "different hardware might have it".
 - Does `PTD$CREATE` work as expected on x86-64?
 - What privileges are needed for both halves?
 - Throughput. Every packet crosses the terminal driver with SLIP byte

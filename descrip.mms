@@ -82,7 +82,8 @@ CLIENT_OBJS = [.build]wg_client.obj
     @- IF F$SEARCH("BUILD.DIR;1") .EQS. "" THEN CREATE/DIRECTORY [.build]
 
 ALL : [.build]vmsguard_key.exe, [.build]vmsguard_interop.exe, -
-[.build]vmsguard_responder.exe, [.build]test_proto.exe
+[.build]vmsguard_responder.exe, [.build]test_proto.exe, -
+[.build]test_conf.exe, [.build]test_platform.exe
     @ WRITE SYS$OUTPUT "build complete, executables in [.build]"
 
 ! ==== protocol core ====
@@ -201,8 +202,33 @@ $(PROTO_OBJS),$(PLAT_OBJS),[.build]ethip.obj,-
 $(PROTO_OBJS),$(OPT)/OPTIONS
     @ IF $SEVERITY .NE. 1 THEN EXIT %X10000002
 
-TEST : [.build]test_proto.exe
+! test_conf and test_platform run under make and under build_vms.com;
+! this file was the one that built neither, so a config-parsing or
+! endpoint-comparison regression could reach a VMS system that builds
+! with MMS and nothing would say so. They need no additions to the
+! object lists: test_conf is proto, test_platform is the platform layer
+! on its own.
+
+[.build]test_conf.obj : [.tests]test_conf.c
+    $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
+
+[.build]test_conf.exe : [.build]test_conf.obj, $(PROTO_OBJS), $(OPT)
+    $(LINK)/EXECUTABLE=$(MMS$TARGET) [.build]test_conf.obj,-
+$(PROTO_OBJS),$(OPT)/OPTIONS
+    @ IF $SEVERITY .NE. 1 THEN EXIT %X10000002
+
+[.build]test_platform.obj : [.tests]test_platform.c
+    $(CC)$(CFLAGS)/OBJECT=$(MMS$TARGET) $(MMS$SOURCE)
+
+[.build]test_platform.exe : [.build]test_platform.obj, $(PLAT_OBJS)
+    $(LINK)/EXECUTABLE=$(MMS$TARGET) [.build]test_platform.obj,$(PLAT_OBJS)
+    @ IF $SEVERITY .NE. 1 THEN EXIT %X10000002
+
+TEST : [.build]test_proto.exe, [.build]test_conf.exe, -
+[.build]test_platform.exe
     RUN [.build]test_proto.exe
+    RUN [.build]test_conf.exe
+    RUN [.build]test_platform.exe
 
 ! ==== housekeeping ====
 

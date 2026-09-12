@@ -362,6 +362,13 @@ flows in 15.7 seconds, 749 per minute. At that rate sustained, the
 of the 512 entries. Nothing was dropped or evicted, but somewhere near
 1000 flows per minute is where NAT_ENTRIES would need raising.
 
+`--interface` names a TCP/IP interface as pcap knows it, and that is
+machine-specific: `IE0` on the x86-64 box, `WE1` on the Itanium one,
+whose pcap also enumerates `LO0`. Take the name from `probe_pcap`'s
+device listing rather than from this document, and note that pcap is
+case-sensitive about it — `gateway.c` upper-cases the argument because
+DCL hands it over as `ie0`.
+
 Three things are not in a config file and must still be given:
 `--interface`, and for a full tunnel `--client` and `--exclude`. The
 gateway says so when it reads a file, along with anything in it that was

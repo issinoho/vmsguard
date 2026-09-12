@@ -151,6 +151,21 @@ Summary of where the three steps stand, after testing on the target:
 | Inject via pcap | **Broken** — `pcap_sendpacket` returns "socket is not connected" |
 | Inject via raw socket | Documented, not yet tested |
 
+**Confirmed on a second architecture, 2026-09-12.** `probe_pcap` on
+OpenVMS V8.4-2L3 Itanium (TCP/IP Services V6.0-31) captures on `WE1` at
+EN10MB and fails `pcap_sendpacket` with the same "socket is not
+connected". `probe_sockets` there opens `SOCK_RAW` successfully, so the
+raw-socket injection path the gateway actually uses is available on both.
+
+Both machines report `libpcap version 0.9.4`, so this is one pcap
+implementation seen twice rather than two builds agreeing — weaker
+evidence than two versions would be, but it does rule out the failure
+being specific to the x86-64 port.
+
+Device naming differs and matters for `--interface`: the Itanium machine
+presents `WE1` where the x86-64 one presents `IE0`. Its pcap also
+enumerates `LO0`, which the x86-64 listing does not show.
+
 The gateway shape in `docs/gateway.md` avoids the suppression step
 entirely and injects at layer 3, so the pcap send failure does not
 affect it.
