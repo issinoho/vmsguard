@@ -119,7 +119,14 @@ static void dump_head(const unsigned char *p, unsigned len)
                p[0], p[1], p[2], p[3], p[4], p[5],
                p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13]);
     }
-    if (len >= 20 && (p[0] >> 4) == 4) {
+    /*
+     * Check the header length too, not just the version nibble. A MAC
+     * address beginning 0x40 has a 4 there, so an Ethernet frame from
+     * a host whose address starts that way was being printed as a
+     * plausible-looking IPv4 packet full of nonsense.
+     */
+    if (len >= 20 && (p[0] >> 4) == 4 && (p[0] & 0x0F) >= 5 &&
+        (((unsigned) p[2] << 8) | p[3]) >= 20) {
         printf("        as bare IPv4: %u.%u.%u.%u -> %u.%u.%u.%u"
                " proto %u\n",
                p[12], p[13], p[14], p[15],

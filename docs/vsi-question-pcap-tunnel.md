@@ -158,60 +158,63 @@ Stated so that nothing here is read as a stronger claim than it is:
 
 ## With traffic actually on the tunnel
 
-The tests above were run on an idle tunnel, which invites the obvious
-objection: of course nothing of the tunnel's was seen. So the same
-handle was opened with a filter naming both the inner and the outer
-address, and traffic was then sent through the tunnel.
+The first tests were run on an idle tunnel, which invites the obvious
+objection: of course nothing of the tunnel's was seen. This run removes
+it.
+
+**Result: the tunnel's handle sees none of the tunnel's traffic**, while
+the same traffic is demonstrably on the wire at that moment.
+
+The arrangement removes the objections the earlier attempts invited. The
+tunnel's remote endpoint is a real, reachable host on the LAN, so the
+encapsulated packets must cross the Ethernet. The address pinged,
+`10.98.0.5`, is neither this machine's nor the tunnel peer's, so the
+stack cannot answer it locally and has to encapsulate and transmit.
 
 ```
-$ PP "IT2" "host 10.99.0.2 or host 192.0.2.2"
-$ ping 10.99.0.2
+$ iptunnel create 192.168.0.131
+IT3  iftype IFT_IPV4 (208) src 192.168.0.80 dst 192.168.0.131
+$ ifconfig "IT3" 10.98.0.1 10.98.0.2 netmask 255.255.255.0 up
 ```
 
-`10.99.0.2` is the tunnel's remote inner address, so a packet to it is
-routed through `IT2` and leaves encapsulated to `192.0.2.2`. The two
-halves of the filter therefore distinguish the two possibilities:
+Two captures, same traffic, differing only in the interface named:
 
-- **frames matching `10.99.0.2`** — the inner packet, which exists only
-  on the tunnel. Seeing it would mean the handle really is capturing
-  `IT2`.
-- **frames matching `192.0.2.2`** — the encapsulated packet, which
-  exists only on the Ethernet. Seeing that instead confirms the handle
-  is on `IE0`.
-
-**Result: nothing matched the filter**, on either interface — the same
-filter on a handle opened on `IE0` matched nothing either.
-
-The reason turned out to be that the packets never reached any
-interface. `ifconfig` configures the tunnel's addresses but creates no
-route, and the routing table has no entry for the remote inner address:
+**On `IE0`, filter `ip proto 4`** — the encapsulated packets, captured:
 
 ```
-$ netstat -rn
-Destination      Gateway            Flags     Refs     Use  Interface
-default          192.168.0.1        UGS         5  1462383  IE0
-127.0.0.1        127.0.0.1          UHL        29   675704  LO0
-192.168.0/24     192.168.0.80       U           4  1753039  IE0
-192.168.0.80     192.168.0.80       UHL         0       16  IE0
+4074e05fc300 aa0004000104 0800 45 00 0068 e6f5 4000 ff 04 1278 c0a80050 c0a80083
+dst 192.168.0.131's MAC    IPv4  len 104         TTL  proto 4   .0.80 -> .0.131
+src EIA0                                              IP-in-IP
 ```
 
-`IT2`'s `Opkts` stayed at 0 throughout, and `ping` reported
-`%SYSTEM-F-TIMEOUT`. So this run says nothing about capture either way,
-and is reported here rather than omitted so that the evidence below is
-not read as resting on it.
+**On `IT3`, filter `host 10.98.0.5`** — nothing:
 
-**It does not need to.** The frames delivered by a handle opened on
-`IT2` carry `aa-00-04-00-01-04` as their source MAC address, which is
-`EIA0`'s own hardware address, and LAN addresses in their IP headers. A
-tunnel interface cannot carry a frame bearing the Ethernet
-controller's MAC address, whatever that tunnel is or is not carrying at
-the time. That is what shows the handle is not bound to the interface
-it was opened on, and it holds regardless of how busy the tunnel is.
+```
+  ok    pcap_open_live(IT3)
+  note  link type 1 (EN10MB)
+  ok    filter set: host 10.98.0.5
+  note  no frames matched the filter
+```
+
+And the interface counters confirm the traffic went through the tunnel:
+
+```
+IT3   1280  <Link>      x86vms                    0     0        8     0     0
+IT3   1280  10.98.0     10.98.0.1                 0     0        8     0     0
+```
+
+Eight packets out of `IT3`, eight encapsulated packets on the Ethernet,
+nothing at all from a handle opened on `IT3`.
 
 Note also `tcpdump: Filtering in user process` on setting a filter:
-this libpcap filters in the application rather than in the kernel, so a
-filter cannot be what is hiding the traffic — it is applied to whatever
-the handle has already delivered.
+this libpcap filters in the application rather than in the kernel, so
+the filter is applied to whatever the handle has already delivered and
+cannot be what hides the traffic.
+
+Taken with the earlier result — that an unfiltered handle on a tunnel
+delivers frames carrying `EIA0`'s own MAC address — the two together
+say the handle is bound to the Ethernet regardless of the interface
+named when it was opened.
 
 ### Routing into the tunnel — answered, and the answer is the netmask
 
