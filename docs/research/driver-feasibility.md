@@ -637,6 +637,11 @@ touch it, and every tunnel tested before today was IPv6-only. Even the
 enumeration finding was an artefact of that: an IPv4-addressed tunnel
 appears in the device list.
 
+The address is the whole of the requirement. A later run opened `IT2`
+successfully while it was **down** and while `findalldevs` was once
+again listing only `IE0` and `LO0` — being up, and being listed, are
+neither of them necessary.
+
 **But the handle captures `IE0`.** The open reports link type 1
 (EN10MB), which a tunnel carrying bare IP cannot be, and the frames are
 plainly the LAN's:

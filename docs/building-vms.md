@@ -57,7 +57,20 @@ settled, all of which the first draft had wrong:
 - `$(CC)`, `$(LINK)`, `$(MMS$SOURCE)`, `.FIRST` and the `@` (silent) and
   `-` (ignore) action-line prefixes are all real and used as documented.
 
-Two things running it added, neither of them in the manual's index:
+**Type `git` subcommands in lowercase.** DCL passes a foreign command's
+arguments through with their case intact, and git is case-sensitive, so
+`GIT PULL` reaches it as `PULL`:
+
+```
+$ GIT PULL
+git: 'PULL' is not a git command. See 'git --help'.
+```
+
+It is easy to miss in a long paste, and what follows is a build of
+whatever was already there. If a change does not appear to have taken
+effect, check that the pull actually ran.
+
+Two things running MMS added, neither of them in the manual's index:
 
 - **Target names are case sensitive.** MMS sees the command line with
   its case intact, so `MMS clean` fails with `%MMS-F-BADTARG` against a
