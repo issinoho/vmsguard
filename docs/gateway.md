@@ -918,6 +918,63 @@ EOF
 Whether Wireshark tolerates the file as written has not been checked —
 only that tcpdump does not, and that removing the block fixes it.
 
+## What it actually goes at (2026-09-12)
+
+The first throughput figures this project has had. OpenVMS x86-64
+V9.2-3 forwarding for a LAN host, peer on a laptop across a 1 Gb
+segment, source NAT on, 20 MB over TCP each way.
+
+| direction | path | time | rate |
+| --- | --- | --- | --- |
+| outbound | capture, NAT, encrypt, send | 13.8 s | 12.1 Mbit/s |
+| inbound | receive, decrypt, NAT, inject | 20.5 s | 8.2 Mbit/s |
+
+Latency, from 3178 pings at five a second over eleven minutes:
+
+```
+3176 received, 0.06% loss
+rtt min/avg/max/mdev = 6.261/58.635/818.718/52.654 ms
+```
+
+**The average round trip is fifty milliseconds above the floor, and
+`PCAP_TIMEOUT_MS` is 50.** That is the finding, not a coincidence.
+
+The forwarding loop blocks in `pcap_next_ex` for up to the capture
+timeout and only afterwards polls the tunnel socket, so an inbound
+packet that arrives just after the loop goes into the capture call
+waits the whole timeout before anything looks at it. Outbound packets
+never wait: pcap returns them as they arrive. That is the same
+asymmetry the throughput table shows, seen from the other side.
+
+Lowering `PCAP_TIMEOUT_MS` would trade the latency for a busier spin,
+which is a knob rather than a fix. The fix is to wait on the capture
+handle and the tunnel socket *together*, and the obstacle is
+deliberate: `wg_platform.h` has no "wait on several things" call, and
+adding one means finding a shape that a `$QIO` implementation can also
+satisfy. That is a design question, not an afternoon's work, which is
+why it is recorded rather than attempted.
+
+Worth noting what these numbers are not. Nothing here was tuned, the
+NAT table held at most two mappings, and no attempt was made to find
+the ceiling — a single stream against one peer is a baseline, not a
+benchmark. The value is having a number at all: "13x the capture
+timeout" is a thing to aim at.
+
+### A run that is idle looks exactly like a run that is stuck
+
+Recorded because it cost an hour. The status line prints cumulative
+counters, so a period with no traffic and a period where forwarding has
+died produce identical lines, repeated. A bulk transfer that finished
+early left four consecutive status lines with identical counters, which
+read as a stall — and the rekey that happened to fall in the same
+window made a convincing story out of a coincidence.
+
+The ping test is what settled it: eleven minutes of traffic at five
+packets a second through five rekeys, with 0.06% loss and no gap
+anywhere. Rekeying does not stall the tunnel. When a counter stops
+moving, establish that something is still sending before reading
+anything into it.
+
 ## Full tunnels need exclusions
 
 `--tunnel-subnet 0.0.0.0/0` matches local destinations exactly as

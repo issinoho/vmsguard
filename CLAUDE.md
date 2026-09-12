@@ -216,11 +216,16 @@ to gaps:
    fragments inherit their first fragment's mapping, and inbound ones
    arriving early are held until it does; nothing puts the pieces back
    together, and nothing needs to.
-2. **NAT lookups are counted, not timed.** `probes` and `lookups` say
-   how many entries a lookup examined, which is what the tests assert a
-   bound on. Nobody has measured the gateway's throughput on the target
-   under load, so the index is known to do less work, not known to have
-   made anything faster.
+2. **Inbound latency is bounded by the pcap read timeout.** Measured on
+   the target 2026-09-12: ping through the gateway averages 58 ms where
+   the LAN floor is 6 ms, and `PCAP_TIMEOUT_MS` is 50. The loop blocks
+   in `pcap_next_ex` and only then polls the tunnel socket, so an
+   inbound packet waits for the capture timeout to expire before
+   anything looks at it. Outbound does not wait, which is why it
+   measures 12.1 Mbit/s against inbound's 8.2. Fixing it means waiting
+   on both sources at once rather than in turn — and `wg_platform.h`
+   has no way to say "wait on these two things", which is the actual
+   work.
 
 Done: IPv6 through the gateway (including ICMPv6 Packet Too Big,
 which needs `--gateway-ip6` for a source address), several peers, cryptokey routing in
