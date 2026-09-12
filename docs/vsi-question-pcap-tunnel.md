@@ -17,9 +17,10 @@ call **succeeds** and returns a different interface's traffic, so a
 program has no way to detect that it is not capturing what it asked
 for.
 
-Two smaller questions follow: an IPv4 address being required before
-libpcap will list or open an interface at all, and an `ifconfig`
-rejection that deletes the address it was refusing to change.
+Two smaller matters found alongside this one are reported separately,
+since neither depends on it:
+[`vsi-question-pcap-ipv4-address.md`](vsi-question-pcap-ipv4-address.md)
+and [`vsi-question-ifconfig-netmask.md`](vsi-question-ifconfig-netmask.md).
 
 ## Environment
 
@@ -161,46 +162,6 @@ Either behaviour would be workable:
 The present behaviour is the one that cannot be worked with, because a
 program cannot detect it: a capture loop receives plausible frames and
 reports success while observing a different interface entirely.
-
-## Second question: the IPv4 address requirement
-
-The same program against the same tunnel in other states:
-
-| interface | state | result |
-| --- | --- | --- |
-| `IT0` | does not exist | `no such device or address` |
-| `IT2` | up, no address | `can't assign requested address` |
-| `IT1` | up, IPv6 link-local address only | `can't assign requested address` |
-| `IT2` | 10.99.0.1 | opens |
-
-`pcap_findalldevs()` behaves the same way: it lists `IE0` and `LO0`
-only, until the tunnel is given an IPv4 address, at which point the
-tunnel appears in the list as well. Being `UP` is not required — a
-tunnel that is down but addressed still opens.
-
-Is it intended that an interface with only an IPv6 address is invisible
-to `pcap_findalldevs()` and cannot be opened? On a dual-stack or
-IPv6-only configuration that would leave interfaces uncapturable with
-no indication of why, and `can't assign requested address` does not
-suggest "this interface has no IPv4 address" to a caller.
-
-## Third question: a rejected `ifconfig` deletes the address
-
-Configuring a tunnel with a host netmask — the natural choice for a
-point-to-point interface — is refused, **and the existing address is
-removed**:
-
-```
-$ ifconfig "IT2" 10.99.0.1 10.99.0.2 netmask 255.255.255.255 up
-%TCPIP-I-FSIPADDRDEL, IT2 10.99.0.1 primary address removed from node
-host address is zero when ipaddr=10.99.0.1 netmask:255.255.255.255
-```
-
-The interface is left with no address at all, rather than with the
-configuration it had before the rejected command. A program
-reconfiguring an interface cannot treat a failed `ifconfig` as having
-changed nothing, and the diagnostic arrives on the terminal rather than
-as a status value.
 
 ## What we have not established
 
