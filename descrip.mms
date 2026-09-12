@@ -84,8 +84,23 @@ CLIENT_OBJS = [.build]wg_client.obj
 ! Everything is written into [.build], which must exist before the first
 ! compile. .FIRST runs ahead of the actions that update the target.
 
+! OPENSSL is what selects the OpenSSL headers, not $(SSL_INCLUDE) in
+! the include list. The kits ship their headers flat in [INCLUDE] and
+! VSI C turns <openssl/evp.h> into openssl:evp.h, so a system-wide
+! OPENSSL pointing at another kit wins over any include directory named
+! here. Defining it for the job pins it to the same kit the link names.
+! /JOB and not /PROCESS because MMS runs each action in a subprocess,
+! which inherits the job table and not the process one.
+!
+! It is left defined when MMS finishes, which build_vms.com does not do.
+! MMS has no reliable hook that runs after a failed build, and a stale
+! definition pointing at the kit this file already names is harmless.
+! Deassign it by hand if you then build against a different one:
+!     $ DEASSIGN/JOB OPENSSL
+
 .FIRST
     @- IF F$SEARCH("BUILD.DIR;1") .EQS. "" THEN CREATE/DIRECTORY [.build]
+    @ DEFINE/JOB/NOLOG OPENSSL $(SSL_INCLUDE):
 
 ALL : [.build]vmsguard_key.exe, [.build]vmsguard_interop.exe, -
 [.build]vmsguard_responder.exe, [.build]test_proto.exe, -

@@ -30,14 +30,25 @@ Two expectations this corrected:
   against a real 1.1.1 image, even though one is now within reach —
   which is why `@build_vms TEST SSL111` exists.
 
-  **And it still is.** The first attempt at that, on 2026-09-12, did not
-  exercise the legacy branch: it found `SSL111$LIBCRYPTO_SHR32` and then
-  compiled against 3.x headers anyway, so the 3.0 branch was built and
-  linked against an image with none of its entry points. Four undefined
-  symbols, and a stopped build. The header/image pairing is now checked
-  at compile time, so the next attempt either takes the legacy branch or
-  says why it cannot; what it needs first is an `SSL111$INCLUDE` that
-  resolves to 1.1.1 headers.
+  **And it still is, for a reason worth knowing.** The first attempt, on
+  2026-09-12, found `SSL111$LIBCRYPTO_SHR32` and compiled 3.x headers
+  against it, so the 3.0 branch was built and linked against an image
+  with none of its entry points: four undefined symbols and a stopped
+  build.
+
+  The cause is that `/INCLUDE_DIRECTORY` does not select OpenSSL headers
+  on OpenVMS. The kits ship them flat in `[INCLUDE]` — there is no
+  `[.OPENSSL]` subdirectory in `SSL3$ROOT` or `SSL111$ROOT` — and VSI C
+  reaches `<openssl/evp.h>` by translating the path into
+  `openssl:evp.h`. The logical `OPENSSL` is therefore the only thing
+  that chooses a version, and on this machine it is defined system-wide
+  as `SSL3$INCLUDE:`. Four kits are installed, each with its own
+  `SSLnnn$INCLUDE`, and every one of those logicals is inert as far as
+  the compiler is concerned.
+
+  Both build files now define `OPENSSL` for the job to match the image
+  they are linking, and the compile-time guard catches the pairing if
+  anything still disagrees.
 
 Alignment was the risk worth naming in advance: Itanium traps unaligned
 loads that x86-64 performs silently. Nothing in the tree relies on one,

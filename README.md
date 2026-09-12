@@ -260,20 +260,25 @@ working image that crashes when execution reaches the unresolved
 reference. One `in6addr_any` reference cost a debugging session that
 looked like a wild pointer. Always check the link output.
 
-**The OpenSSL headers and the OpenSSL image are chosen separately, and
-nothing makes them agree.** The image comes from a path on the `LINK`
-line, the headers from an `SSLnnn$INCLUDE` logical, and a logical that
-is not defined is not an error — the include directory is ignored and
-`<openssl/evp.h>` is found somewhere else, at whatever version happens
-to be there. Forcing the 1.1.1 image on the Itanium machine compiled
-3.x headers against it and produced four undefined symbols. That was
-luck: `EVP_CIPHER_fetch` and its three companions do not exist in
-1.1.1, so the link had something to say. A mismatch over a symbol
-present in both versions with a different struct behind it would have
-linked cleanly and failed inside OpenSSL at runtime. `build_vms.com`
-now names the family it is linking, `wg_crypto.c` refuses to compile if
-the headers disagree, and a missing include logical stops the build
-rather than being ignored.
+**The OpenSSL headers are selected by the logical name `OPENSSL`, not
+by `/INCLUDE_DIRECTORY`.** The VMS kits ship their headers flat in
+`[INCLUDE]` with no `[.OPENSSL]` subdirectory, and VSI C reaches
+`<openssl/evp.h>` by translating `openssl/evp.h` into `openssl:evp.h`.
+So that one logical decides the version, and an `SSLnnn$INCLUDE` entry
+in the include list decides nothing — on a machine with one kit
+installed the two agree by luck.
+
+The Itanium machine has four kits and a system-wide `OPENSSL` equal to
+`SSL3$INCLUDE:`, so asking `build_vms.com` for the 1.1.1 image compiled
+3.x headers against it: four undefined symbols, `EVP_CIPHER_fetch` and
+its companions, which exist only in 3.x. Being caught was luck too. A
+mismatch over a symbol present in both versions with a different struct
+behind it would have linked cleanly and failed inside OpenSSL at
+runtime, and that is the same shape as the pointer-size mismatch above.
+
+Both build files now define `OPENSSL` for the job to match the image
+they link, and `wg_crypto.c` refuses to compile if the headers it is
+given disagree with the family the build says it wants.
 
 **Files are opened for exclusive access by default.** A log written
 with plain `fopen(path, "a")` cannot be read while the process holds it:

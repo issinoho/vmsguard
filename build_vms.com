@@ -188,6 +188,31 @@ $ if f$locate("SSL111$", ssl_library) .lt. f$length(ssl_library) then -
 $ if f$locate("SSL1$", ssl_library) .lt. f$length(ssl_library) then -
       ssl_expect = ",VMSGUARD_EXPECT_OPENSSL_1"
 $!
+$! And now the part that actually decides which headers are compiled.
+$!
+$! The OpenVMS OpenSSL kits ship their headers flat in [INCLUDE] --
+$! there is no [.OPENSSL] subdirectory in any of them -- and VSI C
+$! reaches <openssl/evp.h> by translating "openssl/evp.h" into
+$! "openssl:evp.h". So the header version is chosen by the logical name
+$! OPENSSL and by nothing else. The SSLnnn$INCLUDE entry in
+$! /INCLUDE_DIRECTORY below has never selected anything; on a machine
+$! with one kit installed it agreed with the system-wide OPENSSL by
+$! luck.
+$!
+$! On the Itanium machine, which has four kits, OPENSSL is defined
+$! system-wide as SSL3$INCLUDE:. Asking for the 1.1.1 image therefore
+$! compiled 3.x headers against it and the link failed on four symbols
+$! that exist only in 3.x.
+$!
+$! /JOB rather than /PROCESS because MMS and this procedure both run
+$! compilations in subprocesses, which inherit the job table but not
+$! the process one. It is deassigned on every exit path, so a build
+$! that asked for 1.1.1 does not leave the next compilation in this
+$! session pointed at it.
+$!
+$ openssl_dir = ssl_include + ":"
+$ define/job/nolog OPENSSL 'openssl_dir'
+$!
 $ say "using OpenSSL image: ''ssl_library'"
 $ say "        and headers: ''ssl_include'"
 $!
@@ -495,9 +520,11 @@ $     say ""
 $     run [.build]test_platform
 $ endif
 $!
+$ if f$trnlnm("OPENSSL", "LNM$JOB") .nes. "" then deassign/job OPENSSL
 $ exit 1
 $!
 $ linkfail:
+$ if f$trnlnm("OPENSSL", "LNM$JOB") .nes. "" then deassign/job OPENSSL
 $ say ""
 $ say "BUILD FAILED: the link above reported undefined symbols."
 $ say ""
@@ -507,5 +534,6 @@ $ say "the unresolved reference. Which is why this procedure checks."
 $ exit 2
 $!
 $ fail:
+$ if f$trnlnm("OPENSSL", "LNM$JOB") .nes. "" then deassign/job OPENSSL
 $ say "BUILD FAILED"
 $ exit 2
