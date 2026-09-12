@@ -671,6 +671,37 @@ open, the current behaviour cannot be built on either way.
 Injection is unchanged — `pcap_sendpacket` still returns "socket is not
 connected" — so that finding stands exactly as recorded.
 
+### The tunnel's outbound half works (2026-09-12)
+
+Established on the way to the above, and new. Everything demonstrated
+on the 7th was *inbound*: a packet injected into `ITn` was decapsulated
+and acted upon. Nothing had ever been sent *out* through a tunnel.
+
+Two things were missing. A tunnel needs a **netmask** to get a route —
+`ifconfig "IT3" 10.98.0.1 10.98.0.2` alone configures addresses and
+creates nothing, while adding `netmask 255.255.255.0 up` installs both
+the interface and host routes. And the destination has to be past the
+tunnel peer: **pinging the peer address is answered locally**, in under
+a millisecond, by our own address, so nothing leaves the machine.
+
+With a tunnel to a real host and a ping to `10.98.0.5`, `Opkts` moved
+0 → 8 and the encapsulated packets were captured on `IE0`:
+
+```
+4074e05fc300 aa0004000104 0800 45 00 0068 e6f5 4000 ff 04 1278 c0a80050 c0a80083
+                                                        proto 4   .0.80 -> .0.131
+```
+
+So the stack encapsulates and transmits for us, and both halves of a
+configured tunnel are now demonstrated rather than one.
+
+It also confirms the leak by observation rather than by reasoning. That
+frame's payload is the inner packet **in the clear**, on the segment,
+addressed to the tunnel's remote endpoint. A client that routed traffic
+into `ITn` and captured the result on `IE0` would be transmitting
+everything it meant to encrypt, exactly as this document has claimed
+since the 7th — now seen rather than argued.
+
 **OpenVMS VAX Device Support Manual (1994, VAX V6.1).** Superseded for
 this target and not useful. It is MACRO-32 throughout, and its
 mechanics are VAX-specific: VAXBI, VMEbus, Q-bus and UNIBUS adapters,
