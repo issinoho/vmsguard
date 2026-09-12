@@ -266,6 +266,11 @@ $ iptunnel show tunnel
 $ iptunnel delete tunnel
 ```
 
+`tunnel` there is the manual's placeholder for the interface name, not
+a keyword: `iptunnel show IT3` works and `iptunnel show tunnel` returns
+`invalid argument`. Obvious once seen, and duly typed literally on
+2026-09-12.
+
 "A configured tunnel is created as a virtual interface (ITn)... an IPv4
 configured tunnel encapsulates IPv4 **or IPv6** packets in an IPv4
 packet." The reference given is RFC 2003, IP-in-IP encapsulation.
