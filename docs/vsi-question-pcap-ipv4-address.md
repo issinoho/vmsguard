@@ -2,6 +2,8 @@
 
 A question for VSI about `TCPIP$LIBPCAP_SHR` on OpenVMS x86-64.
 
+**Sent to VSI 2026-09-12. Awaiting a reply.**
+
 Drafted 2026-09-12. Everything below was observed on the system
 described; nothing is inferred from documentation.
 

@@ -196,6 +196,11 @@ locally — `127.0.0.1` and the machine's own address are both refused
 with `invalid argument`, while a remote one succeeds — so the
 encapsulated frame must reach the wire and the leak is unavoidable.
 
+Reported to VSI on 2026-09-12 — `docs/vsi-question-pcap-tunnel.md`,
+with two smaller findings alongside it. Until there is an answer, the
+client shape is waiting on someone else and should not be picked up as
+though it were merely unstarted.
+
 **Corrected 2026-09-12.** This used to say pcap does not list `ITn`,
 and that the ask was to make it visible. Both were wrong, and wrong
 because the conclusion came from `pcap_findalldevs` alone —
