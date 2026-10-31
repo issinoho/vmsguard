@@ -78,9 +78,9 @@ OTLP specification, not a debugging aid.
 
 OpenTelemetry's specification and `.proto` files are Apache-2.0, so
 unlike vmsguard there is no clean-room constraint: the message
-definitions can be read and followed directly. The agent itself would be
-MIT like vmsguard, which combines with Apache-2.0 without difficulty.
-*Decision for the owner.*
+definitions can be read and followed directly. The agent itself is
+**MIT**, like vmsguard (`LICENSE`), which sits alongside Apache-2.0
+without difficulty.
 
 ## The wire format
 
@@ -278,4 +278,3 @@ and the numbers in MONITOR are the other end.
 | TCP and an HTTP exchange to the collector | `probe_otlp` |
 | libssl image names; TLS handshake | `probe_otlp_tls`, `build_probes.com` |
 | Is zlib available (gzip) | later |
-| License | owner |

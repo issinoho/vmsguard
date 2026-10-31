@@ -97,7 +97,7 @@ In the new repository:
   longer load. Keep the lessons, not the vmsguard history.
 - Fix every path that assumed drafts/vmsotel/, including
   build_probes.com usage lines, README and docs/prompts.md.
-- Add a LICENSE: <MIT | Apache-2.0>.
+- Keep the MIT LICENSE that is already there.
 - Run `make check` there.
 
 Then, in vmsguard, open a pull request on branch ccr-97df299c-rjyniw

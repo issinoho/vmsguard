@@ -132,8 +132,12 @@ Unproven on VMS so far, and checked by the probes: `printf("%llu")`
 OpenTelemetry's specification and `.proto` files are Apache-2.0, so
 they can be read and followed directly. vmsguard's clean-room rule
 exists because of WireGuard's GPLv2 kernel module and does not apply
-here. The licence for vmsotel itself is the owner's decision and is
-still open; vmsguard is MIT.
+here.
+
+vmsotel itself is **MIT** (`LICENSE`), as vmsguard is. Following the
+OTLP specification and `.proto` files to write our own code is fine.
+Copying Apache-2.0 code verbatim is not, unless its licence notice
+travels with it — so write the code, don't paste it.
 
 ## Recording what the probes show
 
