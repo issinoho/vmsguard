@@ -1,0 +1,32 @@
+# OpenTelemetry Collector for the vmsotel probes, run on the laptop.
+#
+# Port 4318 is plain OTLP/HTTP, for probe_otlp. Port 4319 is the same
+# with TLS, for probe_otlp_tls; run make-cert.sh first to create the
+# certificate it names. The debug exporter prints every data point it
+# receives, which is the other end to watch.
+#
+# Both receivers bind 0.0.0.0 explicitly: recent collectors default to
+# localhost, which the VMS machines cannot reach.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+  otlp/tls:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4319
+        tls:
+          cert_file: /etc/otelcol/collector.crt
+          key_file: /etc/otelcol/collector.key
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp, otlp/tls]
+      exporters: [debug]
