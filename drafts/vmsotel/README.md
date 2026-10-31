@@ -6,7 +6,10 @@ machines by `git pull`; it shares no code with vmsguard and will move
 to its own repository (`git subtree split --prefix=drafts/vmsotel`
 keeps its history).
 
+- `CLAUDE.md` — working notes for Claude Code sessions
 - `docs/design.md` — the design, and the questions the probes answer
+- `docs/findings.md` — what the probes showed, per machine
+- `docs/prompts.md` — paste-ready prompts for each stage
 - `probes/` — six probes: four system-service probes, and the OTLP
   export without and with TLS
 - `collector/` — collector configuration for the laptop
