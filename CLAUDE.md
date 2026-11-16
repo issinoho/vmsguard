@@ -91,7 +91,7 @@ Keep it that way; anything needing a socket or a clock belongs above it.
 You cannot reach either OpenVMS machine. The workflow is: develop and
 test on Linux, the user builds and runs on OpenVMS and pastes the output.
 
-There are now two targets: the x86-64 box (V9.2-3, VSI C V7.7-003, TCP/IP
+There are now two targets: the x86-64 box (VSI C V7.7-003, TCP/IP
 Services V6.0-30) where everything has been measured, and an Itanium
 rx2660 (V8.4-2L3, VSI C V7.4-001, TCP/IP Services V6.0-31) added
 2026-09-12, where the tree builds and all self-tests pass but nothing
@@ -101,6 +101,12 @@ is not evidence about pre-6.0 behaviour, and its pcap is the same
 `libpcap version 0.9.4`. What it is evidence about is architecture.
 Its LAN interface is `WE1`, not `IE0`, so any command with
 `--interface` differs between the two machines.
+
+The x86-64 box has since been upgraded from V9.2-3 to **E9.2-4** (the
+sibling vmsotel records it as E9.2-4 from 2026-11-12). Every x86-64
+result in this repository — the gateway measurements, the 522 checks,
+the VSI questions — was taken on **V9.2-3**, and nothing here has been
+re-run on E9.2-4. Treat them as V9.2-3 findings until it has.
 
 That makes a round trip expensive, so:
 
